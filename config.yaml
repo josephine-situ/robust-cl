@@ -1,0 +1,43 @@
+data:
+  # Synthetic test function (start here before real case studies)
+  type: "synthetic"  # or "food_basket" later
+  n_train: 200
+  n_features: 2
+  noise_std: 0.1  # sigma for label noise
+
+model:
+  type: "rf"  # "cart", "rf", "xgb"
+  params:
+    n_estimators: 50
+    max_depth: 5
+    random_state: 42
+
+optimization:
+  # The downstream optimization problem
+  # min c'x s.t. f(x) <= b, x in X
+  constraint_rhs: 0.5  # b
+  variable_bounds: [0.0, 1.0]
+
+uncertainty:
+  delta_bar: 0.2  # max perturbation per label
+  gamma: 5.0  # budget of uncertainty (L1 norm)
+
+methods:
+  wrapper:
+    n_estimators: 20  # P
+    alpha: 0.1  # violation fraction
+
+  random_scenarios:
+    n_scenarios: 20  # S
+
+  ccg:
+    max_iterations: 50
+    separation_strategy: "greedy"  # "greedy" or "random"
+    n_greedy_candidates: 20
+
+  robust_classification:
+    uncertainty_set_size: 0.2
+
+evaluation:
+  n_held_out: 100  # M held-out perturbations
+  seed: 42
