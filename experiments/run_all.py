@@ -150,11 +150,11 @@ def run_experiment(config):
     df.to_csv("results/results.csv", index=False)
 
     # Save CCG trace
-    if ccg_trace.iteration:
+    if ccg_trace.violations:
         trace_df = pd.DataFrame({
-            "iteration": ccg_trace.iteration,
-            "obj_value": ccg_trace.obj_value,
-            "violation": ccg_trace.violation,
+            "iteration": list(range(1, len(ccg_trace.violations) + 1)),
+            "obj_value": ccg_trace.objectives,
+            "violation": ccg_trace.violations,
         })
         trace_df.to_csv("results/ccg_trace.csv", index=False)
 

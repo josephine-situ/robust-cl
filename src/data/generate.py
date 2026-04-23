@@ -66,8 +66,10 @@ def synthetic_nonlinear(n_train: int = 200,
     variable_lb = np.zeros(n_features)
     variable_ub = np.ones(n_features)
 
-    # Constraint RHS: set so that the true optimum is interior
-    # f_true at x=1 is n_features + 0.5, so b < that
+    # Set b so that the ML constraint is binding at the optimum,
+    # not the box constraints. f_true at x=(1,...,1) equals
+    # d + 0.5, so choosing b = 0.5*d < d + 0.5 ensures the
+    # constraint boundary lies inside [0,1]^d.
     constraint_rhs = 0.5 * n_features
 
     return ProblemInstance(
