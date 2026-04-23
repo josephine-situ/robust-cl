@@ -216,7 +216,7 @@ def plot_efficiency_comparison(save_dir="results"):
 
     from src.data.generate import synthetic_nonlinear
     from src.methods.random_scenarios import solve_random_scenarios
-    from src.methods.ccg import solve_ccg
+    from src.methods.cp import solve_cp
     from src.evaluation.metrics import evaluate_solution
 
     instance = synthetic_nonlinear(
@@ -250,16 +250,16 @@ def plot_efficiency_comparison(save_dir="results"):
             random_feas.append(0.0)
 
         # C&CG with max k iterations
-        sol_ccg, _ = solve_ccg(
+        sol_cp, _ = solve_cp(
             instance, model_type, model_params,
             delta_bar=delta_bar, gamma=gamma,
             max_iterations=k,
         )
-        if sol_ccg.status != "infeasible":
+        if sol_cp.status != "infeasible":
             ev = evaluate_solution(
-                sol_ccg.x_opt, instance, "ccg",
-                sol_ccg.obj_value, sol_ccg.models_embedded,
-                sol_ccg.solve_time,
+                sol_cp.x_opt, instance, "ccg",
+                sol_cp.obj_value, sol_cp.models_embedded,
+                sol_cp.solve_time,
                 model_type, model_params,
                 delta_bar, gamma,
                 n_held_out=config["evaluation"]["n_held_out"],

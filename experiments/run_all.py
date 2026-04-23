@@ -18,7 +18,7 @@ from src.methods.nominal import solve_nominal
 from src.methods.robust_classification import solve_robust_classification
 from src.methods.wrapper import solve_wrapper
 from src.methods.random_scenarios import solve_random_scenarios
-from src.methods.ccg import solve_ccg
+from src.methods.cp import solve_cp
 from src.evaluation.metrics import evaluate_all
 
 
@@ -60,56 +60,56 @@ def run_experiment(config):
     print(f"    obj={results['nominal'].obj_value:.4f}, "
           f"status={results['nominal'].status}")
 
-    # --- Method 2: Robust Classification ---
-    print("\n[3] Solving ROBUST CLASSIFICATION...")
-    results["robust_cls"] = solve_robust_classification(
+    # # --- Method 2: Robust Classification ---
+    # print("\n[3] Solving ROBUST CLASSIFICATION...")
+    # results["robust_cls"] = solve_robust_classification(
+    #     instance, model_type, model_params,
+    #     delta_bar=delta_bar, gamma=gamma,
+    #     n_perturbations=config["methods"]["robust_classification"]
+    #         .get("n_perturbations", 50),
+    # )
+    # print(f"    obj={results['robust_cls'].obj_value:.4f}, "
+    #       f"status={results['robust_cls'].status}")
+
+    # # --- Method 3: Wrapper ---
+    # print("\n[4] Solving WRAPPER...")
+    # wrapper_cfg = config["methods"]["wrapper"]
+    # results["wrapper"] = solve_wrapper(
+    #     instance, model_type, model_params,
+    #     n_estimators=wrapper_cfg["n_estimators"],
+    #     alpha=wrapper_cfg["alpha"],
+    # )
+    # print(f"    obj={results['wrapper'].obj_value:.4f}, "
+    #       f"status={results['wrapper'].status}, "
+    #       f"models={results['wrapper'].models_embedded}")
+
+    # # --- Method 4: Random Scenarios ---
+    # print("\n[5] Solving RANDOM SCENARIOS...")
+    # random_cfg = config["methods"]["random_scenarios"]
+    # results["random"] = solve_random_scenarios(
+    #     instance, model_type, model_params,
+    #     delta_bar=delta_bar, gamma=gamma,
+    #     n_scenarios=random_cfg["n_scenarios"],
+    # )
+    # print(f"    obj={results['random'].obj_value:.4f}, "
+    #       f"status={results['random'].status}, "
+    #       f"models={results['random'].models_embedded}")
+
+    # --- Method 5: CP ---
+    print("\n[6] Solving CP...")
+    cp_cfg = config["methods"]["cp"]
+    cp_result, cp_trace = solve_cp(
         instance, model_type, model_params,
         delta_bar=delta_bar, gamma=gamma,
-        n_perturbations=config["methods"]["robust_classification"]
-            .get("n_perturbations", 50),
+        max_iterations=cp_cfg["max_iterations"],
+        separation_strategy=cp_cfg["separation_strategy"],
+        n_greedy_candidates=cp_cfg["n_greedy_candidates"],
     )
-    print(f"    obj={results['robust_cls'].obj_value:.4f}, "
-          f"status={results['robust_cls'].status}")
-
-    # --- Method 3: Wrapper ---
-    print("\n[4] Solving WRAPPER...")
-    wrapper_cfg = config["methods"]["wrapper"]
-    results["wrapper"] = solve_wrapper(
-        instance, model_type, model_params,
-        n_estimators=wrapper_cfg["n_estimators"],
-        alpha=wrapper_cfg["alpha"],
-    )
-    print(f"    obj={results['wrapper'].obj_value:.4f}, "
-          f"status={results['wrapper'].status}, "
-          f"models={results['wrapper'].models_embedded}")
-
-    # --- Method 4: Random Scenarios ---
-    print("\n[5] Solving RANDOM SCENARIOS...")
-    random_cfg = config["methods"]["random_scenarios"]
-    results["random"] = solve_random_scenarios(
-        instance, model_type, model_params,
-        delta_bar=delta_bar, gamma=gamma,
-        n_scenarios=random_cfg["n_scenarios"],
-    )
-    print(f"    obj={results['random'].obj_value:.4f}, "
-          f"status={results['random'].status}, "
-          f"models={results['random'].models_embedded}")
-
-    # --- Method 5: C&CG ---
-    print("\n[6] Solving C&CG...")
-    ccg_cfg = config["methods"]["ccg"]
-    ccg_result, ccg_trace = solve_ccg(
-        instance, model_type, model_params,
-        delta_bar=delta_bar, gamma=gamma,
-        max_iterations=ccg_cfg["max_iterations"],
-        separation_strategy=ccg_cfg["separation_strategy"],
-        n_greedy_candidates=ccg_cfg["n_greedy_candidates"],
-    )
-    results["ccg"] = ccg_result
-    print(f"    obj={results['ccg'].obj_value:.4f}, "
-          f"status={results['ccg'].status}, "
-          f"models={results['ccg'].models_embedded}, "
-          f"iters={results['ccg'].iterations}")
+    results["cp"] = cp_result
+    print(f"    obj={results['cp'].obj_value:.4f}, "
+          f"status={results['cp'].status}, "
+          f"models={results['cp'].models_embedded}, "
+          f"iters={results['cp'].iterations}")
 
     # --- Evaluate all ---
     print("\n[7] Evaluating all methods on held-out perturbations...")
@@ -149,16 +149,16 @@ def run_experiment(config):
     os.makedirs("results", exist_ok=True)
     df.to_csv("results/results.csv", index=False)
 
-    # Save CCG trace
-    if ccg_trace.violations:
+    # Save CP trace
+    if cp_trace.violations:
         trace_df = pd.DataFrame({
-            "iteration": list(range(1, len(ccg_trace.violations) + 1)),
-            "obj_value": ccg_trace.objectives,
-            "violation": ccg_trace.violations,
+            "iteration": list(range(1, len(cp_trace.violations) + 1)),
+            "obj_value": cp_trace.objectives,
+            "violation": cp_trace.violations,
         })
-        trace_df.to_csv("results/ccg_trace.csv", index=False)
+        trace_df.to_csv("results/cp_trace.csv", index=False)
 
-    return df, ccg_trace
+    return df, cp_trace
 
 
 if __name__ == "__main__":
