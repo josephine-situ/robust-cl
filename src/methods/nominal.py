@@ -28,17 +28,18 @@ class SolutionResult:
 
 def solve_nominal(instance: ProblemInstance,
                   model_type: str = "rf",
-                  model_params: dict = None) -> SolutionResult:
+                  model_params: dict = None,
+                  rho: float = 0.0) -> SolutionResult:
     """Solve the nominal constraint learning problem."""
     import time
 
+    start = time.time()
     # Train model on noisy data
     ml_model = train_model(
         instance.X_train, instance.y_train, model_type, model_params
     )
 
     # Build optimization model
-    start = time.time()
     opt = gp.Model("nominal")
     opt.Params.OutputFlag = 0
 
@@ -62,7 +63,7 @@ def solve_nominal(instance: ProblemInstance,
     f_pred = embed_model(
         opt, ml_model, x,
         instance.variable_lb, instance.variable_ub,
-        name_prefix="nominal",
+        name_prefix="nominal", rho=rho
     )
     opt.addConstr(f_pred <= instance.constraint_rhs, name="ml_constr")
 

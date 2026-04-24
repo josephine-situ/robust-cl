@@ -56,6 +56,7 @@ pip install -r requirements.txt
 Requires a Gurobi license (free academic license available).
 
 ## Running Experiments
+Currently just using run_all.py
 
 ### Single experiment (fixed parameters)
 
@@ -138,9 +139,5 @@ After running all sweeps, the `results/` directory will contain:
 | `gamma_sweep.png` | Price of robustness curves |
 | `noise_sweep.png` | Degradation under increasing noise |
 
-## Key Hypotheses
-
-1. **Nominal CL is fragile:** Even moderate label noise ($\sigma > 0$) causes the nominal solution $x^*$ to frequently violate the true underlying constraint.
-2. **Cutting Planes restores true feasibility at modest cost:** By injecting adversarial structure directly targeting optimization blindspots instead of random points, Cutting Planes achieves 100% feasibility efficiently, while objective costs increase gracefully with robustness parameter $\Gamma$.
-3. **Cutting Planes > Wrapper under label noise:** Wrapper strategies diversify heavily across model classes or bootstrap folds but are bound by shared bias from the noisy data. Cutting Planes explicitly builds constraints over generated scenarios spanning label perturbations, giving stronger worst-case reachability coverage.
-4. **Decision-aware robustness provides superiority:** Unlike robust classification which trains one globally robust model unaware of downstream constraints, Cutting Planes uses the separation oracle dynamically reacting to the optimizer's active region—focusing analytical power strictly where $x^*$ is vulnerable.
+## Parameter Robustness
+An alternative form of robustness is robustness on the parameters, implemented here via multiplicative uncertainty. By configuring the rho parameter, decision tree splits are robustified against coefficient uncertainty. This penalizes the nominal splits, shrinking the feasible leaf regions by a margin dependent on the feature threshold and rho. This is implemented automatically across all constraint learning methods.

@@ -23,6 +23,9 @@ uncertainty:
   gamma: 5.0  # budget of uncertainty (L1 norm)
 
 methods:
+  robust_param:
+    rho: 0.05  # parameter robustness on the splits (dual norm penalty)
+    
   wrapper:
     n_estimators: 20  # P
     alpha: 0.1  # violation fraction

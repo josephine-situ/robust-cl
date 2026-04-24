@@ -75,7 +75,7 @@ class IncrementalMaster:
         if s < len(self.scenario_constrs):
             self.scenario_constrs[s] = None
 
-    def add_scenario(self, ml_model: ModelType, phase: int = 3, x_k: np.ndarray = None, iteration: int = 0):
+    def add_scenario(self, ml_model: ModelType, phase: int = 3, x_k: np.ndarray = None, iteration: int = 0, rho: float = 0.0):
         prefix = f"cp_s{self.n_models}"
         
         self.opt.update()
@@ -94,13 +94,14 @@ class IncrementalMaster:
             
         if cut_type == "voting":
             try:
+                # Voting and bad leaf cuts don't directly use rho yet.
                 embed_cut_voting(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, self.b, prefix)
             except Exception:
                 embed_cut_bad_leaf(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, self.b, prefix)
         elif cut_type == "bad_leaf":
             embed_cut_bad_leaf(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, self.b, prefix)
         else:
-            f_s = embed_model(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, name_prefix=prefix)
+            f_s = embed_model(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, name_prefix=prefix, rho=rho)
             main_constr = self.opt.addConstr(f_s <= self.b, name=f"cp_constr_{self.n_models}")
         
         self.opt.update()
@@ -182,6 +183,7 @@ def solve_cp(instance: ProblemInstance,
               model_params: dict = None,
               delta_bar: float = 0.2,
               gamma: float = 5.0,
+              rho: float = 0.0,
               max_iterations: int = 50,
               separation_strategy: str = "proxy",
               n_greedy_candidates: int = 20,
@@ -200,6 +202,8 @@ def solve_cp(instance: ProblemInstance,
     d = instance.n_features
     b = instance.constraint_rhs
 
+    total_start = time.time()
+
     # Initialize: train nominal model
     nominal_model = train_model(
         instance.X_train, instance.y_train,
@@ -207,11 +211,9 @@ def solve_cp(instance: ProblemInstance,
     )
     scenario_models: List[ModelType] = [nominal_model]
     scenario_deltas: List[np.ndarray] = [np.zeros(n)]
-
-    total_start = time.time()
     
     master = IncrementalMaster(instance)
-    master.add_scenario(nominal_model, phase=phase, iteration=0)
+    master.add_scenario(nominal_model, phase=phase, iteration=0, rho=rho)
 
     for iteration in range(max_iterations):
         iter_start = time.time()
@@ -322,7 +324,7 @@ def solve_cp(instance: ProblemInstance,
         # Add violating scenario
         scenario_models.append(best_model)
         scenario_deltas.append(best_delta)
-        master.add_scenario(best_model, phase=phase, x_k=x_current, iteration=iteration)
+        master.add_scenario(best_model, phase=phase, x_k=x_current, iteration=iteration, rho=rho)
 
     # Max iterations reached
     print("Max iterations reached. Re-solving with default MIP gap...")

@@ -28,7 +28,8 @@ def solve_robust_classification(
         delta_bar: float = 0.2,
         gamma: float = 5.0,
         n_perturbations: int = 50,
-        seed: int = 42) -> SolutionResult:
+        seed: int = 42,
+        rho: float = 0.0) -> SolutionResult:
     """
     Robust classification approach.
 
@@ -40,6 +41,8 @@ def solve_robust_classification(
 
     This is an approximation to true robust training.
     """
+    
+    start = time.time()
     n = len(instance.y_train)
     perturbations = sample_multiple_perturbations(
         n, delta_bar, gamma, n_perturbations, seed
@@ -76,7 +79,6 @@ def solve_robust_classification(
             best_model = model
 
     # Embed the selected robust model
-    start = time.time()
     opt = gp.Model("robust_classification")
     opt.Params.OutputFlag = 0
 
@@ -98,7 +100,7 @@ def solve_robust_classification(
     f_pred = embed_model(
         opt, best_model, x,
         instance.variable_lb, instance.variable_ub,
-        name_prefix="robust_cls",
+        name_prefix="robust_cls", rho=rho
     )
     opt.addConstr(f_pred <= instance.constraint_rhs, name="ml_constr")
 

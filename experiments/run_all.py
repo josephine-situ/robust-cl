@@ -54,40 +54,50 @@ def run_experiment(config):
     # --- Method 1: Nominal ---
     print("\n[2] Solving NOMINAL...")
     results["nominal"] = solve_nominal(
-        instance, model_type, model_params,
+        instance, model_type, model_params, rho=0.0
     )
     print(f"    obj={results['nominal'].obj_value:.4f}, "
           f"status={results['nominal'].status}")
+          
+    # --- Method 1.5: Robust Param ---
+    print("\n[2.5] Solving NOMINAL WITH ROBUST PARAMETER...")
+    robust_param_cfg = config["methods"].get("robust_param", {})
+    robust_rho = robust_param_cfg.get("rho", 0.0)
+    results["robust_param"] = solve_nominal(
+        instance, model_type, model_params, rho=robust_rho
+    )
+    print(f"    obj={results['robust_param'].obj_value:.4f}, "
+          f"status={results['robust_param'].status}")
 
-    # # --- Method 2: Robust Classification ---
-    # print("\n[3] Solving ROBUST CLASSIFICATION...")
-    # results["robust_cls"] = solve_robust_classification(
-    #     instance, model_type, model_params,
-    #     delta_bar=delta_bar, gamma=gamma,
-    #     n_perturbations=config["methods"]["robust_classification"]
-    #         .get("n_perturbations", 50),
-    # )
-    # print(f"    obj={results['robust_cls'].obj_value:.4f}, "
-    #       f"status={results['robust_cls'].status}")
+    # --- Method 2: Robust Classification ---
+    print("\n[3] Solving ROBUST CLASSIFICATION...")
+    results["robust_cls"] = solve_robust_classification(
+        instance, model_type, model_params,
+        delta_bar=delta_bar, gamma=gamma, rho=0.0,
+        n_perturbations=config["methods"]["robust_classification"]
+            .get("n_perturbations", 50),
+    )
+    print(f"    obj={results['robust_cls'].obj_value:.4f}, "
+          f"status={results['robust_cls'].status}")
 
-    # # --- Method 3: Wrapper ---
-    # print("\n[4] Solving WRAPPER...")
-    # wrapper_cfg = config["methods"]["wrapper"]
-    # results["wrapper"] = solve_wrapper(
-    #     instance, model_type, model_params,
-    #     n_estimators=wrapper_cfg["n_estimators"],
-    #     alpha=wrapper_cfg["alpha"],
-    # )
-    # print(f"    obj={results['wrapper'].obj_value:.4f}, "
-    #       f"status={results['wrapper'].status}, "
-    #       f"models={results['wrapper'].models_embedded}")
+    # --- Method 3: Wrapper ---
+    print("\n[4] Solving WRAPPER...")
+    wrapper_cfg = config["methods"]["wrapper"]
+    results["wrapper"] = solve_wrapper(
+        instance, model_type, model_params, rho=0.0,
+        n_estimators=wrapper_cfg["n_estimators"],
+        alpha=wrapper_cfg["alpha"],
+    )
+    print(f"    obj={results['wrapper'].obj_value:.4f}, "
+          f"status={results['wrapper'].status}, "
+          f"models={results['wrapper'].models_embedded}")
 
     # --- Method 5: CP ---
     print("\n[6] Solving CP...")
     cp_cfg = config["methods"]["cp"]
     cp_result, cp_trace = solve_cp(
         instance, model_type, model_params,
-        delta_bar=delta_bar, gamma=gamma,
+        delta_bar=delta_bar, gamma=gamma, rho=0.0,
         max_iterations=cp_cfg["max_iterations"],
         separation_strategy=cp_cfg["separation_strategy"],
         n_greedy_candidates=cp_cfg["n_greedy_candidates"],

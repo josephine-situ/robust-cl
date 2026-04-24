@@ -51,16 +51,19 @@ def solve_wrapper(instance: ProblemInstance,
                   model_params: dict = None,
                   n_estimators: int = 20,
                   alpha: float = 0.1,
-                  seed: int = 42) -> SolutionResult:
+                  seed: int = 42,
+                  rho: float = 0.0) -> SolutionResult:
     """
     Solve using the Maragno et al. wrapper approach.
     """
+    
+    start = time.time()
+    
     # Train ensemble
     ensemble = _train_bootstrap_ensemble(
         instance, model_type, model_params, n_estimators, seed
     )
 
-    start = time.time()
     opt = gp.Model("wrapper")
     opt.Params.OutputFlag = 0
 
@@ -87,7 +90,7 @@ def solve_wrapper(instance: ProblemInstance,
         f_p = embed_model(
             opt, ml_model, x,
             instance.variable_lb, instance.variable_ub,
-            name_prefix=f"wrapper_{p}",
+            name_prefix=f"wrapper_{p}", rho=rho
         )
         f_preds.append(f_p)
 

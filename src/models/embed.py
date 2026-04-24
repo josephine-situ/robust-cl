@@ -263,7 +263,8 @@ def embed_single_tree(model: gp.Model,
                       x_vars: list,
                       var_lb: np.ndarray,
                       var_ub: np.ndarray,
-                      name_prefix: str = "tree") -> gp.Var:
+                      name_prefix: str = "tree",
+                      rho: float = 0.0) -> gp.Var:
     """
     Embed a single decision tree into a Gurobi model.
 
@@ -298,8 +299,27 @@ def embed_single_tree(model: gp.Model,
     # Leaf region constraints (big-M)
     for l, leaf in enumerate(leaves):
         for j in range(d):
-            lb_leaf = max(leaf["bounds_lower"][j], var_lb[j])
-            ub_leaf = min(leaf["bounds_upper"][j], var_ub[j])
+            lb_orig = leaf["bounds_lower"][j]
+            ub_orig = leaf["bounds_upper"][j]
+
+            # Shrink bounds for parameter robustness according to rho ||a_j x||_q
+            # Simplified version for when we have axis-aligned splits.
+            if rho > 0:
+                if lb_orig > -np.inf:
+                    lb_leaf_tight = lb_orig / (1 - rho) if lb_orig >= 0 else lb_orig / (1 + rho)
+                else:
+                    lb_leaf_tight = -np.inf
+
+                if ub_orig < np.inf:
+                    ub_leaf_tight = ub_orig / (1 + rho) if ub_orig >= 0 else ub_orig / (1 - rho)
+                else:
+                    ub_leaf_tight = np.inf
+            else:
+                lb_leaf_tight = lb_orig
+                ub_leaf_tight = ub_orig
+
+            lb_leaf = max(lb_leaf_tight, var_lb[j])
+            ub_leaf = min(ub_leaf_tight, var_ub[j])
 
             M_lower = var_lb[j] - lb_leaf
             M_upper = ub_leaf - var_ub[j]
@@ -337,7 +357,8 @@ def embed_model(model: gp.Model,
                 x_vars: list,
                 var_lb: np.ndarray,
                 var_ub: np.ndarray,
-                name_prefix: str = "model") -> gp.Var:
+                name_prefix: str = "model",
+                rho: float = 0.0) -> gp.Var:
     """
     Embed any supported model into Gurobi.
 
@@ -345,7 +366,7 @@ def embed_model(model: gp.Model,
     """
     if isinstance(ml_model, DecisionTreeRegressor):
         return embed_single_tree(
-            model, ml_model, x_vars, var_lb, var_ub, name_prefix
+            model, ml_model, x_vars, var_lb, var_ub, name_prefix, rho
         )
 
     elif isinstance(ml_model, RandomForestRegressor):
@@ -353,7 +374,7 @@ def embed_model(model: gp.Model,
         for t, estimator in enumerate(ml_model.estimators_):
             f_t = embed_single_tree(
                 model, estimator, x_vars, var_lb, var_ub,
-                name_prefix=f"{name_prefix}_t{t}",
+                name_prefix=f"{name_prefix}_t{t}", rho=rho
             )
             tree_preds.append(f_t)
 
@@ -374,7 +395,7 @@ def embed_model(model: gp.Model,
             estimator = estimator_arr[0]  # single output
             f_t = embed_single_tree(
                 model, estimator, x_vars, var_lb, var_ub,
-                name_prefix=f"{name_prefix}_t{t}",
+                name_prefix=f"{name_prefix}_t{t}", rho=rho
             )
             tree_preds.append(f_t)
 
