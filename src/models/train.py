@@ -68,3 +68,13 @@ def retrain_on_perturbed(X: np.ndarray,
     Retrain model on perturbed labels y + delta.
     """
     return train_model(X, y + delta, model_type, params)
+
+def retrain_on_bootstrap(X: np.ndarray,
+                         y: np.ndarray,
+                         indices: np.ndarray,
+                         model_type: str = "rf",
+                         params: dict = None) -> ModelType:
+    """
+    Retrain model on bootstrap sample specified by indices.
+    """
+    return train_model(X[indices], y[indices], model_type, params)

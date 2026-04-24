@@ -1,11 +1,10 @@
 Progress this week
-- Make cutting planes approach tractable (>8000s to <200s)
+- Make cutting planes approach tractable (>8000s to 100s)
     - Master problem: warm start, relaxed MIP gap. Prune inactive scenarios.
-    - Separation problem (finding adversarial points): retrain using smaller proxy model (e.g., CART instead of RF)
+    - Separation problem (finding adversarial points): use bootstrap samples instead of samples over uncertainty set, retrain using smaller proxy model (e.g., CART instead of RF)
 - Add robust param method: on synthetic example fast, with better feasibility rate than wrapper, but true constraint violation not good. (robust on splits, not on y value)
 
 Robust CL
-- Identify worst-case sample from training data using optimization.
 - Replicate chemotherapy results from CL paper (will need to account for features that are not decision variables).
 - Trust region
 - Added robust parameters (like global optimization paper), maybe add relaxation.

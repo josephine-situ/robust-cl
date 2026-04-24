@@ -148,35 +148,49 @@ def prune_inactive_scenarios(master: IncrementalMaster, slack_threshold: float =
 
 def _evaluate_proxy_candidate(args):
     """Helper for parallel search using proxy model."""
-    delta, instance, x_2d = args
-    model = retrain_on_perturbed(instance.X_train, instance.y_train, delta, "cart", {"max_depth": 3})
+    candidate, instance, x_2d, mode = args
+    if mode == "bootstrap":
+        from src.models.train import retrain_on_bootstrap
+        model = retrain_on_bootstrap(instance.X_train, instance.y_train, candidate, "cart", {"max_depth": 3})
+    else:
+        model = retrain_on_perturbed(instance.X_train, instance.y_train, candidate, "cart", {"max_depth": 3})
     val = model.predict(x_2d)[0]
-    return val, delta
+    return val, candidate
 
-def proxy_based_separation(instance, x_current, delta_bar, gamma, model_type, model_params, n_candidates, seed):
+def proxy_based_separation(instance, x_current, delta_bar, gamma, model_type, model_params, n_candidates, seed, mode="perturbation"):
     """Proxy-based separation using parallel candidate evaluation."""
-    from src.utils.perturbations import sample_multiple_perturbations
     n = len(instance.y_train)
     x_2d = np.atleast_2d(x_current)
-    perturbations = sample_multiple_perturbations(n, delta_bar, gamma, n_candidates, seed)
+    
+    if mode == "bootstrap":
+        rng = np.random.RandomState(seed)
+        candidates = [rng.choice(n, size=n, replace=True) for _ in range(n_candidates)]
+    else:
+        from src.utils.perturbations import sample_multiple_perturbations
+        candidates = sample_multiple_perturbations(n, delta_bar, gamma, n_candidates, seed)
     
     best_value_proxy = -np.inf
-    best_delta = None
+    best_candidate = None
     
-    args_list = [(pert, instance, x_2d) for pert in perturbations]
+    args_list = [(cand, instance, x_2d, mode) for cand in candidates]
     with concurrent.futures.ProcessPoolExecutor() as executor:
         results = executor.map(_evaluate_proxy_candidate, args_list)
         
-    for val, delta in results:
+    for val, cand in results:
         if val > best_value_proxy:
             best_value_proxy = val
-            best_delta = delta
+            best_candidate = cand
             
-    # Once the best delta is found via proxy, train actual model just once
-    best_model = retrain_on_perturbed(instance.X_train, instance.y_train, best_delta, model_type, model_params)
+    # Once the best delta/indices is found via proxy, train actual model just once
+    if mode == "bootstrap":
+        from src.models.train import retrain_on_bootstrap
+        best_model = retrain_on_bootstrap(instance.X_train, instance.y_train, best_candidate, model_type, model_params)
+    else:
+        best_model = retrain_on_perturbed(instance.X_train, instance.y_train, best_candidate, model_type, model_params)
+        
     best_value = best_model.predict(x_2d)[0]
             
-    return best_delta, best_value, best_model
+    return best_candidate, best_value, best_model
 
 def solve_cp(instance: ProblemInstance,
               model_type: str = "rf",
@@ -254,6 +268,16 @@ def solve_cp(instance: ProblemInstance,
                     model_type, model_params,
                     n_greedy_candidates,
                     seed=seed + iteration
+                )
+        elif separation_strategy == "proxy-bootstrap":
+            best_delta, best_value, best_model = \
+                proxy_based_separation(
+                    instance, x_current,
+                    delta_bar, gamma,
+                    model_type, model_params,
+                    n_greedy_candidates,
+                    seed=seed + iteration,
+                    mode="bootstrap"
                 )
         elif separation_strategy == "random":
             # Random search as baseline
