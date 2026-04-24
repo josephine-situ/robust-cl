@@ -27,12 +27,9 @@ methods:
     n_estimators: 20  # P
     alpha: 0.1  # violation fraction
 
-  random_scenarios:
-    n_scenarios: 20  # S
-
-  ccg:
+  cp:
     max_iterations: 50
-    separation_strategy: "greedy"  # "greedy" or "random"
+    separation_strategy: "proxy"  # "greedy" or "random" or "proxy"
     n_greedy_candidates: 20
 
   robust_classification:

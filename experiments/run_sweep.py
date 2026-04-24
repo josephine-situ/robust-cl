@@ -200,107 +200,12 @@ def plot_noise_sweep(csv_path="results/noise_sweep_results.csv",
     print(f"Saved noise sweep plot to {save_dir}/noise_sweep.png")
 
 
-def plot_efficiency_comparison(save_dir="results"):
-    """
-    Compare C&CG vs random scenarios at equal number of
-    embedded models. Requires running both with varying k.
-    """
-    import matplotlib.pyplot as plt
-    import yaml
-
-    config = load_config()
-    model_type = config["model"]["type"]
-    model_params = config["model"]["params"]
-    delta_bar = config["uncertainty"]["delta_bar"]
-    gamma = config["uncertainty"]["gamma"]
-
-    from src.data.generate import synthetic_nonlinear
-    from src.methods.random_scenarios import solve_random_scenarios
-    from src.methods.cp import solve_cp
-    from src.evaluation.metrics import evaluate_solution
-
-    instance = synthetic_nonlinear(
-        n_train=config["data"]["n_train"],
-        n_features=config["data"]["n_features"],
-        noise_std=config["data"]["noise_std"],
-    )
-
-    k_values = [1, 2, 5, 10, 15, 20]
-    random_feas = []
-    ccg_feas = []
-
-    for k in k_values:
-        # Random scenarios with k models
-        sol_rand = solve_random_scenarios(
-            instance, model_type, model_params,
-            delta_bar=delta_bar, gamma=gamma,
-            n_scenarios=k,
-        )
-        if sol_rand.status != "infeasible":
-            ev = evaluate_solution(
-                sol_rand.x_opt, instance, "random",
-                sol_rand.obj_value, sol_rand.models_embedded,
-                sol_rand.solve_time,
-                model_type, model_params,
-                delta_bar, gamma,
-                n_held_out=config["evaluation"]["n_held_out"],
-            )
-            random_feas.append(ev.feasibility_rate)
-        else:
-            random_feas.append(0.0)
-
-        # C&CG with max k iterations
-        sol_cp, _ = solve_cp(
-            instance, model_type, model_params,
-            delta_bar=delta_bar, gamma=gamma,
-            max_iterations=k,
-        )
-        if sol_cp.status != "infeasible":
-            ev = evaluate_solution(
-                sol_cp.x_opt, instance, "ccg",
-                sol_cp.obj_value, sol_cp.models_embedded,
-                sol_cp.solve_time,
-                model_type, model_params,
-                delta_bar, gamma,
-                n_held_out=config["evaluation"]["n_held_out"],
-            )
-            ccg_feas.append(ev.feasibility_rate)
-        else:
-            ccg_feas.append(0.0)
-
-    fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(k_values, random_feas, "o--", label="Random scenarios",
-            color="orange")
-    ax.plot(k_values, ccg_feas, "s-", label="C&CG (adversarial)",
-            color="blue")
-    ax.set_xlabel("Number of embedded models $k$")
-    ax.set_ylabel("Held-out feasibility rate")
-    ax.set_title("Efficiency: Adversarial vs. Random Scenario Selection")
-    ax.axhline(y=1.0, color="green", linestyle="--", alpha=0.3)
-    ax.set_ylim(-0.05, 1.1)
-    ax.legend()
-    ax.grid(alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "efficiency.png"), dpi=150)
-    plt.close()
-    print(f"Saved efficiency plot to {save_dir}/efficiency.png")
-
-    # Save data
-    eff_df = pd.DataFrame({
-        "k": k_values,
-        "random_feasibility": random_feas,
-        "ccg_feasibility": ccg_feas,
-    })
-    eff_df.to_csv(os.path.join(save_dir, "efficiency.csv"), index=False)
-
-
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--sweep", choices=["gamma", "noise",
-                                            "efficiency", "all"],
+                                            "all"],
                         default="all")
     parser.add_argument("--plot-only", action="store_true",
                         help="Only plot from existing CSVs")
@@ -313,9 +218,6 @@ if __name__ == "__main__":
             plot_gamma_sweep()
         if args.sweep in ["noise", "all"]:
             plot_noise_sweep()
-        if args.sweep in ["efficiency", "all"]:
-            # efficiency needs re-running
-            print("Efficiency plot requires running experiments.")
     else:
         if args.sweep in ["gamma", "all"]:
             run_gamma_sweep()
@@ -323,5 +225,3 @@ if __name__ == "__main__":
         if args.sweep in ["noise", "all"]:
             run_noise_sweep()
             plot_noise_sweep()
-        if args.sweep in ["efficiency", "all"]:
-            plot_efficiency_comparison()

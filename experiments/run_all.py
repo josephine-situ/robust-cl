@@ -17,7 +17,6 @@ from src.data.generate import synthetic_nonlinear
 from src.methods.nominal import solve_nominal
 from src.methods.robust_classification import solve_robust_classification
 from src.methods.wrapper import solve_wrapper
-from src.methods.random_scenarios import solve_random_scenarios
 from src.methods.cp import solve_cp
 from src.evaluation.metrics import evaluate_all
 
@@ -82,18 +81,6 @@ def run_experiment(config):
     # print(f"    obj={results['wrapper'].obj_value:.4f}, "
     #       f"status={results['wrapper'].status}, "
     #       f"models={results['wrapper'].models_embedded}")
-
-    # # --- Method 4: Random Scenarios ---
-    # print("\n[5] Solving RANDOM SCENARIOS...")
-    # random_cfg = config["methods"]["random_scenarios"]
-    # results["random"] = solve_random_scenarios(
-    #     instance, model_type, model_params,
-    #     delta_bar=delta_bar, gamma=gamma,
-    #     n_scenarios=random_cfg["n_scenarios"],
-    # )
-    # print(f"    obj={results['random'].obj_value:.4f}, "
-    #       f"status={results['random'].status}, "
-    #       f"models={results['random'].models_embedded}")
 
     # --- Method 5: CP ---
     print("\n[6] Solving CP...")

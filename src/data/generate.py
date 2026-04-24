@@ -31,6 +31,12 @@ class ProblemInstance:
     f_true: Optional[Callable] = None
 
 
+def _synthetic_f_true(x):
+    """x can be (d,) or (n, d)."""
+    x = np.atleast_2d(x)
+    return np.sum(x ** 2, axis=1) + 0.5 * np.prod(x, axis=1)
+
+
 def synthetic_nonlinear(n_train: int = 200,
                         n_features: int = 2,
                         noise_std: float = 0.1,
@@ -49,10 +55,7 @@ def synthetic_nonlinear(n_train: int = 200,
     rng = np.random.RandomState(seed)
 
     # Ground truth function
-    def f_true(x):
-        """x can be (d,) or (n, d)."""
-        x = np.atleast_2d(x)
-        return np.sum(x ** 2, axis=1) + 0.5 * np.prod(x, axis=1)
+    f_true = _synthetic_f_true
 
     # Generate training data spread over [0, 1]^d
     X_train = rng.uniform(0, 1, size=(n_train, n_features))
