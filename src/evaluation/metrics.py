@@ -10,7 +10,7 @@ For each solution x*, evaluate:
 
 import numpy as np
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import Optional, List, Callable, Any
 
 from src.data.generate import ProblemInstance
 from src.models.train import retrain_on_perturbed
@@ -19,125 +19,164 @@ from src.utils.perturbations import sample_multiple_perturbations
 
 @dataclass
 class EvaluationResult:
-    """Evaluation of a single solution."""
+    """Evaluation of a single solution over prescriptive test set."""
     method: str
-    obj_value: float
+    mean_obj_value: float            # average GT objective over test set
     models_embedded: int
-    solve_time: float
-    iterations: Optional[int]
+    mean_solve_time: float           # average time per prescriptive solve
+    mean_iterations: Optional[float] # average iterations per solve (for CP)
 
-    # Ground truth (if available)
-    true_constraint_value: Optional[float]  # f_true(x*)
-    true_feasible: Optional[bool]           # f_true(x*) <= b
+    # Feasibility metrics
+    feasibility_rate: float        # fraction of test set that is fully feasible (all constraints)
+    constraint_violation_rates: List[float] # violation rate per constraint on test set
+    mean_constraint_violations: List[float] # average violation magnitude (max(0, output-rhs)) per constraint
+    
+    true_feasible: Optional[bool] = None # Added for syntactic convenience when n_test=1
+    true_constraint_value: Optional[float] = None # Added for syntactic convenience when n_test=1
+    worst_case_violation: Optional[float] = None # Added for syntactic convenience when n_test=1
 
-    # Held-out perturbation evaluation
-    feasibility_rate: float        # fraction feasible
-    worst_case_violation: float    # max_m f(x*; theta*(delta_m)) - b
-    mean_prediction: float         # average prediction across scenarios
-    prediction_std: float          # std of predictions
 
-
-def evaluate_solution(x_opt: np.ndarray,
-                      instance: ProblemInstance,
-                      method_name: str,
-                      obj_value: float,
-                      models_embedded: int,
-                      solve_time: float,
-                      model_type: str = "rf",
-                      model_params: dict = None,
-                      delta_bar: float = 0.2,
-                      gamma: float = 5.0,
-                      n_held_out: int = 100,
-                      seed: int = 42,
-                      iterations: Optional[int] = None,
-                      ) -> EvaluationResult:
+def evaluate_prescriptive_performance(solver_fn: Callable,
+                                      instance: ProblemInstance,
+                                      method_name: str,
+                                      **solver_kwargs) -> EvaluationResult:
     """
-    Evaluate a solution x_opt against held-out perturbations
-    and (optionally) ground truth.
+    Evaluates a solver using prescriptive evaluation over a test set.
+    For each test row, the contextual variables are fixed, and the solver
+    optimizes the decision variables. The resulting prescription is
+    evaluated against Ground Truth (GT) models.
     """
-    n = len(instance.y_train)
-    b = instance.constraint_rhs
-    x_2d = np.atleast_2d(x_opt)
+    import time
+    
+    n_test = instance.X_test.shape[0] if instance.X_test.size > 0 else 1
+    
+    obj_values = []
+    solve_times = []
+    iterations_list = []
+    
+    # Feasibility tracking
+    n_constraints = len(instance.constraints)
+    all_feasible_count = 0
+    constraint_violations = np.zeros((n_test, n_constraints))
 
-    # --- Ground truth evaluation ---
-    true_val = None
-    true_feas = None
-    if instance.f_true is not None:
-        true_val = instance.f_true(x_opt)[0] if x_opt.ndim == 1 \
-            else instance.f_true(x_opt)
-        true_feas = bool(true_val <= b)
+    # Keep original bounds
+    orig_lb = instance.variable_lb.copy()
+    orig_ub = instance.variable_ub.copy()
 
-    # --- Held-out perturbation evaluation ---
-    held_out_deltas = sample_multiple_perturbations(
-        n, delta_bar, gamma, n_held_out, seed=seed + 9999,
-    )
+    for i in range(n_test):
+        # 1. Update bounds for context variables
+        if instance.X_test.size > 0:
+            context = instance.X_test[i]
+            for j, c_idx in enumerate(instance.context_var_indices):
+                instance.variable_lb[c_idx] = context[j]
+                instance.variable_ub[c_idx] = context[j]
+        
+        # 2. Call solver
+        start_time = time.time()
+        result = solver_fn(instance, **solver_kwargs)
+        if isinstance(result, tuple):
+            result = result[0]
+        solve_time = time.time() - start_time
+        
+        solve_times.append(solve_time)
+        
+        if getattr(result, 'iterations', None) is not None:
+            iterations_list.append(result.iterations)
 
-    predictions = []
-    for delta in held_out_deltas:
-        m = retrain_on_perturbed(
-            instance.X_train, instance.y_train, delta,
-            model_type, model_params,
-        )
-        pred = m.predict(x_2d)[0]
-        predictions.append(pred)
+        # 3. Evaluate Ground Truth
+        if result.status == "optimal":
+            x_opt = result.x_opt
+            
+            # Objective
+            if instance.gt_objective is not None:
+                obj_val = instance.gt_objective(x_opt)
+                if isinstance(obj_val, np.ndarray):
+                    obj_val = obj_val[0] if obj_val.size == 1 else obj_val.item()
+                obj_values.append(float(obj_val))
+            else:
+                obj_values.append(result.obj_value)
+                
+            # Constraints
+            all_c_feasible = True
+            for c_idx, constraint in enumerate(instance.constraints):
+                gt_model = instance.gt_constraints[c_idx]
+                
+                c_val = gt_model(x_opt)
+                if isinstance(c_val, np.ndarray):
+                    c_val = c_val[0] if c_val.size == 1 else c_val.item()
+                
+                violation = max(0.0, float(c_val) - constraint.rhs)
+                constraint_violations[i, c_idx] = violation
+                
+                if violation > 1e-4:
+                    all_c_feasible = False
+                    
+            if all_c_feasible:
+                all_feasible_count += 1
+                
+        else:
+            # Infeasible problem
+            # Depending on how we evaluate, maybe we just penalize
+            obj_values.append(np.inf)
+            constraint_violations[i, :] = np.inf
+            
+    # Restore original bounds
+    instance.variable_lb = orig_lb
+    instance.variable_ub = orig_ub
 
-    predictions = np.array(predictions)
-    feasible_flags = predictions <= b
+    # Remove infs for mean calculation of obj if there are valid ones
+    valid_objs = [o for o in obj_values if o != np.inf]
+    mean_obj = np.mean(valid_objs) if valid_objs else np.inf
+    
+    # Calculate constraint violation rates
+    violation_rates = []
+    mean_violations = []
+    for c_idx in range(n_constraints):
+        c_vis = constraint_violations[:, c_idx]
+        valid_c_vis = c_vis[c_vis != np.inf]
+        
+        if len(valid_c_vis) > 0:
+            violation_rates.append(np.mean(valid_c_vis > 1e-4))
+            mean_violations.append(np.mean(valid_c_vis))
+        else:
+            violation_rates.append(1.0)
+            mean_violations.append(np.inf)
+
+    true_feasible = (all_feasible_count == 1) if n_test == 1 else None
+    true_constraint_value = float(c_val) if n_test == 1 and all_c_feasible is not None else None # Last c_val
+    worst_case_violation = float(np.max(constraint_violations[constraint_violations != np.inf])) if np.any(constraint_violations != np.inf) else np.inf
 
     return EvaluationResult(
         method=method_name,
-        obj_value=obj_value,
-        models_embedded=models_embedded,
-        solve_time=solve_time,
-        iterations=iterations,
-        true_constraint_value=true_val,
-        true_feasible=true_feas,
-        feasibility_rate=np.mean(feasible_flags),
-        worst_case_violation=np.max(predictions) - b,
-        mean_prediction=np.mean(predictions),
-        prediction_std=np.std(predictions),
+        mean_obj_value=float(mean_obj),
+        models_embedded=sum(len(c.models_data) for c in instance.constraints), # Assuming this represents structural complexity
+        mean_solve_time=float(np.mean(solve_times)),
+        mean_iterations=float(np.mean(iterations_list)) if iterations_list else None,
+        feasibility_rate=float(all_feasible_count / n_test),
+        constraint_violation_rates=[float(v) for v in violation_rates],
+        mean_constraint_violations=[float(v) for v in mean_violations],
+        true_feasible=true_feasible,
+        true_constraint_value=true_constraint_value,
+        worst_case_violation=worst_case_violation
     )
 
 
-def evaluate_all(results: dict,
+def evaluate_all(solver_fns: dict,
                  instance: ProblemInstance,
-                 model_type: str = "rf",
-                 model_params: dict = None,
-                 delta_bar: float = 0.2,
-                 gamma: float = 5.0,
-                 n_held_out: int = 100,
-                 seed: int = 42) -> List[EvaluationResult]:
+                 **solver_kwargs) -> List[EvaluationResult]:
     """
-    Evaluate all method results.
+    Evaluate multiple solvers using prescriptive performance.
 
     Parameters
     ----------
-    results : dict mapping method_name -> SolutionResult
+    solver_fns : dict mapping method_name -> solver callable
+    solver_kwargs : common kwargs strictly passed to solvers
     """
     evaluations = []
-    for method_name, sol in results.items():
-        if sol.status == "infeasible":
-            evaluations.append(EvaluationResult(
-                method=method_name,
-                obj_value=np.inf,
-                models_embedded=sol.models_embedded,
-                solve_time=sol.solve_time,
-                iterations=sol.iterations,
-                true_constraint_value=None,
-                true_feasible=None,
-                feasibility_rate=0.0,
-                worst_case_violation=np.inf,
-                mean_prediction=np.inf,
-                prediction_std=0.0,
-            ))
-            continue
-
-        ev = evaluate_solution(
-            sol.x_opt, instance, method_name,
-            sol.obj_value, sol.models_embedded, sol.solve_time,
-            model_type, model_params,
-            delta_bar, gamma, n_held_out, seed,
-            iterations=sol.iterations,
+    for method_name, solver_fn in solver_fns.items():
+        print(f"Evaluating solving method: {method_name.upper()}...")
+        ev = evaluate_prescriptive_performance(
+            solver_fn, instance, method_name, **solver_kwargs
         )
         evaluations.append(ev)
 

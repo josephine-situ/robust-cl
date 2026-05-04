@@ -20,7 +20,8 @@ from src.models.train import train_model
 from src.models.embed import embed_model
 
 
-def _train_bootstrap_ensemble(instance: ProblemInstance,
+def _train_bootstrap_ensemble(X_train: np.ndarray,
+                              y_train: np.ndarray,
                               model_type: str,
                               model_params: dict,
                               n_estimators: int,
@@ -28,13 +29,13 @@ def _train_bootstrap_ensemble(instance: ProblemInstance,
     """Train P models via bootstrap resampling."""
     rng = np.random.RandomState(seed)
     models = []
-    n = len(instance.y_train)
+    n = len(y_train)
 
     for p in range(n_estimators):
         # Bootstrap sample
         idx = rng.choice(n, size=n, replace=True)
-        X_boot = instance.X_train[idx]
-        y_boot = instance.y_train[idx]
+        X_boot = X_train[idx]
+        y_boot = y_train[idx]
 
         # Vary random state for each model
         params = (model_params or {}).copy()
@@ -59,10 +60,21 @@ def solve_wrapper(instance: ProblemInstance,
     
     start = time.time()
     
-    # Train ensemble
-    ensemble = _train_bootstrap_ensemble(
-        instance, model_type, model_params, n_estimators, seed
-    )
+    models_embedded = 0
+    # Pre-train ensemble for each model in each constraint
+    trained_ensembles_cache = {}
+    trained_constraints = []
+    for c_idx, constraint in enumerate(instance.constraints):
+        constraint_trained_ensembles = []
+        for m_idx, model_data in enumerate(constraint.models_data):
+            md_id = id(model_data)
+            if md_id not in trained_ensembles_cache:
+                ensemble = _train_bootstrap_ensemble(
+                    model_data.X_train, model_data.y_train, model_type, model_params, n_estimators, seed + c_idx*100 + m_idx
+                )
+                trained_ensembles_cache[md_id] = ensemble
+            constraint_trained_ensembles.append((model_data.weight, trained_ensembles_cache[md_id]))
+        trained_constraints.append(constraint_trained_ensembles)
 
     opt = gp.Model("wrapper")
     opt.Params.OutputFlag = 0
@@ -84,33 +96,43 @@ def solve_wrapper(instance: ProblemInstance,
         GRB.MINIMIZE,
     )
 
-    # Embed each estimator
-    f_preds = []
-    for p, ml_model in enumerate(ensemble):
-        f_p = embed_model(
-            opt, ml_model, x,
-            instance.variable_lb, instance.variable_ub,
-            name_prefix=f"wrapper_{p}", rho=rho
-        )
-        f_preds.append(f_p)
+    M_val = 1e4  # Big-M
+    embedded_models_cache = {}
 
-    # Binary variables for violation indicators
-    z = opt.addVars(P, vtype=GRB.BINARY, name="z_wrapper")
-
-    # Big-M constraints: if z_p = 1, constraint must hold
-    M_val = 1e4  # Should be calibrated to problem
-    b = instance.constraint_rhs
-    for p in range(P):
+    for c_idx, constraint_ensembles in enumerate(trained_constraints):
+        constraint = instance.constraints[c_idx]
+        
+        # Binary variables for violation indicators for this constraint
+        z = opt.addVars(P, vtype=GRB.BINARY, name=f"z_wrapper_c{c_idx}")
+        
+        for p in range(P):
+            f_pred_vars = []
+            
+            for m_idx, (weight, ensemble) in enumerate(constraint_ensembles):
+                ml_model = ensemble[p]
+                m_id = id(ml_model)
+                if m_id not in embedded_models_cache:
+                    f_p = embed_model(
+                        opt, ml_model, x,
+                        instance.variable_lb, instance.variable_ub,
+                        name_prefix=f"wrapper_c{c_idx}_m{m_idx}_p{p}", rho=rho
+                    )
+                    embedded_models_cache[m_id] = f_p
+                    models_embedded += 1
+                f_pred_vars.append(weight * embedded_models_cache[m_id])
+            
+            # Big-M constraint
+            opt.addConstr(
+                gp.quicksum(f_pred_vars) <= constraint.rhs + M_val * (1 - z[p]),
+                name=f"wrapper_indicator_c{c_idx}_p{p}",
+            )
+            
+        # At least (1 - alpha) fraction must be satisfied for THIS constraint
         opt.addConstr(
-            f_preds[p] <= b + M_val * (1 - z[p]),
-            name=f"wrapper_indicator_{p}",
+            (1.0 / P) * gp.quicksum(z[p] for p in range(P)) >= 1 - alpha,
+            name=f"wrapper_chance_c{c_idx}",
         )
 
-    # At least (1 - alpha) fraction must be satisfied
-    opt.addConstr(
-        (1.0 / P) * gp.quicksum(z[p] for p in range(P)) >= 1 - alpha,
-        name="wrapper_chance",
-    )
 
     opt.optimize()
     elapsed = time.time() - start
@@ -121,7 +143,7 @@ def solve_wrapper(instance: ProblemInstance,
             x_opt=x_opt,
             obj_value=opt.ObjVal,
             status="optimal",
-            models_embedded=P,
+            models_embedded=models_embedded,
             solve_time=elapsed,
         )
     else:
@@ -129,6 +151,6 @@ def solve_wrapper(instance: ProblemInstance,
             x_opt=np.zeros(d),
             obj_value=np.inf,
             status="infeasible",
-            models_embedded=P,
+            models_embedded=models_embedded,
             solve_time=elapsed,
         )

@@ -34,10 +34,21 @@ def solve_nominal(instance: ProblemInstance,
     import time
 
     start = time.time()
-    # Train model on noisy data
-    ml_model = train_model(
-        instance.X_train, instance.y_train, model_type, model_params
-    )
+    
+    # Pre-train all nominal models and deduplicate by MLModelData object identity
+    trained_models_cache = {}
+    trained_constraints = []
+    for c_idx, constraint in enumerate(instance.constraints):
+        constraint_trained_models = []
+        for m_idx, model_data in enumerate(constraint.models_data):
+            md_id = id(model_data)
+            if md_id not in trained_models_cache:
+                ml_model = train_model(
+                    model_data.X_train, model_data.y_train, model_type, model_params
+                )
+                trained_models_cache[md_id] = ml_model
+            constraint_trained_models.append((model_data.weight, trained_models_cache[md_id]))
+        trained_constraints.append(constraint_trained_models)
 
     # Build optimization model
     opt = gp.Model("nominal")
@@ -59,13 +70,28 @@ def solve_nominal(instance: ProblemInstance,
         GRB.MINIMIZE,
     )
 
-    # Embed ML model as constraint
-    f_pred = embed_model(
-        opt, ml_model, x,
-        instance.variable_lb, instance.variable_ub,
-        name_prefix="nominal", rho=rho
-    )
-    opt.addConstr(f_pred <= instance.constraint_rhs, name="ml_constr")
+    models_embedded = 0
+    embedded_models_cache = {} # id(ml_model) -> f_pred Gurobi variable
+
+    # Embed ML models as constraints
+    for c_idx, constraint_models in enumerate(trained_constraints):
+        constraint = instance.constraints[c_idx]
+        
+        f_pred_vars = []
+        for m_idx, (weight, ml_model) in enumerate(constraint_models):
+            m_id = id(ml_model)
+            if m_id not in embedded_models_cache:
+                f_pred = embed_model(
+                    opt, ml_model, x,
+                    instance.variable_lb, instance.variable_ub,
+                    name_prefix=f"nominal_c{c_idx}_m{m_idx}", rho=rho
+                )
+                embedded_models_cache[m_id] = f_pred
+                models_embedded += 1
+                
+            f_pred_vars.append(weight * embedded_models_cache[m_id])
+            
+        opt.addConstr(gp.quicksum(f_pred_vars) <= constraint.rhs, name=f"ml_constr_{c_idx}")
 
     opt.optimize()
     elapsed = time.time() - start
@@ -76,7 +102,7 @@ def solve_nominal(instance: ProblemInstance,
             x_opt=x_opt,
             obj_value=opt.ObjVal,
             status="optimal",
-            models_embedded=1,
+            models_embedded=models_embedded,
             solve_time=elapsed,
         )
     else:
@@ -84,6 +110,6 @@ def solve_nominal(instance: ProblemInstance,
             x_opt=np.zeros(d),
             obj_value=np.inf,
             status="infeasible",
-            models_embedded=1,
+            models_embedded=models_embedded,
             solve_time=elapsed,
         )

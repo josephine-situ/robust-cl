@@ -1,6 +1,6 @@
 data:
   # Synthetic test function (start here before real case studies)
-  type: "synthetic"  # or "food_basket" later
+  type: "synthetic"  # Change to "gastric_cancer" to run the study
   n_train: 200
   n_features: 2
   noise_std: 0.1  # sigma for label noise

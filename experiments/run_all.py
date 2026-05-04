@@ -13,7 +13,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.data.generate import synthetic_nonlinear
+from src.data.generate import synthetic_nonlinear, gastric_cancer
 from src.methods.nominal import solve_nominal
 from src.methods.robust_classification import solve_robust_classification
 from src.methods.wrapper import solve_wrapper
@@ -34,13 +34,16 @@ def run_experiment(config):
     print("=" * 60)
 
     # --- Generate data ---
-    print("\n[1] Generating problem instance...")
-    instance = synthetic_nonlinear(
-        n_train=config["data"]["n_train"],
-        n_features=config["data"]["n_features"],
-        noise_std=config["data"]["noise_std"],
-    )
-    print(f"    n_train={len(instance.y_train)}, "
+    print(f"\n[1] Generating problem instance ({config['data']['type']})...")
+    if config["data"]["type"] == "gastric_cancer":
+        instance = gastric_cancer()
+    else:
+        instance = synthetic_nonlinear(
+            n_train=config["data"]["n_train"],
+            n_features=config["data"]["n_features"],
+            noise_std=config["data"]["noise_std"],
+        )
+    print(f"    n_train (model 1)={len(instance.constraints[0].models_data[0].y_train)}, "
           f"d={instance.n_features}, "
           f"noise_std={config['data']['noise_std']}")
 
@@ -48,75 +51,52 @@ def run_experiment(config):
     model_params = config["model"]["params"]
     delta_bar = config["uncertainty"]["delta_bar"]
     gamma = config["uncertainty"]["gamma"]
-
-    results = {}
+    
+    from functools import partial
+    
+    solver_fns = {}
 
     # --- Method 1: Nominal ---
-    print("\n[2] Solving NOMINAL...")
-    results["nominal"] = solve_nominal(
-        instance, model_type, model_params, rho=0.0
+    solver_fns["nominal"] = partial(
+        solve_nominal, model_type=model_type, model_params=model_params, rho=0.0
     )
-    print(f"    obj={results['nominal'].obj_value:.4f}, "
-          f"status={results['nominal'].status}")
           
     # --- Method 1.5: Robust Param ---
-    print("\n[2.5] Solving NOMINAL WITH ROBUST PARAMETER...")
     robust_param_cfg = config["methods"].get("robust_param", {})
     robust_rho = robust_param_cfg.get("rho", 0.0)
-    results["robust_param"] = solve_nominal(
-        instance, model_type, model_params, rho=robust_rho
+    solver_fns["robust_param"] = partial(
+        solve_nominal, model_type=model_type, model_params=model_params, rho=robust_rho
     )
-    print(f"    obj={results['robust_param'].obj_value:.4f}, "
-          f"status={results['robust_param'].status}")
 
     # --- Method 2: Robust Classification ---
-    print("\n[3] Solving ROBUST CLASSIFICATION...")
-    results["robust_cls"] = solve_robust_classification(
-        instance, model_type, model_params,
+    solver_fns["robust_cls"] = partial(
+        solve_robust_classification, model_type=model_type, model_params=model_params,
         delta_bar=delta_bar, gamma=gamma, rho=0.0,
-        n_perturbations=config["methods"]["robust_classification"]
-            .get("n_perturbations", 50),
+        n_perturbations=config["methods"]["robust_classification"].get("n_perturbations", 50)
     )
-    print(f"    obj={results['robust_cls'].obj_value:.4f}, "
-          f"status={results['robust_cls'].status}")
 
     # --- Method 3: Wrapper ---
-    print("\n[4] Solving WRAPPER...")
     wrapper_cfg = config["methods"]["wrapper"]
-    results["wrapper"] = solve_wrapper(
-        instance, model_type, model_params, rho=0.0,
+    solver_fns["wrapper"] = partial(
+        solve_wrapper, model_type=model_type, model_params=model_params, rho=0.0,
         n_estimators=wrapper_cfg["n_estimators"],
-        alpha=wrapper_cfg["alpha"],
+        alpha=wrapper_cfg["alpha"]
     )
-    print(f"    obj={results['wrapper'].obj_value:.4f}, "
-          f"status={results['wrapper'].status}, "
-          f"models={results['wrapper'].models_embedded}")
 
     # --- Method 5: CP ---
-    print("\n[6] Solving CP...")
     cp_cfg = config["methods"]["cp"]
-    cp_result, cp_trace = solve_cp(
-        instance, model_type, model_params,
+    solver_fns["cp"] = partial(
+        solve_cp, model_type=model_type, model_params=model_params,
         delta_bar=delta_bar, gamma=gamma, rho=0.0,
         max_iterations=cp_cfg["max_iterations"],
         separation_strategy=cp_cfg["separation_strategy"],
-        n_greedy_candidates=cp_cfg["n_greedy_candidates"],
+        n_greedy_candidates=cp_cfg["n_greedy_candidates"]
     )
-    results["cp"] = cp_result
-    print(f"    obj={results['cp'].obj_value:.4f}, "
-          f"status={results['cp'].status}, "
-          f"models={results['cp'].models_embedded}, "
-          f"iters={results['cp'].iterations}")
 
     # --- Evaluate all ---
-    print("\n[7] Evaluating all methods on held-out perturbations...")
-    eval_cfg = config["evaluation"]
+    print("\n[Evaluating all methods prescriptively...]")
     evaluations = evaluate_all(
-        results, instance,
-        model_type, model_params,
-        delta_bar, gamma,
-        n_held_out=eval_cfg["n_held_out"],
-        seed=eval_cfg["seed"],
+        solver_fns, instance
     )
 
     # --- Results table ---
@@ -124,16 +104,13 @@ def run_experiment(config):
     for ev in evaluations:
         rows.append({
             "method": ev.method,
-            "objective": ev.obj_value,
+            "objective": ev.mean_obj_value,
             "models_embedded": ev.models_embedded,
-            "solve_time": ev.solve_time,
-            "iterations": ev.iterations,
-            "true_feasible": ev.true_feasible,
-            "true_constraint_val": ev.true_constraint_value,
+            "solve_time": ev.mean_solve_time,
+            "iterations": ev.mean_iterations,
             "feasibility_rate": ev.feasibility_rate,
-            "worst_violation": ev.worst_case_violation,
-            "pred_mean": ev.mean_prediction,
-            "pred_std": ev.prediction_std,
+            "constraint_violation_rates": ev.constraint_violation_rates,
+            "worst_violation": ev.mean_constraint_violations,
         })
 
     df = pd.DataFrame(rows)
@@ -145,18 +122,8 @@ def run_experiment(config):
     # --- Save ---
     os.makedirs("results", exist_ok=True)
     df.to_csv("results/results.csv", index=False)
-
-    # Save CP trace
-    if cp_trace.violations:
-        trace_df = pd.DataFrame({
-            "iteration": list(range(1, len(cp_trace.violations) + 1)),
-            "obj_value": cp_trace.objectives,
-            "violation": cp_trace.violations,
-        })
-        trace_df.to_csv("results/cp_trace.csv", index=False)
-
-    return df, cp_trace
-
+    
+    return df, None
 
 if __name__ == "__main__":
     config = load_config()

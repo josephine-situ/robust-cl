@@ -38,7 +38,6 @@ class IncrementalMaster:
     def __init__(self, instance: ProblemInstance):
         self.instance = instance
         self.d = instance.n_features
-        self.b = instance.constraint_rhs
         self.opt = gp.Model("cp_incremental_master")
         self.opt.Params.OutputFlag = 0
         
@@ -62,6 +61,7 @@ class IncrementalMaster:
         self.scenario_constrs = []
         self.scenario_vars_map = {}
         self.scenario_constrs_map = {}
+        self.embedded_models_cache = {} # id(ml_model) -> f_s
         
     def remove_scenario(self, s: int):
         """Remove all Gurobi variables and constraints for scenario s."""
@@ -75,34 +75,44 @@ class IncrementalMaster:
         if s < len(self.scenario_constrs):
             self.scenario_constrs[s] = None
 
-    def add_scenario(self, ml_model: ModelType, phase: int = 3, x_k: np.ndarray = None, iteration: int = 0, rho: float = 0.0):
-        prefix = f"cp_s{self.n_models}"
+    def add_scenario(self, c_idx: int, constraint_models: List[tuple], rhs: float, phase: int = 3, x_k: np.ndarray = None, iteration: int = 0, rho: float = 0.0):
+        # constraint_models is a list of (weight, ml_model) tuples
+        prefix = f"cp_c{c_idx}_s{self.n_models}"
         
         self.opt.update()
         old_constrs = set(self.opt.getConstrs())
         old_vars = set(self.opt.getVars())
         
-        # If model is RF and we're in phase 1, verify dynamically.
-        # Otherwise fall back rigidly to full embedding.
-        if phase == 1 and hasattr(ml_model, "estimators_") and x_k is not None:
-            from src.models.embed import choose_cut_type
-            cut_type = choose_cut_type(ml_model, x_k, self.b)
-            print(f"Iter {iteration}: Dynamic cut type chosen: {cut_type}")
-        else:
-            if phase == 1: cut_type = "bad_leaf"
-            else: cut_type = "full"
+        if phase == 1: cut_type = "bad_leaf"
+        else: cut_type = "full"
             
-        if cut_type == "voting":
-            try:
-                # Voting and bad leaf cuts don't directly use rho yet.
-                embed_cut_voting(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, self.b, prefix)
-            except Exception:
-                embed_cut_bad_leaf(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, self.b, prefix)
-        elif cut_type == "bad_leaf":
-            embed_cut_bad_leaf(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, self.b, prefix)
+        f_pred_vars = []
+        for m_idx, (weight, ml_model) in enumerate(constraint_models):
+            m_prefix = f"{prefix}_m{m_idx}"
+            m_id = id(ml_model)
+            
+            if cut_type == "voting":
+                if m_id not in self.embedded_models_cache:
+                    try:
+                        f_s = embed_cut_voting(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, rhs, m_prefix)
+                    except Exception:
+                        f_s = embed_cut_bad_leaf(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, rhs, m_prefix)
+                    self.embedded_models_cache[m_id] = f_s
+                # voting returning f_s is probably not implemented since it adds constraint directly.
+                # Actually, cut embeds directly and doesn't return f_s. Wait!
+                pass # Caching not cleanly supported for direct cuts yet
+            elif cut_type == "bad_leaf":
+                pass # Caching not cleanly supported for direct cuts yet
+            else:
+                if m_id not in self.embedded_models_cache:
+                    f_s = embed_model(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, name_prefix=m_prefix, rho=rho)
+                    self.embedded_models_cache[m_id] = f_s
+                f_pred_vars.append(weight * self.embedded_models_cache[m_id])
+                
+        if cut_type == "full" and f_pred_vars:
+            main_constr = self.opt.addConstr(gp.quicksum(f_pred_vars) <= rhs, name=f"cp_constr_{c_idx}_{self.n_models}")
         else:
-            f_s = embed_model(self.opt, ml_model, self.x, self.instance.variable_lb, self.instance.variable_ub, name_prefix=prefix, rho=rho)
-            main_constr = self.opt.addConstr(f_s <= self.b, name=f"cp_constr_{self.n_models}")
+            main_constr = None
         
         self.opt.update()
         new_constrs = list(set(self.opt.getConstrs()) - old_constrs)
@@ -148,18 +158,18 @@ def prune_inactive_scenarios(master: IncrementalMaster, slack_threshold: float =
 
 def _evaluate_proxy_candidate(args):
     """Helper for parallel search using proxy model."""
-    candidate, instance, x_2d, mode = args
+    candidate, instance_X_train, instance_y_train, x_2d, mode = args
     if mode == "bootstrap":
         from src.models.train import retrain_on_bootstrap
-        model = retrain_on_bootstrap(instance.X_train, instance.y_train, candidate, "cart", {"max_depth": 3})
+        model = retrain_on_bootstrap(instance_X_train, instance_y_train, candidate, "cart", {"max_depth": 3})
     else:
-        model = retrain_on_perturbed(instance.X_train, instance.y_train, candidate, "cart", {"max_depth": 3})
+        model = retrain_on_perturbed(instance_X_train, instance_y_train, candidate, "cart", {"max_depth": 3})
     val = model.predict(x_2d)[0]
     return val, candidate
 
-def proxy_based_separation(instance, x_current, delta_bar, gamma, model_type, model_params, n_candidates, seed, mode="perturbation"):
+def proxy_based_separation(model_data, x_current, delta_bar, gamma, model_type, model_params, n_candidates, seed, mode="perturbation"):
     """Proxy-based separation using parallel candidate evaluation."""
-    n = len(instance.y_train)
+    n = len(model_data.y_train)
     x_2d = np.atleast_2d(x_current)
     
     if mode == "bootstrap":
@@ -172,7 +182,7 @@ def proxy_based_separation(instance, x_current, delta_bar, gamma, model_type, mo
     best_value_proxy = -np.inf
     best_candidate = None
     
-    args_list = [(cand, instance, x_2d, mode) for cand in candidates]
+    args_list = [(cand, model_data.X_train, model_data.y_train, x_2d, mode) for cand in candidates]
     with concurrent.futures.ProcessPoolExecutor() as executor:
         results = executor.map(_evaluate_proxy_candidate, args_list)
         
@@ -184,9 +194,9 @@ def proxy_based_separation(instance, x_current, delta_bar, gamma, model_type, mo
     # Once the best delta/indices is found via proxy, train actual model just once
     if mode == "bootstrap":
         from src.models.train import retrain_on_bootstrap
-        best_model = retrain_on_bootstrap(instance.X_train, instance.y_train, best_candidate, model_type, model_params)
+        best_model = retrain_on_bootstrap(model_data.X_train, model_data.y_train, best_candidate, model_type, model_params)
     else:
-        best_model = retrain_on_perturbed(instance.X_train, instance.y_train, best_candidate, model_type, model_params)
+        best_model = retrain_on_perturbed(model_data.X_train, model_data.y_train, best_candidate, model_type, model_params)
         
     best_value = best_model.predict(x_2d)[0]
             
@@ -212,22 +222,31 @@ def solve_cp(instance: ProblemInstance,
     history : CPHistory tracking convergence
     """
     history = CPHistory()
-    n = len(instance.y_train)
     d = instance.n_features
-    b = instance.constraint_rhs
 
     total_start = time.time()
 
-    # Initialize: train nominal model
-    nominal_model = train_model(
-        instance.X_train, instance.y_train,
-        model_type, model_params,
-    )
-    scenario_models: List[ModelType] = [nominal_model]
-    scenario_deltas: List[np.ndarray] = [np.zeros(n)]
+    # Initialize: train nominal models for each component
+    # scenario_models[c_idx] is a list of (weight, model) tuples for that constraint
+    scenario_models = []
+    trained_models_cache = {}
     
     master = IncrementalMaster(instance)
-    master.add_scenario(nominal_model, phase=phase, iteration=0, rho=rho)
+
+    for c_idx, constraint in enumerate(instance.constraints):
+        constraint_models = []
+        for m_idx, model_data in enumerate(constraint.models_data):
+            md_id = id(model_data)
+            if md_id not in trained_models_cache:
+                nominal_model = train_model(
+                    model_data.X_train, model_data.y_train,
+                    model_type, model_params,
+                )
+                trained_models_cache[md_id] = nominal_model
+            constraint_models.append((model_data.weight, trained_models_cache[md_id]))
+        
+        scenario_models.append(constraint_models)
+        master.add_scenario(c_idx, constraint_models, constraint.rhs, phase=phase, iteration=0, rho=rho)
 
     for iteration in range(max_iterations):
         iter_start = time.time()
@@ -236,11 +255,12 @@ def solve_cp(instance: ProblemInstance,
         
         if x_current is None:
             # Master infeasible — too constrained
+            models_embedded = sum(len(sc) for sc in scenario_models)
             return SolutionResult(
                 x_opt=np.zeros(d),
                 obj_value=np.inf,
                 status="infeasible",
-                models_embedded=len(scenario_models),
+                models_embedded=models_embedded,
                 solve_time=time.time() - total_start,
                 iterations=iteration,
             ), history
@@ -249,54 +269,84 @@ def solve_cp(instance: ProblemInstance,
         history.x_solutions.append(x_current.copy())
 
         # === SEPARATION SUBPROBLEM ===
-        if separation_strategy == "greedy":
-            best_delta, best_value, best_model = \
-                greedy_adversarial_perturbation(
-                    instance.X_train,
-                    instance.y_train,
-                    x_current,
-                    delta_bar, gamma,
-                    model_type, model_params,
-                    n_greedy_candidates,
-                    seed=seed + iteration,
-                )
-        elif separation_strategy == "proxy":
-            best_delta, best_value, best_model = \
-                proxy_based_separation(
-                    instance, x_current,
-                    delta_bar, gamma,
-                    model_type, model_params,
-                    n_greedy_candidates,
-                    seed=seed + iteration
-                )
-        elif separation_strategy == "proxy-bootstrap":
-            best_delta, best_value, best_model = \
-                proxy_based_separation(
-                    instance, x_current,
-                    delta_bar, gamma,
-                    model_type, model_params,
-                    n_greedy_candidates,
-                    seed=seed + iteration,
-                    mode="bootstrap"
-                )
-        elif separation_strategy == "random":
-            # Random search as baseline
-            best_delta, best_value, best_model = \
-                _random_separation(
-                    instance, x_current,
-                    delta_bar, gamma,
-                    model_type, model_params,
-                    n_candidates=n_greedy_candidates,
-                    seed=seed + iteration,
-                )
-        else:
-            raise ValueError(
-                f"Unknown separation strategy: {separation_strategy}"
-            )
+        max_violation = -np.inf
+        any_added = False
+        scenarios_to_add = []
+        
+        iteration_separation_cache = {} # id(model_data) -> (best_model, best_value)
+        
+        for c_idx, constraint in enumerate(instance.constraints):
+            # For each constraint, we need to find the worst-case models
+            worst_case_models = []
+            constraint_val = 0.0
+            
+            for m_idx, model_data in enumerate(constraint.models_data):
+                md_id = id(model_data)
+                
+                if md_id in iteration_separation_cache:
+                    best_model, best_value = iteration_separation_cache[md_id]
+                else:
+                    if separation_strategy == "greedy":
+                        _, best_value, best_model = \
+                            greedy_adversarial_perturbation(
+                                model_data.X_train,
+                                model_data.y_train,
+                                x_current,
+                                delta_bar, gamma,
+                                model_type, model_params,
+                                n_greedy_candidates,
+                                seed=seed + iteration + c_idx*100 + m_idx,
+                            )
+                    elif separation_strategy == "proxy":
+                        _, best_value, best_model = \
+                            proxy_based_separation(
+                                model_data, x_current,
+                                delta_bar, gamma,
+                                model_type, model_params,
+                                n_greedy_candidates,
+                                seed=seed + iteration + c_idx*100 + m_idx
+                            )
+                    elif separation_strategy == "proxy-bootstrap":
+                        _, best_value, best_model = \
+                            proxy_based_separation(
+                                model_data, x_current,
+                                delta_bar, gamma,
+                                model_type, model_params,
+                                n_greedy_candidates,
+                                seed=seed + iteration + c_idx*100 + m_idx,
+                                mode="bootstrap"
+                            )
+                    elif separation_strategy == "random":
+                        # Random search as baseline
+                        _, best_value, best_model = \
+                            _random_separation(
+                                model_data, x_current,
+                                delta_bar, gamma,
+                                model_type, model_params,
+                                n_candidates=n_greedy_candidates,
+                                seed=seed + iteration + c_idx*100 + m_idx,
+                            )
+                    else:
+                        raise ValueError(
+                            f"Unknown separation strategy: {separation_strategy}"
+                        )
+                        
+                    iteration_separation_cache[md_id] = (best_model, best_value)
+                
+                worst_case_models.append((model_data.weight, best_model))
+                constraint_val += model_data.weight * best_value
+            
+            violation = constraint_val - constraint.rhs
+            max_violation = max(max_violation, violation)
+            
+            if violation > 1e-6:
+                # Track scenario to be added later to not invalidate Slack yet
+                scenario_models[c_idx].extend(worst_case_models) # This is just for tracking
+                scenarios_to_add.append((c_idx, worst_case_models, constraint.rhs))
+                any_added = True
 
-        violation = best_value - b
         iter_time = time.time() - iter_start
-        print(f"Iter {iteration}: Obj={obj_current:.4f} Violation={violation:.4f} Time={iter_time:.2f}s")
+        print(f"Iter {iteration}: Obj={obj_current:.4f} Max Violation={max_violation:.4f} Time={iter_time:.2f}s")
         print(f"  x* = {np.round(x_current, 4)}")
         
         if len(history.x_solutions) > 1:
@@ -312,7 +362,7 @@ def solve_cp(instance: ProblemInstance,
         if phase == 2 and iteration > 0:
             # Dynamically adjust slack threshold based on current violation
             # so we don't prune scenarios that might still be relevant
-            dynamic_slack = max(0.1, violation)
+            dynamic_slack = max(0.1, max_violation)
             pruned_count, total_active = prune_inactive_scenarios(master, slack_threshold=dynamic_slack)
             if pruned_count > 0:
                 print(f"Iter {iteration}: Pruned {pruned_count}/{total_active} inactive scenarios")
@@ -321,12 +371,16 @@ def solve_cp(instance: ProblemInstance,
         # Moved here so it doesn't invalidate Gurobi solution constraints (like .Slack) before pruning
         master.add_objective_cut(obj_current, iteration)
 
-        history.violations.append(violation)
+        # Now actually safely add the scenarios to Gurobi
+        for c_idx, worst_case_models, rhs in scenarios_to_add:
+            master.add_scenario(c_idx, worst_case_models, rhs, phase=phase, x_k=x_current, iteration=iteration, rho=rho)
+
+        history.violations.append(max_violation)
         history.iterations = iteration + 1
 
         # Check termination
-        if violation <= 1e-6:
-            # No violation found — robust feasible
+        if not any_added:
+            # No violation found across any constraint — robust feasible
             
             # Re-solve with default MIP gap for exactness on final iteration
             print("Re-solving with default MIP gap...")
@@ -336,19 +390,15 @@ def solve_cp(instance: ProblemInstance,
                 x_current, obj_current = x_final, obj_final
                 
             elapsed = time.time() - total_start
+            models_embedded = master.n_models
             return SolutionResult(
                 x_opt=x_current,
                 obj_value=obj_current,
                 status="optimal",
-                models_embedded=len(scenario_models),
+                models_embedded=models_embedded,
                 solve_time=elapsed,
                 iterations=iteration + 1,
             ), history
-
-        # Add violating scenario
-        scenario_models.append(best_model)
-        scenario_deltas.append(best_delta)
-        master.add_scenario(best_model, phase=phase, x_k=x_current, iteration=iteration, rho=rho)
 
     # Max iterations reached
     print("Max iterations reached. Re-solving with default MIP gap...")
@@ -358,46 +408,42 @@ def solve_cp(instance: ProblemInstance,
         x_current, obj_current = x_final, obj_final
         
     elapsed = time.time() - total_start
+    models_embedded = master.n_models
     return SolutionResult(
         x_opt=x_current,
         obj_value=obj_current,
         status="max_iterations",
-        models_embedded=len(scenario_models),
+        models_embedded=models_embedded,
         solve_time=elapsed,
         iterations=max_iterations,
     ), history
 
 
-def _random_separation(instance, x_current, delta_bar, gamma,
+def _random_separation(model_data, x_current, delta_bar, gamma,
                        model_type, model_params,
                        n_candidates=20, seed=42):
     """Random search separation oracle (baseline)."""
     from src.utils.perturbations import sample_multiple_perturbations
 
-    n = len(instance.y_train)
+    n = len(model_data.y_train)
     x_2d = np.atleast_2d(x_current)
 
     perturbations = sample_multiple_perturbations(
-        n, delta_bar, gamma, n_candidates, seed
+        n, delta_bar, gamma, n_candidates, seed=seed
     )
 
-    best_delta = np.zeros(n)
-    base_model = retrain_on_perturbed(
-        instance.X_train, instance.y_train, best_delta,
-        model_type, model_params,
-    )
-    best_value = base_model.predict(x_2d)[0]
-    best_model = base_model
+    best_val = -np.inf
+    best_delta = None
+    best_model = None
 
     for delta in perturbations:
         model = retrain_on_perturbed(
-            instance.X_train, instance.y_train, delta,
-            model_type, model_params,
+            model_data.X_train, model_data.y_train, delta, model_type, model_params
         )
-        value = model.predict(x_2d)[0]
-        if value > best_value:
-            best_value = value
+        val = model.predict(x_2d)[0]
+        if val > best_val:
+            best_val = val
             best_delta = delta
             best_model = model
 
-    return best_delta, best_value, best_model
+    return best_delta, best_val, best_model

@@ -6,10 +6,13 @@ Progress this week
 
 Robust CL
 - Replicate chemotherapy results from CL paper (will need to account for features that are not decision variables).
+    - In progress. Need to check data processing - does code exist?
+    - Adjust code for multiple models.
 - Trust region
 - Added robust parameters (like global optimization paper), maybe add relaxation.
 - PGD? But need gradients.
 - Ensemble (both in nominal case and with robust wrapper approach)
+- Soft decision trees
 
 Global Optimization
 - Iteratively improve solution

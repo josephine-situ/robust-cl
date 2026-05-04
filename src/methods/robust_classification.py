@@ -41,44 +41,60 @@ def solve_robust_classification(
 
     This is an approximation to true robust training.
     """
+    from sklearn.metrics import mean_squared_error
     
     start = time.time()
-    n = len(instance.y_train)
-    perturbations = sample_multiple_perturbations(
-        n, delta_bar, gamma, n_perturbations, seed
-    )
-    # Add the zero perturbation
-    perturbations = [np.zeros(n)] + perturbations
+    models_embedded = 0
+    
+    # Train robust models for constraints
+    trained_models_cache = {}
+    trained_constraints = []
+    
+    for c_idx, constraint in enumerate(instance.constraints):
+        constraint_trained_models = []
+        for m_idx, model_data in enumerate(constraint.models_data):
+            md_id = id(model_data)
+            
+            if md_id not in trained_models_cache:
+                n = len(model_data.y_train)
+                perturbations = sample_multiple_perturbations(
+                    n, delta_bar, gamma, n_perturbations, seed + c_idx*100 + m_idx
+                )
+                # Add the zero perturbation
+                perturbations = [np.zeros(n)] + perturbations
 
-    # Train a model on each perturbation
-    models = []
-    for delta in perturbations:
-        m = retrain_on_perturbed(
-            instance.X_train, instance.y_train, delta,
-            model_type, model_params,
-        )
-        models.append(m)
+                # Train a model on each perturbation
+                models = []
+                for delta in perturbations:
+                    m = retrain_on_perturbed(
+                        model_data.X_train, model_data.y_train, delta,
+                        model_type, model_params,
+                    )
+                    models.append(m)
 
-    # For each model, compute worst-case loss across all
-    # perturbed datasets
-    from sklearn.metrics import mean_squared_error
+                best_model = None
+                best_worst_loss = np.inf
 
-    best_model = None
-    best_worst_loss = np.inf
+                for model in models:
+                    worst_loss = 0.0
+                    for delta in perturbations:
+                        y_pert = model_data.y_train + delta
+                        pred = model.predict(model_data.X_train)
+                        loss = mean_squared_error(y_pert, pred)
+                        worst_loss = max(worst_loss, loss)
 
-    for model in models:
-        worst_loss = 0.0
-        for delta in perturbations:
-            y_pert = instance.y_train + delta
-            pred = model.predict(instance.X_train)
-            loss = mean_squared_error(y_pert, pred)
-            worst_loss = max(worst_loss, loss)
+                    if worst_loss < best_worst_loss:
+                        best_worst_loss = worst_loss
+                        best_model = model
+                
+                trained_models_cache[md_id] = best_model
+                
+            constraint_trained_models.append((model_data.weight, trained_models_cache[md_id]))
+            
+        trained_constraints.append(constraint_trained_models)
 
-        if worst_loss < best_worst_loss:
-            best_worst_loss = worst_loss
-            best_model = model
 
-    # Embed the selected robust model
+    # Embed the selected robust models
     opt = gp.Model("robust_classification")
     opt.Params.OutputFlag = 0
 
@@ -97,12 +113,26 @@ def solve_robust_classification(
         GRB.MINIMIZE,
     )
 
-    f_pred = embed_model(
-        opt, best_model, x,
-        instance.variable_lb, instance.variable_ub,
-        name_prefix="robust_cls", rho=rho
-    )
-    opt.addConstr(f_pred <= instance.constraint_rhs, name="ml_constr")
+    embedded_models_cache = {}
+
+    for c_idx, constraint_models in enumerate(trained_constraints):
+        constraint = instance.constraints[c_idx]
+        
+        f_pred_vars = []
+        for m_idx, (weight, best_model) in enumerate(constraint_models):
+            m_id = id(best_model)
+            if m_id not in embedded_models_cache:
+                f_pred = embed_model(
+                    opt, best_model, x,
+                    instance.variable_lb, instance.variable_ub,
+                    name_prefix=f"robust_cls_c{c_idx}_m{m_idx}", rho=rho
+                )
+                embedded_models_cache[m_id] = f_pred
+                models_embedded += 1
+            f_pred_vars.append(weight * embedded_models_cache[m_id])
+            
+        opt.addConstr(gp.quicksum(f_pred_vars) <= constraint.rhs, name=f"ml_constr_{c_idx}")
+
 
     opt.optimize()
     elapsed = time.time() - start
@@ -113,7 +143,7 @@ def solve_robust_classification(
             x_opt=x_opt,
             obj_value=opt.ObjVal,
             status="optimal",
-            models_embedded=1,
+            models_embedded=models_embedded,
             solve_time=elapsed,
         )
     else:
@@ -121,6 +151,6 @@ def solve_robust_classification(
             x_opt=np.zeros(d),
             obj_value=np.inf,
             status="infeasible",
-            models_embedded=1,
+            models_embedded=models_embedded,
             solve_time=elapsed,
         )
