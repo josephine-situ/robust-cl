@@ -145,6 +145,8 @@ def solve_wrapper(instance: ProblemInstance,
             status="optimal",
             models_embedded=models_embedded,
             solve_time=elapsed,
+            opt=opt,
+            x=x
         )
     else:
         return SolutionResult(
@@ -153,4 +155,6 @@ def solve_wrapper(instance: ProblemInstance,
             status="infeasible",
             models_embedded=models_embedded,
             solve_time=elapsed,
+            opt=opt,
+            x=x
         )

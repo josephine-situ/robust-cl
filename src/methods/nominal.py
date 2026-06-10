@@ -23,6 +23,8 @@ class SolutionResult:
     status: str
     models_embedded: int
     solve_time: float
+    opt: gp.Model = None
+    x: list = None
     iterations: Optional[int] = None
 
 
@@ -104,6 +106,8 @@ def solve_nominal(instance: ProblemInstance,
             status="optimal",
             models_embedded=models_embedded,
             solve_time=elapsed,
+            opt=opt,
+            x=x,
         )
     else:
         return SolutionResult(
@@ -112,4 +116,6 @@ def solve_nominal(instance: ProblemInstance,
             status="infeasible",
             models_embedded=models_embedded,
             solve_time=elapsed,
+            opt=opt,
+            x=x,
         )

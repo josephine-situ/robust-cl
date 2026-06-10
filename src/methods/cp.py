@@ -262,6 +262,8 @@ def solve_cp(instance: ProblemInstance,
                 status="infeasible",
                 models_embedded=models_embedded,
                 solve_time=time.time() - total_start,
+                opt=master.opt,
+                x=master.x,
                 iterations=iteration,
             ), history
 
@@ -397,6 +399,8 @@ def solve_cp(instance: ProblemInstance,
                 status="optimal",
                 models_embedded=models_embedded,
                 solve_time=elapsed,
+                opt=master.opt,
+                x=master.x,
                 iterations=iteration + 1,
             ), history
 
@@ -415,6 +419,8 @@ def solve_cp(instance: ProblemInstance,
         status="max_iterations",
         models_embedded=models_embedded,
         solve_time=elapsed,
+        opt=master.opt,
+        x=master.x,
         iterations=max_iterations,
     ), history
 
