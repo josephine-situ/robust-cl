@@ -178,11 +178,22 @@ def embed_cut_voting(model: gp.Model, ml_model: ModelType, x_vars: list, var_lb:
         # If x is in any bad leaf, z_tree[t] can be 1
         for i, leaf in enumerate(bad_leaves):
             z_out = model.addVars(len(x_vars), 2, vtype=GRB.BINARY, name=f"{name_prefix}_bl_{t}_{i}")
+            
+            # Keep track of which variable conditions are active (not fixed)
+            active_z = []
+            
             for j in range(len(x_vars)):
+                # If variable is fixed, we can just skip adding logical big-M constraints
+                if var_lb[j] == var_ub[j]:
+                    model.addConstr(z_out[j, 0] == 0)
+                    model.addConstr(z_out[j, 1] == 0)
+                    continue
+
                 if leaf["bounds_lower"][j] > var_lb[j]:
                     # To relax the constraint x_j <= L_j - e, we need it to hold up to x_j = var_ub[j]
                     M_lower = var_ub[j] - leaf["bounds_lower"][j] + 1e-4
                     model.addConstr(x_vars[j] <= leaf["bounds_lower"][j] - 1e-4 + M_lower * (1 - z_out[j, 0] + z_tree[t]))
+                    active_z.append(z_out[j, 0])
                 else:
                     model.addConstr(z_out[j, 0] == 0)
                     
@@ -190,10 +201,12 @@ def embed_cut_voting(model: gp.Model, ml_model: ModelType, x_vars: list, var_lb:
                     # To relax x_j >= U_j + e, we need it to hold down to x_j = var_lb[j]
                     M_upper = leaf["bounds_upper"][j] - var_lb[j] + 1e-4
                     model.addConstr(x_vars[j] >= leaf["bounds_upper"][j] + 1e-4 - M_upper * (1 - z_out[j, 1] + z_tree[t]))
+                    active_z.append(z_out[j, 1])
                 else:
                     model.addConstr(z_out[j, 1] == 0)
-                    
-            model.addConstr(gp.quicksum(z_out[j, k] for j in range(len(x_vars)) for k in range(2)) >= 1)
+            
+            if active_z:
+                model.addConstr(gp.quicksum(active_z) >= 1)
             
     model.addConstr(gp.quicksum(z_tree) <= int(alpha_valid * len(z_tree)))
 
@@ -241,20 +254,31 @@ def embed_cut_bad_leaf(model: gp.Model, ml_model: ModelType, x_vars: list, var_l
                 # Add a cut to prevent x from falling exactly in this leaf's bounds
                 # We need at least one feature to be outside the leaf bounds
                 z_out = model.addVars(len(x_vars), 2, vtype=GRB.BINARY, name=f"{name_prefix}_bl_{t}_{i}")
+                
+                active_z = []
+                
                 for j in range(len(x_vars)):
+                    if var_lb[j] == var_ub[j]:
+                        model.addConstr(z_out[j, 0] == 0)
+                        model.addConstr(z_out[j, 1] == 0)
+                        continue
+
                     if leaf["bounds_lower"][j] > var_lb[j]:
                         M_lower = var_ub[j] - leaf["bounds_lower"][j] + 1e-4
                         model.addConstr(x_vars[j] <= leaf["bounds_lower"][j] - 1e-4 + M_lower * (1 - z_out[j, 0]))
+                        active_z.append(z_out[j, 0])
                     else:
                         model.addConstr(z_out[j, 0] == 0)
                         
                     if leaf["bounds_upper"][j] < var_ub[j]:
                         M_upper = leaf["bounds_upper"][j] - var_lb[j] + 1e-4
                         model.addConstr(x_vars[j] >= leaf["bounds_upper"][j] + 1e-4 - M_upper * (1 - z_out[j, 1]))
+                        active_z.append(z_out[j, 1])
                     else:
                         model.addConstr(z_out[j, 1] == 0)
                         
-                model.addConstr(gp.quicksum(z_out[j, k] for j in range(len(x_vars)) for k in range(2)) >= 1)
+                if active_z:
+                    model.addConstr(gp.quicksum(active_z) >= 1)
 
 # --- Full Embedding (Phase 3) ---
 
@@ -286,24 +310,70 @@ def embed_single_tree(model: gp.Model,
     d = len(x_vars)
 
     # Binary variables: which leaf is x in?
-    z = model.addVars(
-        n_leaves, vtype=GRB.BINARY, name=f"{name_prefix}_z"
-    )
+    z = {}
+    valid_leaves = []
 
-    # Exactly one leaf
-    model.addConstr(
-        gp.quicksum(z[l] for l in range(n_leaves)) == 1,
-        name=f"{name_prefix}_one_leaf",
-    )
-
-    # Leaf region constraints (big-M)
     for l, leaf in enumerate(leaves):
+        # 1. Pre-check if leaf is strictly infeasible due to contextual / fixed variables
+        feasible_leaf = True
         for j in range(d):
             lb_orig = leaf["bounds_lower"][j]
             ub_orig = leaf["bounds_upper"][j]
 
             # Shrink bounds for parameter robustness according to rho ||a_j x||_q
-            # Simplified version for when we have axis-aligned splits.
+            if rho > 0:
+                if lb_orig > -np.inf:
+                    lb_tight = lb_orig / (1 - rho) if lb_orig >= 0 else lb_orig / (1 + rho)
+                else:
+                    lb_tight = -np.inf
+
+                if ub_orig < np.inf:
+                    ub_tight = ub_orig / (1 + rho) if ub_orig >= 0 else ub_orig / (1 - rho)
+                else:
+                    ub_tight = np.inf
+            else:
+                lb_tight = lb_orig
+                ub_tight = ub_orig
+            
+            # If the fixed bounds don't overlap the leaf tight bounds, it's infeasible
+            if var_lb[j] > ub_tight + 1e-6 or var_ub[j] < lb_tight - 1e-6:
+                feasible_leaf = False
+                break
+                
+        if feasible_leaf:
+            valid_leaves.append(l)
+
+    # Return immediately if out of distribution / no feasible leaves
+    if len(valid_leaves) == 0:
+        f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
+        model.addConstr(f_var == 0, name=f"{name_prefix}_pred_inf")
+        return f_var
+
+    # Add z variables only for valid leaves
+    for l in valid_leaves:
+        z[l] = model.addVar(
+            vtype=GRB.BINARY, name=f"{name_prefix}_z_{l}"
+        )
+
+    # Exactly one leaf
+    model.addConstr(
+        gp.quicksum(z[l] for l in valid_leaves) == 1,
+        name=f"{name_prefix}_one_leaf",
+    )
+
+    # Leaf region constraints (big-M)
+    for l in valid_leaves:
+        leaf = leaves[l]
+        for j in range(d):
+            # If the variable is fixed, we already filtered infeasible leaves above.
+            # No need for constraints if var_lb[j] == var_ub[j]
+            if var_lb[j] == var_ub[j]:
+                continue
+                
+            lb_orig = leaf["bounds_lower"][j]
+            ub_orig = leaf["bounds_upper"][j]
+
+            # Shrink bounds for parameter robustness according to rho ||a_j x||_q
             if rho > 0:
                 if lb_orig > -np.inf:
                     lb_leaf_tight = lb_orig / (1 - rho) if lb_orig >= 0 else lb_orig / (1 + rho)
@@ -344,7 +414,7 @@ def embed_single_tree(model: gp.Model,
     )
     model.addConstr(
         f_var == gp.quicksum(
-            leaves[l]["value"] * z[l] for l in range(n_leaves)
+            leaves[l]["value"] * z[l] for l in valid_leaves
         ),
         name=f"{name_prefix}_pred_def",
     )
