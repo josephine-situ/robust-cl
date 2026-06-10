@@ -19,6 +19,7 @@ class MLModelData:
     y_train: np.ndarray        # (n,)
     y_true: Optional[np.ndarray] # (n,) - True noiseless values if available
     weight: float = 1.0        # Coefficient for this model in the constraint (w_i in sum(w_i * f_i(x)) <= b)
+    obj_weight: float = 0.0    # Coefficient for this model in the objective
 
 @dataclass
 class LearnedConstraint:
@@ -51,6 +52,10 @@ class ProblemInstance:
     # Ground Truth Models or Callables (trained on full data: Train + Test)
     gt_objective: Any           # Callable or trained ML model for objective
     gt_constraints: List[Any]   # Callables or trained ML models for constraints
+    
+    constraint_model_configs: Optional[List[dict]] = None # List of dicts specifying {"model_type": str, "model_params": dict} for each constraint model data
+
+    X_train: Optional[np.ndarray] = None # (n_train, d_context) - contextual features for training evaluation
 
 def _synthetic_f_true(x):
     """x can be (d,) or (n, d)."""
@@ -133,7 +138,10 @@ def synthetic_nonlinear(n_train: int = 200,
     )
 
 
-def gastric_cancer(test_frac: float = 0.2, seed: int = 42) -> ProblemInstance:
+def gastric_cancer(seed: int = 42, 
+                   cv_tune_gt: bool = False,
+                   constraint_cv: bool = False,
+                   fixed_constraint_configs: dict = None) -> ProblemInstance:
     """
     Chemotherapy regimen design for advanced gastric cancer.
 
@@ -143,12 +151,17 @@ def gastric_cancer(test_frac: float = 0.2, seed: int = 42) -> ProblemInstance:
     Each trial arm is encoded with three variables per drug
     (binary indicator, instantaneous dose mg/m², average weekly
     dose mg/m²/week) plus nine contextual covariates that are
-    fixed at their training-set means during optimisation.
+    fixed at their training-set means during optimization.
 
-    Learned constraint : DLT proportion  ≤  0.5
-    Linear objective   : proxy for maximising overall survival
-                         (negative ridge-regression coefficients
-                          of OS on features).
+    Learned constraints: Overall survival
+                         Grade 3/4 constitutional
+                         Grade 3/4 gastrointestinal
+                         Grade 3/4 infection
+                         Grade 4 blood (max of neutro/thrombo/leuko/lympho/anemia)
+                         Any DLT: DLT = 1 − Π_g (1 − group_score_g))
+                          
+    Linear objective: maximize overall survival
+
     """
     import pandas as pd
     import os
@@ -159,15 +172,22 @@ def gastric_cancer(test_frac: float = 0.2, seed: int = 42) -> ProblemInstance:
     # ------------------------------------------------------------------
     # 1.  Load raw data
     # ------------------------------------------------------------------
-    csv_path = os.path.join(os.path.dirname(__file__),
-                            "Gastric_Cancer_Spreadsheet.csv")
+    csv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                            "data", "Gastric_Cancer_Spreadsheet.csv")
     df = pd.read_csv(csv_path, encoding="latin-1")
+    print(f"Step 1: Loaded raw data. Observations: {len(df)}")
 
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
     def _float(v):
         """Coerce to float; return NaN on failure."""
+        # if isinstance(v, str):
+        #     v = v.strip()
+        #     if v.upper() == "NC":
+        #         return 0.0  # Test if the authors assumed Not Collected = 0%
+        #     # Also watch out for strings like "<0.01" or "12%" which float() will choke on
+        #     v = v.replace('<', '').replace('>', '').replace('%', '')
         try:
             return float(v)
         except (ValueError, TypeError):
@@ -175,8 +195,7 @@ def gastric_cancer(test_frac: float = 0.2, seed: int = 42) -> ProblemInstance:
 
     # ------------------------------------------------------------------
     # 2.  Identify the set of "common" drugs (appear in ≥ 3 arms)
-    #     This mirrors Bertsimas et al. who keep drugs seen ≥ 1 time
-    #     but we need a threshold for the feature matrix to be useful.
+    #     This results in 28 drugs (same as CL paper) and 84 drug-related features.
     # ------------------------------------------------------------------
     drug_records: list[dict] = []          # one entry per (arm, drug-slot)
     for row_i, (_, row) in enumerate(df.iterrows()):
@@ -206,10 +225,10 @@ def gastric_cancer(test_frac: float = 0.2, seed: int = 42) -> ProblemInstance:
 
     # ------------------------------------------------------------------
     # 3.  Build drug-feature matrix  (n_rows × 3·n_drugs)
-    #     Per drug:  [binary, instantaneous_dose, avg_weekly_dose]
+    #     Per drug:  [binary, instantaneous_dose, avg_daily_dose]
     #
     #     instantaneous_dose = dose per administration  (mg/m²)
-    #     avg_weekly_dose    = dose × n_doses / (cycle_days / 7)
+    #     avg_daily_dose    = dose × n_doses / cycle_days
     #     following Bertsimas et al. §3.1
     # ------------------------------------------------------------------
     n_rows = len(df)
@@ -222,21 +241,13 @@ def gastric_cancer(test_frac: float = 0.2, seed: int = 42) -> ProblemInstance:
         ri = rec["row_i"]
         drug_feat[ri, 3 * d]     = 1.0                            # binary
         drug_feat[ri, 3 * d + 1] = rec["dose"]                    # inst. dose
-        cycle_wk = rec["cycle"] / 7.0
-        drug_feat[ri, 3 * d + 2] = rec["dose"] * rec["ndose"] / cycle_wk  # avg wk
+        drug_feat[ri, 3 * d + 2] = rec["dose"] * rec["ndose"] / rec["cycle"]  # avg daily dose
 
     n_drug_features = 3 * n_drugs
 
     # ------------------------------------------------------------------
-    # 4.  Contextual features  (9 covariates from Bertsimas Table 3)
+    # 4.  Contextual features  (9 covariates from CL appendix)
     # ------------------------------------------------------------------
-    CTX_NAMES = [
-        "frac_male", "age_med", "mean_ecog",
-        "primary_stomach", "primary_gej",
-        "prior_palliative_chemo", "asia",
-        "n_patient", "pub_year",
-    ]
-
     def _mean_ecog(row):
         """Weighted ECOG from the various reporting formats."""
         parts = {}
@@ -282,124 +293,163 @@ def gastric_cancer(test_frac: float = 0.2, seed: int = 42) -> ProblemInstance:
     X_all = np.hstack([drug_feat, ctx_data])        # (n_rows, n_feat)
 
     # ------------------------------------------------------------------
-    # 5.  Outcome:  DLT proportion  (learned constraint)
-    #
-    #     "Grouped Independent" approach (Bertsimas §2.2 / App. A.3):
-    #       • Each toxicity *group* score = max rate in that group
-    #       • DLT = 1 − Π_g (1 − group_score_g)
-    #
-    #     Groups:
-    #       – Grade 4 blood  (Neutro4, Thrombo4, Leuko4, Anemia4)
-    #       – Grade 3/4 nonblood groups  (excl. alopecia, nausea, vomiting)
-    #         one group per CTCAE category
+    # 5. Extract Raw Outcomes & Features
     # ------------------------------------------------------------------
-    NONBLOOD_GROUP_COLS = {
+    # Extract OS
+    y_os_raw = np.array([_float(row.get("OS")) for _, row in df.iterrows()])
+
+    # Extract the 5 Grade 4 blood toxicities
+    BLOOD_G4_COLS = ["Neutro4", "Thrombo4", "Leuko4", "Anemia4", "Lympho4"]
+    blood_data = np.zeros((n_rows, len(BLOOD_G4_COLS)))
+    for i, col in enumerate(BLOOD_G4_COLS):
+        blood_data[:, i] = np.array([_float(row.get(col)) for _, row in df.iterrows()])
+
+    # Extract the 4 specific Grade 3/4 non-blood toxicities used for DLTs
+    NONBLOOD_DLT_COLS = {
         "constitutional": "CONSTITUTIONAL_34",
-        "epidermal":      "EPIDERMAL_34",
-        "gi":             "GINONV_34",      # GI excl. nausea/vomiting
+        "gi":             "GINONV_34",
         "infection":      "INFECTION_34",
-        "neurological":   "NEUROLOGICAL_34",
-        "pain":           "PAIN_34",
-        "pulmonary":      "PULMONARY_34",
-        "renal":          "RENAL_34",
-        "vascular":       "VASCULAR_34",
-        "cardiac":        "CARDIO_34",
-        "metabolic":      "METABOLIC_34",
-        "hemorrhage":     "HEMORRHAGE_34",
-        "allergy":        "ALLERGY_34",
+        "neurological":   "NEUROLOGICAL_34"
     }
-    BLOOD_G4_COLS = ["Neutro4", "Thrombo4", "Leuko4", "Anemia4"]
-
-    def _compute_dlt(row):
-        group_scores: list[float] = []
-
-        # Grade-4 blood (single group, score = max over subtypes)
-        blood_vals = [_float(row.get(c)) for c in BLOOD_G4_COLS]
-        blood_vals = [v for v in blood_vals if not np.isnan(v)]
-        if blood_vals:
-            group_scores.append(max(blood_vals))
-
-        # Nonblood groups
-        for _, col in NONBLOOD_GROUP_COLS.items():
-            v = _float(row.get(col))
-            if not np.isnan(v) and v > 0:
-                group_scores.append(v)
-
-        if not group_scores:
-            return np.nan
-
-        prob_no_dlt = 1.0
-        for gs in group_scores:
-            prob_no_dlt *= (1.0 - gs)
-        return 1.0 - prob_no_dlt
-
-    y_dlt = np.array([_compute_dlt(row) for _, row in df.iterrows()])
-
-    # Also extract OS (for building the cost-vector proxy)
-    y_os = np.array([_float(row.get("OS")) for _, row in df.iterrows()])
+    nonblood_data = np.zeros((n_rows, len(NONBLOOD_DLT_COLS)))
+    for i, col in enumerate(NONBLOOD_DLT_COLS.values()):
+        nonblood_data[:, i] = np.array([_float(row.get(col)) for _, row in df.iterrows()])
 
     # ------------------------------------------------------------------
-    # 6.  Filter to usable rows
-    #     – non-NaN DLT  (learned constraint target)
-    #     – non-NaN OS   (needed for cost proxy)
-    #     – at least one common drug present
+    # 6. Filter to usable rows (TARGET: 461)
     # ------------------------------------------------------------------
-    has_common_drug = drug_feat[:, ::3].sum(axis=1) > 0
-    valid = (~np.isnan(y_dlt)
-             & ~np.isnan(y_os)
-             & has_common_drug)
 
-    X_valid   = X_all[valid].copy()
-    dlt_valid = y_dlt[valid].copy()
-    os_valid  = y_os[valid].copy()
+    # 1. Exclude rows with missing OS
+    valid_os = ~np.isnan(y_os_raw)
 
-    # Impute remaining NaN features with column means
-    col_mean = np.nanmean(X_valid, axis=0)
-    col_mean = np.where(np.isnan(col_mean), 0.0, col_mean)
-    nan_mask = np.isnan(X_valid)
-    X_valid[nan_mask] = np.take(col_mean, np.where(nan_mask)[1])
+    # Exclude rows with no drugs
+    valid_drug = df['D1_Name'].notna()
 
+    print(f"Step 6: Filtered has OS and drugs. Observations: {np.sum(valid_os & valid_drug)}")
+
+    # 2. Exclude missing ALL blood toxicities (Check ALL blood columns, not just G4)
+    blood_cols_all = [c for c in df.columns if any(k in c for k in ["Neutro", "Thrombo", "Leuko", "Anemia", "Lympho"])]
+    valid_blood = np.array([
+        any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in blood_cols_all)
+        for _, row in df.iterrows()
+    ])
+
+    # 3. Exclude missing ALL Grade 3/4 toxicities (Check ALL G3/4 columns)
+    g34_cols_all = [c for c in df.columns if "34" in c or "4" in c]
+    valid_nonblood = np.array([
+        any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in g34_cols_all)
+        for _, row in df.iterrows()
+    ])
+
+    # Require all three conditions to be met
+    valid_mask = valid_os & valid_drug & valid_blood & valid_nonblood
+
+    print(f"Step 6: Filtered to usable rows. Observations: {np.sum(valid_mask)}")
+
+    # Apply the mask to your arrays
+    X_valid = X_all[valid_mask].copy()
+    os_valid = y_os_raw[valid_mask].copy()
+    blood_valid_raw = blood_data[valid_mask].copy()
+    nonblood_valid_raw = nonblood_data[valid_mask].copy()
+
+    # ------------------------------------------------------------------
+    # 6b. Multiple Imputation for Partial Missingness
+    # ------------------------------------------------------------------
+    from sklearn.experimental import enable_iterative_imputer
+    from sklearn.impute import IterativeImputer
+
+    # Stack contextual features and all raw toxicities so they can borrow information from each other
+    combined_for_imputation = np.hstack([X_valid, blood_valid_raw, nonblood_valid_raw])
+    
+    imputer = IterativeImputer(random_state=seed, max_iter=10)
+    combined_imputed = imputer.fit_transform(combined_for_imputation)
+
+    # Extract the imputed feature and toxicity arrays back out
+    idx_blood_start = X_valid.shape[1]
+    idx_nonblood_start = idx_blood_start + 5
+
+    X_valid = combined_imputed[:, :idx_blood_start]
+    blood_imputed = combined_imputed[:, idx_blood_start:idx_nonblood_start]
+    nonblood_imputed = combined_imputed[:, idx_nonblood_start:]
+
+    # Toxicities represent proportions/probabilities, so clip bounds to [0, 1]
+    blood_imputed = np.clip(blood_imputed, 0, 1)
+    nonblood_imputed = np.clip(nonblood_imputed, 0, 1)
+
+    # ------------------------------------------------------------------
+    # 6c. Compute final derived outcomes from the IMPUTED data
+    # ------------------------------------------------------------------
+    # Grade 4 blood toxicity is the MAX of the 5 individual blood toxicities
+    blood_valid = np.max(blood_imputed, axis=1)
+
+    # Calculate overall DLT = 1 - product(1 - t_i) for the 5 toxicity groups
+    dlt_valid = np.zeros(np.sum(valid_mask))
+    for i in range(np.sum(valid_mask)):
+        prob_no_dlt = (1.0 - blood_valid[i])
+        for j in range(4): # constitutional, gi, infection, neurological
+            prob_no_dlt *= (1.0 - nonblood_imputed[i, j])
+        dlt_valid[i] = 1.0 - prob_no_dlt
+
+    # Extract the individual constraint targets needed for Step 10
+    const_valid = nonblood_imputed[:, 0]
+    gi_valid    = nonblood_imputed[:, 1]
+    inf_valid   = nonblood_imputed[:, 2]
+
+    print(f"Step 6b: Imputed partial missingness and computed outcomes. Observations: {X_valid.shape[0]}")
+
+    # ------------------------------------------------------------------
+    # 7. Train/Test Split.
+    #    Split temporally (training through 2008, testing 2009-2012).
+    #    Remove observations with drugs only seen once in training.
+    #    Exclude trials from test if they have new drugs not in training.
+    # ------------------------------------------------------------------
+    # Define our dimensions to fix NameErrors
     n_samples, n_feat = X_valid.shape
+    
+    pub_year_idx = n_drug_features + 8
+    pub_years = X_valid[:, pub_year_idx]
 
-    # ------------------------------------------------------------------
-    # 7. Train/Test Split
-    # ------------------------------------------------------------------
-    from sklearn.model_selection import train_test_split
-    from sklearn.ensemble import RandomForestRegressor
+    train_mask = pub_years <= 2008
+    test_mask = (pub_years >= 2009) & (pub_years <= 2012)
+    
+    # Extract just the binary drug indicators for all rows: shape (n_samples, n_drugs)
+    drug_indicators = X_valid[:, :n_drug_features:3] > 0
+    
+    # Count how many times each drug appears in the training set
+    train_drug_counts = drug_indicators[train_mask].sum(axis=0)
+    
+    # 1. Exclude test trials with new drugs not seen in training
+    # (A drug is "new" if train_drug_counts == 0)
+    unseen_in_train = train_drug_counts == 0
+    has_unseen_drug = (drug_indicators & unseen_in_train).any(axis=1)
+    test_mask = test_mask & ~has_unseen_drug
+    
+    # 2. Identify "sparse" treatments (drugs seen EXACTLY once in training)
+    # and remove ALL observations (train or test) that use them.
+    sparse_in_train = train_drug_counts == 1
+    has_sparse_drug = (drug_indicators & sparse_in_train).any(axis=1)
+    
+    train_mask = train_mask & ~has_sparse_drug
+    test_mask = test_mask & ~has_sparse_drug
+    
+    # 3. Ensure an arm has at least one valid common drug remaining
+    has_any_drug = drug_indicators.any(axis=1)
+    train_mask = train_mask & has_any_drug
+    test_mask = test_mask & has_any_drug
 
-    indices = np.arange(n_samples)
-    idx_train, idx_test = train_test_split(indices, test_size=test_frac, random_state=seed)
+    idx_train = np.where(train_mask)[0]
+    idx_test = np.where(test_mask)[0]
+
+    print(f"Step 7: Train/Test split complete. Train observations: {len(idx_train)}, Test observations: {len(idx_test)}")
 
     X_train = X_valid[idx_train]
     X_test  = X_valid[idx_test]
     dlt_train = dlt_valid[idx_train]
     os_train  = os_valid[idx_train]
-
-    # ------------------------------------------------------------------
-    # 8.  Cost vector  (linear proxy for maximising OS on train set)
-    #
-    #     Fit a weighted ridge regression  OS ~ X  on training data
-    #     (weights ∝ √n_patients, §3.2 of Bertsimas et al.)
-    #     Then cost = −β̂  so  min cost'x  ≈  max predicted OS.
-    # ------------------------------------------------------------------
-    # Standardise columns for numerically stable regression
-    x_mu  = X_train.mean(axis=0)
-    x_sig = X_train.std(axis=0)
-    x_sig[x_sig == 0] = 1.0
-    Xs = (X_train - x_mu) / x_sig
-
-    # Sample weights proportional to sqrt(n_patients)
-    n_pat_col = n_drug_features + CTX_NAMES.index("n_patient")
-    weights = np.sqrt(np.maximum(X_train[:, n_pat_col], 1.0))
-    W = np.diag(weights / weights.mean())
-
-    lam = 1.0
-    XtWX = Xs.T @ W @ Xs + lam * np.eye(n_feat)
-    XtWy = Xs.T @ W @ os_train
-    beta_std = np.linalg.solve(XtWX, XtWy)
-
-    # Transform back to original scale; negate to get a cost to minimise
-    cost_vector = -(beta_std / x_sig)
+    blood_train = blood_valid[idx_train]
+    const_train = const_valid[idx_train]
+    gi_train = gi_valid[idx_train]
+    inf_train = inf_valid[idx_train]
 
     # ------------------------------------------------------------------
     # 9.  Variable bounds & variable indices
@@ -418,65 +468,220 @@ def gastric_cancer(test_frac: float = 0.2, seed: int = 42) -> ProblemInstance:
             variable_ub[j] = 1.0
 
     # Context variables limits initially just large bounds, will be fixed during prescriptive eval
-    variable_lb[n_drug_features:] = -np.inf
-    variable_ub[n_drug_features:] = np.inf
+    # Making these finite based on X_full correctly bounds the Big-M in Gurobi models
+    X_full = np.concatenate([X_valid, X_test], axis=0) if len(X_test) > 0 else X_valid
+    variable_lb[n_drug_features:] = X_full[:, n_drug_features:].min(axis=0)
+    variable_ub[n_drug_features:] = X_full[:, n_drug_features:].max(axis=0)
 
     decision_var_indices = list(range(n_drug_features))
     context_var_indices = list(range(n_drug_features, n_feat))
 
     # ------------------------------------------------------------------
     # 10.  Constraint RHS
-    #      DLT proportion ≤ 0.5  (median phase-I threshold,
-    #      Bertsimas et al. §2.2)
     # ------------------------------------------------------------------
-    constraint_rhs = 0.5
-
-    constraint1_model_data = MLModelData(
+    constraints = []
+    
+    constraint_targets = {
+        "dlt": dlt_train,
+        "blood": blood_train,
+        "constitutional": const_train,
+        "infection": inf_train,
+        "gi": gi_train
+    }
+    
+    for name, y_target in constraint_targets.items():
+        rhs_val = np.quantile(y_target, 0.6)
+        model_data = MLModelData(
+            X_train=X_train,
+            y_train=y_target,
+            y_true=y_target,
+            weight=1.0,
+            obj_weight=0.0
+        )
+        constraints.append(LearnedConstraint(
+            name=f"{name}_constraint",
+            models_data=[model_data],
+            rhs=rhs_val,
+            f_true=None
+        ))
+        
+    # Inject OS model as an unconstrained bounding system directly applied to the objective
+    os_model_data = MLModelData(
         X_train=X_train,
-        y_train=dlt_train,
-        y_true=dlt_train,
-        weight=1.0
+        y_train=os_train,
+        y_true=os_train,
+        weight=1.0,
+        obj_weight=-1.0 # Maximize OS
     )
-
-    constraint1 = LearnedConstraint(
-        name="dlt_constraint",
-        models_data=[constraint1_model_data],
-        rhs=constraint_rhs,
+    constraints.append(LearnedConstraint(
+        name="os_constraint",
+        models_data=[os_model_data],
+        rhs=np.max(os_train),
         f_true=None
-    )
+    ))
 
     # ------------------------------------------------------------------
-    # 11.  Ground Truth Models (Fit on all data: train + test)
+    # 10.5 Constraint Models parameter selection
     # ------------------------------------------------------------------
-    # Use random forest models as the complex "ground truth"
-    gt_objective_model = RandomForestRegressor(n_estimators=100, random_state=seed)
-    gt_objective_model.fit(X_valid, os_valid)
+    try:
+        from ..models.train import train_best_model_cv, train_model, train_ensemble_model_cv
+    except ImportError:
+        import sys
+
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        if repo_root not in sys.path:
+            sys.path.insert(0, repo_root)
+        from src.models.train import train_best_model_cv, train_model, train_ensemble_model_cv
     
-    # Since cost vector minimizes but we want to maximize OS, our objective in the evaluation
-    # should be the negated OS if we want lower to be better to match optimization, 
-    # or just raw OS. Let's evaluate as negated OS to keep 'lower is better'.
+    cv_param_grids = {
+        "linear": {"alpha": [0.1, 1, 10, 100, 1000], "l1_ratio": np.arange(0.1, 1.0, 0.2)},
+        "svm": {"C": [0.1, 1, 10, 100]},
+        "cart": {"max_depth": [3, 4, 5, 6, 7, 8, 9, 10], "min_samples_leaf": [0.02, 0.04, 0.06], "max_features": [0.4, 0.6, 0.8, 1.0]},
+        "rf": {"n_estimators": [10, 25], "max_features": ["auto"], "max_depth": [2, 3, 4]},
+        "gbm": {"learning_rate": [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2], "max_depth": [2, 3, 4, 5], "n_estimators": [20]},
+        "mlp": {"hidden_layer_sizes": [(10,), (20,), (50,), (100,)]}
+    }
+
+    constraint_model_configs = []
+    
+    if constraint_cv:
+        print("Running CV for constraint models...")
+        for c in constraints:
+            for md in c.models_data:
+                _, best_type, best_params = train_best_model_cv(md.X_train, md.y_train, cv_param_grids, random_state=seed, return_params=True)
+                constraint_model_configs.append({"model_type": best_type, "model_params": best_params})
+    elif fixed_constraint_configs:
+        # User provides exact config
+        for c in constraints:
+            for md in c.models_data:
+                # E.g. {"model_type": "rf", "model_params": {...}}
+                constraint_model_configs.append(fixed_constraint_configs)
+    else:
+        # Default config that nominal.py will fallback to
+        for c in constraints:
+            for md in c.models_data:
+                constraint_model_configs.append({"model_type": "rf", "model_params": {"n_estimators": 50, "max_depth": 5, "random_state": 42}})
+
+    # ------------------------------------------------------------------
+    # 11.  Ground Truth Models (Fit on all data: train + test). 
+    # ------------------------------------------------------------------
+
+    exact_hyperparams = {
+        "dlt": {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
+        "blood": {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 8, "max_features": 1.0}},
+        "constitutional": {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
+        "infection": {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
+        "gi": {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
+        "os": {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 8, "max_features": 1.0}},
+    }
+
+    gt_cv_param_grids = {
+        "rf": {"n_estimators": [20], "max_depth": [4]}
+    }
+
+    # gt_cv_param_grids = {
+    #     "linear": {"alpha": [0.1, 1, 10, 100], "l1_ratio": np.arange(0.1, 1.0, 0.1)},
+    #     "svm": {"C": [0.1, 1, 10, 100]},
+    #     "cart": {"max_depth": [3, 4, 5, 6, 7], "min_samples_leaf": [0.02, 0.04, 0.06], "max_features": [0.4, 0.6, 0.8, 1.0]},
+    #     "rf": {"n_estimators": [10, 25, 125, 250, 500], "max_features": ["auto", 1.0], "max_depth": [2, 4, 6, 8]},
+    #     "gbm": {"learning_rate": [0.01, 0.025, 0.05], "max_depth": [2, 3, 4, 5, 6, "auto"], "n_estimators": [10, 25, 125, 250, 500]},
+    #     "mlp": {"hidden_layer_sizes": [(10,), (20,), (50,), (100,)]}
+    # }
+
+    full_targets = {
+        "dlt": dlt_valid,
+        "blood": blood_valid,
+        "constitutional": const_valid,
+        "infection": inf_valid,
+        "gi": gi_valid,
+        "os": os_valid
+    }
+
+    gt_models = {}
+    print("Training Ground Truth models...")
+    for t_name, y_t in full_targets.items():
+        if cv_tune_gt:
+            # GT Ensemble over best of each class
+            gt_models[t_name] = train_ensemble_model_cv(X_valid, y_t, gt_cv_param_grids, random_state=seed)
+        else:
+            conf = exact_hyperparams[t_name]
+            gt_models[t_name] = train_model(X_valid, y_t, model_type=conf["model_type"], params=conf["params"])
+
+    # Objective is to maximize OS (so c = -1 for OS). We create a callable that returns the predicted OS.
+    # We want to minimize -OS -> maximize OS
     def gt_objective(x):
-        # Model returns OS, we return -OS because optimization is minimization of cost_vector
-        return -gt_objective_model.predict(np.atleast_2d(x))
+        return -gt_models["os"].predict(np.atleast_2d(x))
 
-    gt_dlt_model = RandomForestRegressor(n_estimators=100, random_state=seed)
-    gt_dlt_model.fit(X_valid, dlt_valid)
-    
-    def gt_dlt_constraint(x):
-        return gt_dlt_model.predict(np.atleast_2d(x))
+    gt_constraints = []
+    # Append constraint functions in the same order as `constraints`
+    for c in constraints:
+        target_name = c.name.replace("_constraint", "")
+        # capture the model in a default argument to avoid late-binding loop closures
+        def gt_fn(x, m=gt_models[target_name]):
+            return m.predict(np.atleast_2d(x))
+        gt_constraints.append(gt_fn)
 
     # ------------------------------------------------------------------
     # 12.  Assemble ProblemInstance
     # ------------------------------------------------------------------
+    cost_vector = np.zeros(n_feat)
+    
     return ProblemInstance(
-        X_test=X_test[:, context_var_indices], # Keep only context fields for X_test iteration
-        cost_vector=cost_vector,
+        X_test=X_test,
+        cost_vector=cost_vector, # cost is just -1 * predicted OS, which is handled via obj_weight in the MLModelData for the OS constraint
         variable_lb=variable_lb,
         variable_ub=variable_ub,
         n_features=n_feat,
         decision_var_indices=decision_var_indices,
         context_var_indices=context_var_indices,
-        constraints=[constraint1],
+        constraints=constraints,
         gt_objective=gt_objective,
-        gt_constraints=[gt_dlt_constraint],
+        gt_constraints=gt_constraints,
+        constraint_model_configs=constraint_model_configs,
     )
+
+
+if __name__ == "__main__":
+    import os
+    import pandas as pd
+
+    gastric_cancer_instance = gastric_cancer(cv_tune_gt=False)
+
+    os.makedirs("results", exist_ok=True)
+
+    summary_rows = [
+        {"field": "n_features", "value": gastric_cancer_instance.n_features},
+        {"field": "n_test_rows", "value": gastric_cancer_instance.X_test.shape[0]},
+        {"field": "n_constraints", "value": len(gastric_cancer_instance.constraints)},
+        {"field": "n_decision_vars", "value": len(gastric_cancer_instance.decision_var_indices)},
+        {"field": "n_context_vars", "value": len(gastric_cancer_instance.context_var_indices)},
+        {"field": "cost_vector_norm", "value": float(np.linalg.norm(gastric_cancer_instance.cost_vector))},
+    ]
+    summary_df = pd.DataFrame(summary_rows)
+
+    constraint_rows = []
+    for constraint in gastric_cancer_instance.constraints:
+        constraint_rows.append({
+            "name": constraint.name,
+            "rhs": constraint.rhs,
+            "n_models": len(constraint.models_data),
+            "model_weights": ";".join(str(md.weight) for md in constraint.models_data),
+            "obj_weights": ";".join(str(md.obj_weight) for md in constraint.models_data),
+        })
+    constraint_df = pd.DataFrame(constraint_rows)
+
+    print("\n" + "=" * 60)
+    print("GASTRIC CANCER DEBUG SUMMARY")
+    print("=" * 60)
+    print(summary_df.to_string(index=False))
+    print("\nConstraint details:")
+    print(constraint_df.to_string(index=False))
+
+    summary_path = "results/gastric_cancer_debug_summary.csv"
+    constraints_path = "results/gastric_cancer_debug_constraints.csv"
+    summary_df.to_csv(summary_path, index=False)
+    constraint_df.to_csv(constraints_path, index=False)
+
+    print(f"\nSaved debug summary to {summary_path}")
+    print(f"Saved constraint details to {constraints_path}")
+    
