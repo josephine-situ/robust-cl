@@ -21,9 +21,11 @@ from sklearn.ensemble import (
     RandomForestRegressor,
     GradientBoostingRegressor,
 )
+from sklearn.linear_model import ElasticNet
 from typing import Union, List, Dict
 
 ModelType = Union[
+    ElasticNet,
     DecisionTreeRegressor,
     RandomForestRegressor,
     GradientBoostingRegressor,
@@ -422,6 +424,20 @@ def embed_single_tree(model: gp.Model,
     return f_var
 
 
+def embed_linear(model: gp.Model,
+                 ml_model: ElasticNet,
+                 x_vars: list,
+                 name_prefix: str = "linear") -> gp.Var:
+    """Embed a fitted linear (ElasticNet) model: f(x) = intercept + coef'x."""
+    f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
+    model.addConstr(
+        f_var == float(ml_model.intercept_)
+        + gp.quicksum(ml_model.coef_[j] * x_vars[j] for j in range(len(ml_model.coef_))),
+        name=f"{name_prefix}_pred_def",
+    )
+    return f_var
+
+
 def embed_model(model: gp.Model,
                 ml_model: ModelType,
                 x_vars: list,
@@ -434,7 +450,10 @@ def embed_model(model: gp.Model,
 
     Returns a Gurobi variable representing f(x; ml_model).
     """
-    if isinstance(ml_model, DecisionTreeRegressor):
+    if isinstance(ml_model, ElasticNet):
+        return embed_linear(model, ml_model, x_vars, name_prefix)
+
+    elif isinstance(ml_model, DecisionTreeRegressor):
         return embed_single_tree(
             model, ml_model, x_vars, var_lb, var_ub, name_prefix, rho
         )
