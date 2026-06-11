@@ -142,6 +142,12 @@ class EnsembleModel:
         return np.mean(preds, axis=0)
 
 
+def train_fixed_ensemble(X: np.ndarray, y: np.ndarray, specs: list) -> EnsembleModel:
+    """Train one model per spec and average predictions."""
+    models = [train_model(X, y, s["model_type"], s.get("params", {})) for s in specs]
+    return EnsembleModel(models)
+
+
 def train_ensemble_model_cv(X: np.ndarray,
                             y: np.ndarray,
                             param_grids: Dict[str, Dict[str, Any]],
