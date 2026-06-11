@@ -27,8 +27,11 @@ methods:
     rho: 0.05  # parameter robustness on the splits (dual norm penalty)
     
   wrapper:
-    n_estimators: 20  # P
-    alpha: 0.1  # violation fraction
+    n_estimators: 25  # P (bootstrap / WFP-style wrapper via solve_wrapper)
+    alpha: 0.1  # violation fraction across bootstrap models
+
+  chemo_wrapper:
+    alpha: 0.25  # max fraction of embedded RF trees allowed to violate
 
   cp:
     max_iterations: 50

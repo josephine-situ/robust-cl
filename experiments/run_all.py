@@ -102,7 +102,7 @@ def run_experiment(config):
     # --- Results table ---
     rows = []
     for ev in evaluations:
-        rows.append({
+        row = {
             "method": ev.method,
             "objective": ev.mean_obj_value,
             "models_embedded": ev.models_embedded,
@@ -110,8 +110,13 @@ def run_experiment(config):
             "iterations": ev.mean_iterations,
             "feasibility_rate": ev.feasibility_rate,
             "constraint_violation_rates": ev.constraint_violation_rates,
-            "worst_violation": ev.mean_constraint_violations,
-        })
+            "worst_violation": ev.worst_case_violation,
+        }
+        if ev.mean_obj_value_train is not None:
+            row["objective_train"] = ev.mean_obj_value_train
+            row["feasibility_rate_train"] = ev.feasibility_rate_train
+            row["worst_violation_train"] = ev.worst_case_violation_train
+        rows.append(row)
 
     df = pd.DataFrame(rows)
     print("\n" + "=" * 60)
