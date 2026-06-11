@@ -4,7 +4,7 @@ Paper-aligned evaluation for OptiCL chemotherapy Table 6.
 Metrics match Maragno et al. (2025) Section 5.5:
 - Constraint satisfaction: binary indicator GT(x) <= threshold
 - Overall survival: GT ensemble prediction in months
-- Prescribed and given results averaged over test cohorts with a feasible optimizer solution
+- Prescribed and given results averaged over a shared evaluation cohort (all-constraints feasible)
 """
 
 from __future__ import annotations
@@ -62,15 +62,21 @@ def evaluate_given_table6(
 def evaluate_prescribed_table6(
     solver_fn: Callable,
     instance: ProblemInstance,
+    eval_mask: np.ndarray | None = None,
     **solver_kwargs,
 ) -> tuple[Dict[str, np.ndarray], np.ndarray, float, float]:
     """
     Optimize a prescription per test cohort; return outcome vectors on feasible cohorts.
 
+    If eval_mask is provided, returned outcome vectors are restricted to
+    test indices where both the optimizer is feasible and eval_mask is True.
+    Use a shared eval_mask (e.g. all-constraints feasibility) for cross-mode
+    Table 6 comparisons.
+
     Returns
     -------
-    outcomes : dict outcome_label -> values on feasible test indices
-    feasible_mask : bool array length n_test
+    outcomes : dict outcome_label -> values on reported test indices
+    feasible_mask : bool array length n_test (optimizer feasibility per row)
     mean_solve_time, solve_time_sd : per-cohort re-optimization times (seconds)
     """
     result = solver_fn(instance, **solver_kwargs)
@@ -118,8 +124,9 @@ def evaluate_prescribed_table6(
     mean_time = float(np.mean(row_times)) if row_times else np.nan
     sd_time = float(np.std(row_times, ddof=1)) if len(row_times) > 1 else 0.0
 
+    report_mask = feasible_mask if eval_mask is None else (feasible_mask & eval_mask)
     feasible_outcomes = {
-        label: values[feasible_mask]
+        label: values[report_mask]
         for label, values in outcome_buffers.items()
     }
     return feasible_outcomes, feasible_mask, mean_time, sd_time
