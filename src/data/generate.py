@@ -38,6 +38,16 @@ class LearnedConstraint:
 
 
 @dataclass
+class EvalOutcome:
+    """Ground-truth outcome used for Table 6-style prescriptive evaluation."""
+    label: str
+    name: str
+    rhs: float
+    gt_fn: Any
+    is_survival: bool = False
+
+
+@dataclass
 class ProblemInstance:
     """Complete problem instance for constraint learning with multiple constraints and prescriptive eval."""
     # Data splitting
@@ -66,12 +76,18 @@ class ProblemInstance:
 
     X_train: Optional[np.ndarray] = None # (n_train, d_context) - contextual features for training evaluation
 
+    # Chemotherapy / OptiCL: convex hull of training treatment vectors (n_train, n_decision)
+    trust_region_points: Optional[np.ndarray] = None
+
+    # GT outcomes and thresholds for paper Table 6 evaluation (independent of active optimizer constraints)
+    eval_outcomes: Optional[List[EvalOutcome]] = None
+
 
 # Table EC.10 embedded model configs
 _GASTRIC_EMBED_CONFIGS = [
     {"model_type": "gbm", "model_params": {"learning_rate": 0.2, "max_depth": 2, "n_estimators": 20, "random_state": 42}},
     {"model_type": "linear", "model_params": {"alpha": 0.1, "l1_ratio": 0.7, "random_state": 42}},
-    {"model_type": "rf", "model_params": {"n_estimators": 25, "max_depth": 4, "max_features": 1.0, "random_state": 42}},
+    {"model_type": "rf", "model_params": {"n_estimators": 25, "max_depth": 4, "max_features": "sqrt", "random_state": 42}},
     {"model_type": "linear", "model_params": {"alpha": 1.0, "l1_ratio": 0.5, "random_state": 42}},
     {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 4, "n_estimators": 20, "random_state": 42}},
     {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 3, "n_estimators": 20, "random_state": 42}},
@@ -151,6 +167,8 @@ def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemIn
         constraint_model_configs=configs,
         domain_constraints=instance.domain_constraints,
         X_train=instance.X_train,
+        trust_region_points=instance.trust_region_points,
+        eval_outcomes=instance.eval_outcomes,
     )
 
 def _synthetic_f_true(x):
@@ -423,14 +441,17 @@ def gastric_cancer(seed: int = 42,
 
     print(f"Step 6: Filtered has OS and drugs. Observations: {np.sum(valid_os & valid_drug)}")
 
-    # 2. Exclude missing ALL blood toxicities (Check ALL blood columns, not just G4)
-    blood_cols_all = [c for c in df.columns if any(k in c for k in ["Neutro", "Thrombo", "Leuko", "Anemia", "Lympho"])]
+    # 2. Exclude rows with no reported blood toxicities (Appendix D.1)
+    blood_cols_all = [
+        c for c in df.columns
+        if any(k in c for k in ["Neutro", "Thrombo", "Leuko", "Anemia", "Lympho"])
+    ]
     valid_blood = np.array([
         any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in blood_cols_all)
         for _, row in df.iterrows()
     ])
 
-    # 3. Exclude missing ALL Grade 3/4 toxicities (Check ALL G3/4 columns)
+    # 3. Exclude rows with no reported Grade 3/4 toxicities
     g34_cols_all = [c for c in df.columns if "34" in c or "4" in c]
     valid_nonblood = np.array([
         any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in g34_cols_all)
@@ -520,14 +541,13 @@ def gastric_cancer(seed: int = 42,
     has_unseen_drug = (drug_indicators & unseen_in_train).any(axis=1)
     test_mask = test_mask & ~has_unseen_drug
     
-    # 2. Identify "sparse" treatments (drugs seen EXACTLY once in training)
-    # and remove ALL observations (train or test) that use them.
+    # 2. Remove observations using drugs seen exactly once in preliminary training
     sparse_in_train = train_drug_counts == 1
     has_sparse_drug = (drug_indicators & sparse_in_train).any(axis=1)
-    
+
     train_mask = train_mask & ~has_sparse_drug
     test_mask = test_mask & ~has_sparse_drug
-    
+
     # 3. Ensure an arm has at least one valid common drug remaining
     has_any_drug = drug_indicators.any(axis=1)
     train_mask = train_mask & has_any_drug
@@ -693,6 +713,32 @@ def gastric_cancer(seed: int = 42,
     max_drugs_coeffs[range(0, n_drug_features, 3)] = 1.0
     domain_constraints = [DomainConstraint(coeffs=max_drugs_coeffs, rhs=3.0)]
 
+    eval_outcomes = []
+    for outcome_name, label in [
+        ("dlt", "Any_DLT"),
+        ("blood", "Blood"),
+        ("constitutional", "Constitutional"),
+        ("infection", "Infection"),
+        ("gi", "Gastrointestinal"),
+    ]:
+        c = next(con for con in constraints if con.name == f"{outcome_name}_constraint")
+        eval_outcomes.append(EvalOutcome(
+            label=label,
+            name=outcome_name,
+            rhs=c.rhs,
+            gt_fn=gt_models[outcome_name],
+            is_survival=False,
+        ))
+    eval_outcomes.append(EvalOutcome(
+        label="Overall_Survival",
+        name="os",
+        rhs=np.nan,
+        gt_fn=gt_models["os"],
+        is_survival=True,
+    ))
+
+    trust_region_points = X_train[:, decision_var_indices].copy()
+
     return ProblemInstance(
         X_test=X_test,
         X_train=X_train,
@@ -707,6 +753,8 @@ def gastric_cancer(seed: int = 42,
         gt_constraints=gt_constraints,
         constraint_model_configs=constraint_model_configs,
         domain_constraints=domain_constraints,
+        trust_region_points=trust_region_points,
+        eval_outcomes=eval_outcomes,
     )
 
 

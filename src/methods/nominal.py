@@ -13,6 +13,7 @@ from typing import Optional
 from src.data.generate import ProblemInstance
 from src.models.train import train_model, ModelType
 from src.models.embed import embed_model
+from src.utils.trust_region import add_trust_region
 
 
 @dataclass
@@ -106,6 +107,8 @@ def solve_nominal(instance: ProblemInstance,
             gp.quicksum(dc.coeffs[j] * x[j] for j in range(d)) <= dc.rhs,
             name=f"domain_{k}",
         )
+
+    add_trust_region(opt, x, instance)
 
     # Objective
     base_cost = gp.quicksum(instance.cost_vector[j] * x[j] for j in range(d))

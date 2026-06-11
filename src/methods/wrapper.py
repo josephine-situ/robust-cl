@@ -19,6 +19,7 @@ from src.data.generate import ProblemInstance
 from src.methods.nominal import SolutionResult
 from src.models.train import train_model
 from src.models.embed import embed_model, embed_single_tree
+from src.utils.trust_region import add_trust_region
 
 
 def _train_models_for_instance(instance, model_type, model_params):
@@ -74,7 +75,7 @@ def _add_rf_tree_violation(opt, rf_model, x, instance, rhs, alpha, prefix, rho, 
         (1.0 / T) * gp.quicksum(z[t] for t in range(T)) >= 1 - alpha,
         name=f"{prefix}_chance",
     )
-    return T
+    return 1
 
 
 def _train_bootstrap_ensemble(X_train: np.ndarray,
@@ -204,6 +205,7 @@ def solve_wrapper(instance: ProblemInstance,
             )
 
     _add_domain_constraints(opt, x, instance)
+    add_trust_region(opt, x, instance)
 
     base_cost = gp.quicksum(instance.cost_vector[j] * x[j] for j in range(d))
     opt.setObjective(base_cost + gp.quicksum(obj_terms), GRB.MINIMIZE)
@@ -298,6 +300,7 @@ def solve_tree_violation_wrapper(instance: ProblemInstance,
             opt.addConstr(gp.quicksum(f_pred_vars) <= rhs, name=f"tvw_constr_{c_idx}")
 
     _add_domain_constraints(opt, x, instance)
+    add_trust_region(opt, x, instance)
 
     base_cost = gp.quicksum(instance.cost_vector[j] * x[j] for j in range(d))
     opt.setObjective(base_cost + gp.quicksum(obj_terms), GRB.MINIMIZE)

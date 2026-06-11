@@ -1,21 +1,26 @@
 """
-Replicate OptiCL chemotherapy Table 6: Given vs Nominal vs Wrapper,
-All constraints vs DLT-only.
+Replicate OptiCL chemotherapy Table 6 (Maragno et al. 2025, Section 5.5).
+
+Compares observed (given) regimens to prescriptions from the paper's full model
+(RF tree-violation wrapper with alpha=0.25) under All Constraints vs DLT Only.
 """
 
 import os
 import sys
 from functools import partial
 
-import pandas as pd
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data.generate import gastric_cancer, filter_constraints
-from src.methods.nominal import solve_nominal
 from src.methods.wrapper import solve_tree_violation_wrapper
-from src.evaluation.metrics import evaluate_prescriptive_performance, evaluate_given_treatments
+from src.evaluation.chemo_metrics import (
+    evaluate_given_table6,
+    evaluate_prescribed_table6,
+    build_table6_rows,
+    table6_results_to_dataframe,
+)
 
 
 ALL_CONSTRAINTS = [
@@ -24,33 +29,10 @@ ALL_CONSTRAINTS = [
 ]
 DLT_ONLY = ["dlt_constraint", "os_constraint"]
 
-TOXICITY_NAMES = [
-    "dlt_constraint", "blood_constraint", "constitutional_constraint",
-    "infection_constraint", "gi_constraint",
-]
-
 
 def load_config(path="config.yaml"):
     with open(path, "r") as f:
         return yaml.safe_load(f)
-
-
-def _eval_to_row(ev, constraint_mode, instance):
-    row = {
-        "method": ev.method,
-        "constraint_mode": constraint_mode,
-        "mean_os": ev.mean_obj_value,
-        "feasibility_rate": ev.feasibility_rate,
-        "worst_violation": ev.worst_case_violation,
-        "solve_time": ev.mean_solve_time,
-        "models_embedded": ev.models_embedded,
-    }
-    for name, rate in zip(
-        [c.name for c in instance.constraints],
-        ev.constraint_violation_rates,
-    ):
-        row[f"violation_rate_{name}"] = rate
-    return row
 
 
 def run_chemo_replication(config):
@@ -59,41 +41,52 @@ def run_chemo_replication(config):
     print("=" * 60)
 
     instance = gastric_cancer()
-    instance.X_train = None  # Table 6 evaluates test cohorts only
+    n_test = instance.X_test.shape[0]
+    n_train = instance.X_train.shape[0]
+    print(f"Train: {n_train}, Test: {n_test} (paper target: 320, 96)")
+
+    wrapper_cfg = config["methods"].get("chemo_wrapper", config["methods"]["wrapper"])
     model_type = config["model"]["type"]
     model_params = config["model"]["params"]
-    wrapper_cfg = config["methods"].get("chemo_wrapper", config["methods"]["wrapper"])
 
+    solver_fn = partial(
+        solve_tree_violation_wrapper,
+        model_type=model_type,
+        model_params=model_params,
+        rho=0.0,
+        alpha=wrapper_cfg["alpha"],
+    )
+
+    given_values = evaluate_given_table6(instance)
     rows = []
 
-    print("\nEvaluating GIVEN (observed regimens)...")
-    for mode, names in [("all", ALL_CONSTRAINTS), ("dlt_only", DLT_ONLY)]:
+    for mode, names in [("all_constraints", ALL_CONSTRAINTS), ("dlt_only", DLT_ONLY)]:
         sub = filter_constraints(instance, names)
-        ev = evaluate_given_treatments(sub, method_name="given")
-        rows.append(_eval_to_row(ev, mode, sub))
+        print(f"\nOptimizing prescriptions ({mode})...")
+        prescribed_values, feasible_mask, mean_time, sd_time = evaluate_prescribed_table6(
+            solver_fn, sub,
+        )
+        n_prescribed = int(feasible_mask.sum())
+        print(f"  Feasible prescriptions: {n_prescribed}/{n_test}")
 
-    solver_configs = [
-        ("nominal", partial(solve_nominal, model_type=model_type, model_params=model_params, rho=0.0)),
-        ("wrapper", partial(
-            solve_tree_violation_wrapper, model_type=model_type, model_params=model_params, rho=0.0,
-            alpha=wrapper_cfg["alpha"],
-        )),
-    ]
+        rows.extend(build_table6_rows(
+            instance,
+            constraint_mode=mode,
+            given_values=given_values,
+            prescribed_values=prescribed_values,
+            n_test=n_test,
+            n_prescribed=n_prescribed,
+            mean_solve_time=mean_time,
+            solve_time_sd=sd_time,
+        ))
 
-    for method_name, solver_fn in solver_configs:
-        for mode, names in [("all", ALL_CONSTRAINTS), ("dlt_only", DLT_ONLY)]:
-            sub = filter_constraints(instance, names)
-            print(f"\nEvaluating {method_name.upper()} ({mode})...")
-            ev = evaluate_prescriptive_performance(solver_fn, sub, method_name)
-            rows.append(_eval_to_row(ev, mode, sub))
-
-    df = pd.DataFrame(rows)
+    df = table6_results_to_dataframe(rows)
     os.makedirs("results", exist_ok=True)
     out_path = "results/chemo_table6.csv"
     df.to_csv(out_path, index=False)
 
     print("\n" + "=" * 60)
-    print("TABLE 6 RESULTS")
+    print("TABLE 6 RESULTS (paper-aligned metrics)")
     print("=" * 60)
     print(df.to_string(index=False))
     print(f"\nSaved to {out_path}")
