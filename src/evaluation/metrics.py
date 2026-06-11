@@ -92,8 +92,13 @@ def evaluate_prescriptive_performance(solver_fn: Callable,
 
                 # Re-optimize for new context bounds
                 result.opt.Params.DualReductions = 0
+                if n_obs > 1:
+                    result.opt.Params.MIPGap = 0.01
                 result.opt.update()
                 result.opt.optimize()
+                
+                if n_obs > 1 and (i == 0 or (i + 1) % 10 == 0 or i + 1 == n_obs):
+                    print(f"  {method_name}: test row {i + 1}/{n_obs}", flush=True)
                 
                 if result.opt.Status != 2: # GRB.OPTIMAL is 2
                     continue
@@ -214,3 +219,55 @@ def evaluate_all(solver_fns: dict,
         evaluations.append(ev)
 
     return evaluations
+
+
+def evaluate_given_treatments(instance: ProblemInstance,
+                              method_name: str = "given") -> EvaluationResult:
+    """Score observed test treatments against GT (no optimization)."""
+    X_data = instance.X_test
+    n_obs = X_data.shape[0]
+    n_constraints = len(instance.constraints)
+
+    obj_values = []
+    all_feasible_count = 0
+    constraint_violations = np.full((n_obs, n_constraints), np.nan)
+
+    for i in range(n_obs):
+        x_opt = X_data[i].copy()
+        obj_val = instance.gt_objective(x_opt)
+        if isinstance(obj_val, np.ndarray):
+            obj_val = float(obj_val.flat[0])
+        obj_values.append(float(obj_val))
+
+        all_c_feasible = True
+        for c_idx, constraint in enumerate(instance.constraints):
+            gt_fn = instance.gt_constraints[c_idx]
+            c_val = gt_fn(x_opt)
+            if isinstance(c_val, np.ndarray):
+                c_val = float(c_val.flat[0])
+            violation = max(0.0, c_val - constraint.rhs)
+            constraint_violations[i, c_idx] = violation
+            if violation > 1e-4:
+                all_c_feasible = False
+        if all_c_feasible:
+            all_feasible_count += 1
+
+    violation_rates = []
+    for c_idx in range(n_constraints):
+        c_vis = constraint_violations[:, c_idx]
+        violation_rates.append(float(np.mean(c_vis > 1e-4)))
+
+    finite_violations = constraint_violations[np.isfinite(constraint_violations)]
+    worst = float(np.max(finite_violations)) if finite_violations.size > 0 else np.nan
+
+    return EvaluationResult(
+        method=method_name,
+        models_embedded=0,
+        mean_solve_time=0.0,
+        mean_iterations=None,
+        mean_obj_value=float(np.mean(obj_values)),
+        feasibility_rate=float(all_feasible_count / n_obs),
+        constraint_violation_rates=violation_rates,
+        mean_constraint_violations=[float(np.mean(constraint_violations[:, c])) for c in range(n_constraints)],
+        worst_case_violation=worst,
+    )
