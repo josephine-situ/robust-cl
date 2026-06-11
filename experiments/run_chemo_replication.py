@@ -57,7 +57,6 @@ def run_chemo_replication(config):
         alpha=wrapper_cfg["alpha"],
     )
 
-    given_values = evaluate_given_table6(instance)
     rows = []
 
     for mode, names in [("all_constraints", ALL_CONSTRAINTS), ("dlt_only", DLT_ONLY)]:
@@ -68,6 +67,8 @@ def run_chemo_replication(config):
         )
         n_prescribed = int(feasible_mask.sum())
         print(f"  Feasible prescriptions: {n_prescribed}/{n_test}")
+
+        given_values = evaluate_given_table6(instance, feasible_mask)
 
         rows.extend(build_table6_rows(
             instance,

@@ -9,7 +9,7 @@ We need:
 
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Callable, Optional, List, Any
+from typing import Callable, Optional, List, Any, Dict
 
 
 @dataclass
@@ -82,12 +82,15 @@ class ProblemInstance:
     # GT outcomes and thresholds for paper Table 6 evaluation (independent of active optimizer constraints)
     eval_outcomes: Optional[List[EvalOutcome]] = None
 
+    # Observed trial outcomes on the test split (for diagnostics / replication checks)
+    observed_test_outcomes: Optional[Dict[str, np.ndarray]] = None
+
 
 # Table EC.10 embedded model configs
 _GASTRIC_EMBED_CONFIGS = [
     {"model_type": "gbm", "model_params": {"learning_rate": 0.2, "max_depth": 2, "n_estimators": 20, "random_state": 42}},
     {"model_type": "linear", "model_params": {"alpha": 0.1, "l1_ratio": 0.7, "random_state": 42}},
-    {"model_type": "rf", "model_params": {"n_estimators": 25, "max_depth": 4, "max_features": "sqrt", "random_state": 42}},
+    {"model_type": "rf", "model_params": {"n_estimators": 25, "max_depth": 4, "max_features": 1.0, "random_state": 42}},
     {"model_type": "linear", "model_params": {"alpha": 1.0, "l1_ratio": 0.5, "random_state": 42}},
     {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 4, "n_estimators": 20, "random_state": 42}},
     {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 3, "n_estimators": 20, "random_state": 42}},
@@ -169,6 +172,7 @@ def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemIn
         X_train=instance.X_train,
         trust_region_points=instance.trust_region_points,
         eval_outcomes=instance.eval_outcomes,
+        observed_test_outcomes=instance.observed_test_outcomes,
     )
 
 def _synthetic_f_true(x):
@@ -414,11 +418,15 @@ def gastric_cancer(seed: int = 42,
 
     # Blood / G3-4 toxicity column sets (Appendix D.1)
     BLOOD_G4_COLS = ["Neutro4", "Thrombo4", "Leuko4", "Anemia4", "Lympho4"]
+    BLOOD_AGG_COL = "BLOOD_34"
     blood_cols_all = sorted([
         c for c in df.columns
         if any(k in c for k in ["Neutro", "Thrombo", "Leuko", "Anemia", "Lympho"])
         and not c.startswith("Death")
     ])
+    blood_impute_cols = list(blood_cols_all)
+    if BLOOD_AGG_COL in df.columns and BLOOD_AGG_COL not in blood_impute_cols:
+        blood_impute_cols.append(BLOOD_AGG_COL)
     g34_cols_all = sorted(c for c in df.columns if "34" in c)
     NONBLOOD_DLT_COLS = {
         "constitutional": "CONSTITUTIONAL_34",
@@ -429,7 +437,7 @@ def gastric_cancer(seed: int = 42,
 
     blood_all_raw = np.column_stack([
         np.array([_float(row.get(c)) for _, row in df.iterrows()])
-        for c in blood_cols_all
+        for c in blood_impute_cols
     ])
     g34_all_raw = np.column_stack([
         np.array([_float(row.get(c)) for _, row in df.iterrows()])
@@ -448,9 +456,10 @@ def gastric_cancer(seed: int = 42,
 
     print(f"Step 6: Filtered has OS and drugs. Observations: {np.sum(valid_os & valid_drug)}")
 
-    # 2. Exclude rows with no reported blood toxicities (Appendix D.1)
+    # 2. Exclude rows with no reported blood toxicities (Appendix D.1).
+    #    Some arms only report the aggregate BLOOD_34 column.
     valid_blood = np.array([
-        any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in blood_cols_all)
+        any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in blood_impute_cols)
         for _, row in df.iterrows()
     ])
 
@@ -481,10 +490,21 @@ def gastric_cancer(seed: int = 42,
     from sklearn.impute import IterativeImputer
 
     ctx_start = n_drug_features
-    ctx_valid = X_valid[:, ctx_start:].copy()
-    if np.isnan(ctx_valid).any():
+    # Appendix D.1: impute cohort characteristics from other contextual variables only.
+    # Pub_Year (last column) is used for the temporal split and is left unchanged.
+    ctx_imputable = X_valid[:, ctx_start:ctx_start + 8].copy()
+    n_missing_ctx = np.isnan(ctx_imputable).sum(axis=1)
+    if len(ctx_imputable) > 0:
+        frac_one = float(np.mean(n_missing_ctx == 1))
+        frac_multi = float(np.mean(n_missing_ctx > 1))
+        print(
+            f"Step 6a: Context missingness before imputation: "
+            f"one feature={frac_one:.0%}, multiple={frac_multi:.0%} "
+            f"(paper: 20%, 6%)"
+        )
+    if np.isnan(ctx_imputable).any():
         ctx_imputer = IterativeImputer(random_state=seed, max_iter=10)
-        X_valid[:, ctx_start:] = ctx_imputer.fit_transform(ctx_valid)
+        X_valid[:, ctx_start:ctx_start + 8] = ctx_imputer.fit_transform(ctx_imputable)
 
     blood_imputer = IterativeImputer(random_state=seed, max_iter=10)
     blood_all_imputed = np.clip(blood_imputer.fit_transform(blood_all_masked), 0, 1)
@@ -492,8 +512,12 @@ def gastric_cancer(seed: int = 42,
     g34_imputer = IterativeImputer(random_state=seed, max_iter=10)
     g34_all_imputed = np.clip(g34_imputer.fit_transform(g34_all_masked), 0, 1)
 
-    blood_g4_idx = [blood_cols_all.index(c) for c in BLOOD_G4_COLS]
+    blood_g4_idx = [blood_impute_cols.index(c) for c in BLOOD_G4_COLS]
     blood_g4_imputed = blood_all_imputed[:, blood_g4_idx]
+    blood_agg_imputed = (
+        blood_all_imputed[:, blood_impute_cols.index(BLOOD_AGG_COL)]
+        if BLOOD_AGG_COL in blood_impute_cols else None
+    )
 
     dlt_col_names = list(NONBLOOD_DLT_COLS.values())
     dlt_g34_idx = [g34_cols_all.index(c) for c in dlt_col_names]
@@ -503,6 +527,8 @@ def gastric_cancer(seed: int = 42,
     # 6c. Compute final derived outcomes from the IMPUTED data
     # ------------------------------------------------------------------
     blood_valid = np.max(blood_g4_imputed, axis=1)
+    if blood_agg_imputed is not None:
+        blood_valid = np.maximum(blood_valid, blood_agg_imputed)
 
     dlt_valid = np.zeros(np.sum(valid_mask))
     for i in range(np.sum(valid_mask)):
@@ -517,53 +543,63 @@ def gastric_cancer(seed: int = 42,
 
     print(
         f"Step 6b: Imputed partial missingness "
-        f"({len(blood_cols_all)} blood cols, {len(g34_cols_all)} G3/4 cols). "
+        f"({len(blood_impute_cols)} blood cols, {len(g34_cols_all)} G3/4 cols). "
         f"Observations: {X_valid.shape[0]}"
     )
 
     # ------------------------------------------------------------------
     # 7. Train/Test Split.
     #    Split temporally (training through 2008, testing 2009-2012).
-    #    Remove observations with drugs only seen once in training.
-    #    Exclude trials from test if they have new drugs not in training.
+    #    Exclude test arms with drugs not seen in training.
+    #    Remove arms that include a drug seen exactly once in preliminary training.
+    #    Sparse-drug counts use every drug name in the spreadsheet, while the
+    #    feature space keeps only drugs appearing in >= MIN_DRUG_COUNT arms.
     # ------------------------------------------------------------------
-    # Define our dimensions to fix NameErrors
     n_samples, n_feat = X_valid.shape
-    
+
     pub_year_idx = n_drug_features + 8
     pub_years = X_valid[:, pub_year_idx]
 
     train_mask = pub_years <= 2008
     test_mask = (pub_years >= 2009) & (pub_years <= 2012)
-    
-    # Extract just the binary drug indicators for all rows: shape (n_samples, n_drugs)
-    drug_indicators = X_valid[:, :n_drug_features:3] > 0
-    
-    # Count how many times each drug appears in the training set
-    train_drug_counts = drug_indicators[train_mask].sum(axis=0)
-    
-    # 1. Exclude test trials with new drugs not seen in training
-    # (A drug is "new" if train_drug_counts == 0)
+
+    all_drug_names = sorted(drug_counts.keys())
+    all_drug_to_idx = {d: i for i, d in enumerate(all_drug_names)}
+    split_ind = np.zeros((n_samples, len(all_drug_names)))
+    valid_row_indices = np.where(valid_mask)[0]
+    row_to_local = {int(g): l for l, g in enumerate(valid_row_indices)}
+    for rec in drug_records:
+        local_i = row_to_local.get(rec["row_i"])
+        if local_i is None:
+            continue
+        split_ind[local_i, all_drug_to_idx[rec["drug"]]] = 1.0
+
+    train_drug_counts = split_ind[train_mask].sum(axis=0)
+
+    # 1. Exclude test arms that use a drug never seen in preliminary training.
     unseen_in_train = train_drug_counts == 0
-    has_unseen_drug = (drug_indicators & unseen_in_train).any(axis=1)
+    has_unseen_drug = (split_ind[:, unseen_in_train]).any(axis=1)
     test_mask = test_mask & ~has_unseen_drug
     
     # 2. Remove observations using drugs seen exactly once in preliminary training
     sparse_in_train = train_drug_counts == 1
-    has_sparse_drug = (drug_indicators & sparse_in_train).any(axis=1)
-
+    has_sparse_drug = (split_ind[:, sparse_in_train]).any(axis=1)
     train_mask = train_mask & ~has_sparse_drug
     test_mask = test_mask & ~has_sparse_drug
-
-    # 3. Ensure an arm has at least one valid common drug remaining
-    has_any_drug = drug_indicators.any(axis=1)
-    train_mask = train_mask & has_any_drug
-    test_mask = test_mask & has_any_drug
 
     idx_train = np.where(train_mask)[0]
     idx_test = np.where(test_mask)[0]
 
     print(f"Step 7: Train/Test split complete. Train observations: {len(idx_train)}, Test observations: {len(idx_test)}")
+
+    observed_test = {
+        "dlt": dlt_valid[idx_test],
+        "blood": blood_valid[idx_test],
+        "constitutional": const_valid[idx_test],
+        "infection": inf_valid[idx_test],
+        "gi": gi_valid[idx_test],
+        "os": os_valid[idx_test],
+    }
 
     X_train = X_valid[idx_train]
     X_test  = X_valid[idx_test]
@@ -681,7 +717,7 @@ def gastric_cancer(seed: int = 42,
         constraint_model_configs = list(_GASTRIC_EMBED_CONFIGS)
 
     # ------------------------------------------------------------------
-    # 11.  Ground Truth Models (Fit on all data: train + test). 
+    # 11.  Ground Truth Models (fit on all 461 retained arms; Appendix D.3).
     # ------------------------------------------------------------------
     full_targets = {
         "dlt": dlt_valid,
@@ -762,6 +798,7 @@ def gastric_cancer(seed: int = 42,
         domain_constraints=domain_constraints,
         trust_region_points=trust_region_points,
         eval_outcomes=eval_outcomes,
+        observed_test_outcomes=observed_test,
     )
 
 
@@ -806,6 +843,15 @@ if __name__ == "__main__":
     print("GASTRIC CANCER DEBUG SUMMARY")
     print("=" * 60)
     print(f"  total={n_total}  train={n_train}  test={n_test}  drugs={n_drugs}")
+    if gastric_cancer_instance.observed_test_outcomes and gastric_cancer_instance.eval_outcomes:
+        print("\nTest-set satisfaction (observed labels vs GT ensemble):")
+        for outcome in gastric_cancer_instance.eval_outcomes:
+            if outcome.is_survival:
+                continue
+            obs = gastric_cancer_instance.observed_test_outcomes[outcome.name]
+            obs_sat = float(np.mean(obs <= outcome.rhs))
+            gt_sat = float(np.mean(outcome.gt_fn.predict(gastric_cancer_instance.X_test) <= outcome.rhs))
+            print(f"  {outcome.label:18s} observed={obs_sat:.3f}  GT={gt_sat:.3f}  rhs={outcome.rhs:.4f}")
     print(summary_df.to_string(index=False))
     print("\nConstraint details:")
     print(constraint_df.to_string(index=False))

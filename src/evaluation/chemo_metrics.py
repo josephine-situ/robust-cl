@@ -4,8 +4,7 @@ Paper-aligned evaluation for OptiCL chemotherapy Table 6.
 Metrics match Maragno et al. (2025) Section 5.5:
 - Constraint satisfaction: binary indicator GT(x) <= threshold
 - Overall survival: GT ensemble prediction in months
-- Prescribed results averaged over test cohorts with an optimal optimizer solution
-- Given baseline averaged over the full test set
+- Prescribed and given results averaged over test cohorts with a feasible optimizer solution
 """
 
 from __future__ import annotations
@@ -48,9 +47,14 @@ def _outcome_values(x_rows: np.ndarray, outcome, instance: ProblemInstance) -> n
     return (values <= outcome.rhs).astype(float)
 
 
-def evaluate_given_table6(instance: ProblemInstance) -> Dict[str, np.ndarray]:
-    """Given-treatment outcomes on the full test set."""
+def evaluate_given_table6(
+    instance: ProblemInstance,
+    feasible_mask: Optional[np.ndarray] = None,
+) -> Dict[str, np.ndarray]:
+    """Given-treatment outcomes on observed regimens for the evaluation cohort."""
     X_test = instance.X_test
+    if feasible_mask is not None:
+        X_test = X_test[feasible_mask]
     results = {}
     for outcome in instance.eval_outcomes:
         results[outcome.label] = _outcome_values(X_test, outcome, instance)
