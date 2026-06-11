@@ -8,8 +8,15 @@ We need:
 """
 
 import numpy as np
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable, Optional, List, Any
+
+
+@dataclass
+class DomainConstraint:
+    """Linear constraint: sum(coeffs[j] * x[j]) <= rhs."""
+    coeffs: np.ndarray
+    rhs: float
 
 
 @dataclass
@@ -55,7 +62,96 @@ class ProblemInstance:
     
     constraint_model_configs: Optional[List[dict]] = None # List of dicts specifying {"model_type": str, "model_params": dict} for each constraint model data
 
+    domain_constraints: List[DomainConstraint] = field(default_factory=list)
+
     X_train: Optional[np.ndarray] = None # (n_train, d_context) - contextual features for training evaluation
+
+
+# Table EC.10 embedded model configs
+_GASTRIC_EMBED_CONFIGS = [
+    {"model_type": "gbm", "model_params": {"learning_rate": 0.2, "max_depth": 2, "n_estimators": 20, "random_state": 42}},
+    {"model_type": "linear", "model_params": {"alpha": 0.1, "l1_ratio": 0.7, "random_state": 42}},
+    {"model_type": "rf", "model_params": {"n_estimators": 25, "max_depth": 4, "max_features": 1.0, "random_state": 42}},
+    {"model_type": "linear", "model_params": {"alpha": 1.0, "l1_ratio": 0.5, "random_state": 42}},
+    {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 4, "n_estimators": 20, "random_state": 42}},
+    {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 3, "n_estimators": 20, "random_state": 42}},
+]
+
+# Table EC.12 ground-truth ensemble specs per outcome
+_GT_SPECS = {
+    "dlt": [
+        {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.6}},
+        {"model_type": "svm", "params": {"C": 100}},
+        {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.04, "max_features": 1.0}},
+        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.05, "max_depth": 4, "n_estimators": 250}},
+    ],
+    "blood": [
+        {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.5}},
+        {"model_type": "svm", "params": {"C": 100}},
+        {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.06, "max_features": 1.0}},
+        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 8, "max_features": 1.0}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.025, "max_depth": 5, "n_estimators": 250}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.05, "max_depth": 5, "n_estimators": 250}},
+    ],
+    "constitutional": [
+        {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.4}},
+        {"model_type": "svm", "params": {"C": 1}},
+        {"model_type": "cart", "params": {"max_depth": 4, "min_samples_leaf": 0.06, "max_features": 0.6}},
+        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+    ],
+    "infection": [
+        {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.3}},
+        {"model_type": "svm", "params": {"C": 10}},
+        {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.06, "max_features": 0.6}},
+        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+    ],
+    "gi": [
+        {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.7}},
+        {"model_type": "svm", "params": {"C": 100}},
+        {"model_type": "cart", "params": {"max_depth": 5, "min_samples_leaf": 0.06, "max_features": 0.6}},
+        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 6, "n_estimators": 250}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 6, "n_estimators": 250}},
+    ],
+    "os": [
+        {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.8}},
+        {"model_type": "svm", "params": {"C": 0.1}},
+        {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.02, "max_features": 0.8}},
+        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 8, "max_features": 1.0}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+    ],
+}
+
+
+def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemInstance:
+    """Return a copy of instance keeping only constraints whose names are in names."""
+    name_set = set(names)
+    indices = [i for i, c in enumerate(instance.constraints) if c.name in name_set]
+    configs = instance.constraint_model_configs
+    if configs is not None:
+        configs = [configs[i] for i in indices]
+    return ProblemInstance(
+        X_test=instance.X_test,
+        cost_vector=instance.cost_vector,
+        variable_lb=instance.variable_lb,
+        variable_ub=instance.variable_ub,
+        n_features=instance.n_features,
+        decision_var_indices=instance.decision_var_indices,
+        context_var_indices=instance.context_var_indices,
+        constraints=[instance.constraints[i] for i in indices],
+        gt_objective=instance.gt_objective,
+        gt_constraints=[instance.gt_constraints[i] for i in indices],
+        constraint_model_configs=configs,
+        domain_constraints=instance.domain_constraints,
+        X_train=instance.X_train,
+    )
 
 def _synthetic_f_true(x):
     """x can be (d,) or (n, d)."""
@@ -524,20 +620,20 @@ def gastric_cancer(seed: int = 42,
     # 10.5 Constraint Models parameter selection
     # ------------------------------------------------------------------
     try:
-        from ..models.train import train_best_model_cv, train_model, train_ensemble_model_cv
+        from ..models.train import train_best_model_cv, train_fixed_ensemble
     except ImportError:
         import sys
 
         repo_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         if repo_root not in sys.path:
             sys.path.insert(0, repo_root)
-        from src.models.train import train_best_model_cv, train_model, train_ensemble_model_cv
+        from src.models.train import train_best_model_cv, train_fixed_ensemble
     
     cv_param_grids = {
         "linear": {"alpha": [0.1, 1, 10, 100, 1000], "l1_ratio": np.arange(0.1, 1.0, 0.2)},
         "svm": {"C": [0.1, 1, 10, 100]},
         "cart": {"max_depth": [3, 4, 5, 6, 7, 8, 9, 10], "min_samples_leaf": [0.02, 0.04, 0.06], "max_features": [0.4, 0.6, 0.8, 1.0]},
-        "rf": {"n_estimators": [10, 25], "max_features": ["auto"], "max_depth": [2, 3, 4]},
+        "rf": {"n_estimators": [10, 25], "max_features": [1.0], "max_depth": [2, 3, 4]},
         "gbm": {"learning_rate": [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2], "max_depth": [2, 3, 4, 5], "n_estimators": [20]},
         "mlp": {"hidden_layer_sizes": [(10,), (20,), (50,), (100,)]}
     }
@@ -551,43 +647,15 @@ def gastric_cancer(seed: int = 42,
                 _, best_type, best_params = train_best_model_cv(md.X_train, md.y_train, cv_param_grids, random_state=seed, return_params=True)
                 constraint_model_configs.append({"model_type": best_type, "model_params": best_params})
     elif fixed_constraint_configs:
-        # User provides exact config
         for c in constraints:
             for md in c.models_data:
-                # E.g. {"model_type": "rf", "model_params": {...}}
                 constraint_model_configs.append(fixed_constraint_configs)
     else:
-        # Default config that nominal.py will fallback to
-        for c in constraints:
-            for md in c.models_data:
-                constraint_model_configs.append({"model_type": "rf", "model_params": {"n_estimators": 50, "max_depth": 5, "random_state": 42}})
+        constraint_model_configs = list(_GASTRIC_EMBED_CONFIGS)
 
     # ------------------------------------------------------------------
     # 11.  Ground Truth Models (Fit on all data: train + test). 
     # ------------------------------------------------------------------
-
-    exact_hyperparams = {
-        "dlt": {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
-        "blood": {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 8, "max_features": 1.0}},
-        "constitutional": {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
-        "infection": {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
-        "gi": {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
-        "os": {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 8, "max_features": 1.0}},
-    }
-
-    gt_cv_param_grids = {
-        "rf": {"n_estimators": [20], "max_depth": [4]}
-    }
-
-    # gt_cv_param_grids = {
-    #     "linear": {"alpha": [0.1, 1, 10, 100], "l1_ratio": np.arange(0.1, 1.0, 0.1)},
-    #     "svm": {"C": [0.1, 1, 10, 100]},
-    #     "cart": {"max_depth": [3, 4, 5, 6, 7], "min_samples_leaf": [0.02, 0.04, 0.06], "max_features": [0.4, 0.6, 0.8, 1.0]},
-    #     "rf": {"n_estimators": [10, 25, 125, 250, 500], "max_features": ["auto", 1.0], "max_depth": [2, 4, 6, 8]},
-    #     "gbm": {"learning_rate": [0.01, 0.025, 0.05], "max_depth": [2, 3, 4, 5, 6, "auto"], "n_estimators": [10, 25, 125, 250, 500]},
-    #     "mlp": {"hidden_layer_sizes": [(10,), (20,), (50,), (100,)]}
-    # }
-
     full_targets = {
         "dlt": dlt_valid,
         "blood": blood_valid,
@@ -598,14 +666,9 @@ def gastric_cancer(seed: int = 42,
     }
 
     gt_models = {}
-    print("Training Ground Truth models...")
+    print("Training Ground Truth ensemble models...")
     for t_name, y_t in full_targets.items():
-        if cv_tune_gt:
-            # GT Ensemble over best of each class
-            gt_models[t_name] = train_ensemble_model_cv(X_valid, y_t, gt_cv_param_grids, random_state=seed)
-        else:
-            conf = exact_hyperparams[t_name]
-            gt_models[t_name] = train_model(X_valid, y_t, model_type=conf["model_type"], params=conf["params"])
+        gt_models[t_name] = train_fixed_ensemble(X_valid, y_t, _GT_SPECS[t_name])
 
     # Objective is to maximize OS (so c = -1 for OS). We create a callable that returns the predicted OS.
     # We want to minimize -OS -> maximize OS
@@ -625,10 +688,15 @@ def gastric_cancer(seed: int = 42,
     # 12.  Assemble ProblemInstance
     # ------------------------------------------------------------------
     cost_vector = np.zeros(n_feat)
-    
+
+    max_drugs_coeffs = np.zeros(n_feat)
+    max_drugs_coeffs[range(0, n_drug_features, 3)] = 1.0
+    domain_constraints = [DomainConstraint(coeffs=max_drugs_coeffs, rhs=3.0)]
+
     return ProblemInstance(
         X_test=X_test,
-        cost_vector=cost_vector, # cost is just -1 * predicted OS, which is handled via obj_weight in the MLModelData for the OS constraint
+        X_train=X_train,
+        cost_vector=cost_vector,
         variable_lb=variable_lb,
         variable_ub=variable_ub,
         n_features=n_feat,
@@ -638,6 +706,7 @@ def gastric_cancer(seed: int = 42,
         gt_objective=gt_objective,
         gt_constraints=gt_constraints,
         constraint_model_configs=constraint_model_configs,
+        domain_constraints=domain_constraints,
     )
 
 
@@ -645,13 +714,21 @@ if __name__ == "__main__":
     import os
     import pandas as pd
 
-    gastric_cancer_instance = gastric_cancer(cv_tune_gt=False)
+    gastric_cancer_instance = gastric_cancer()
+
+    n_train = gastric_cancer_instance.X_train.shape[0] if gastric_cancer_instance.X_train is not None else 0
+    n_test = gastric_cancer_instance.X_test.shape[0]
+    n_total = n_train + n_test
+    n_drugs = len(gastric_cancer_instance.decision_var_indices) // 3
 
     os.makedirs("results", exist_ok=True)
 
     summary_rows = [
+        {"field": "n_total_rows", "value": n_total},
+        {"field": "n_train_rows", "value": n_train},
+        {"field": "n_test_rows", "value": n_test},
+        {"field": "n_drugs", "value": n_drugs},
         {"field": "n_features", "value": gastric_cancer_instance.n_features},
-        {"field": "n_test_rows", "value": gastric_cancer_instance.X_test.shape[0]},
         {"field": "n_constraints", "value": len(gastric_cancer_instance.constraints)},
         {"field": "n_decision_vars", "value": len(gastric_cancer_instance.decision_var_indices)},
         {"field": "n_context_vars", "value": len(gastric_cancer_instance.context_var_indices)},
@@ -673,6 +750,7 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("GASTRIC CANCER DEBUG SUMMARY")
     print("=" * 60)
+    print(f"  total={n_total}  train={n_train}  test={n_test}  drugs={n_drugs}")
     print(summary_df.to_string(index=False))
     print("\nConstraint details:")
     print(constraint_df.to_string(index=False))
