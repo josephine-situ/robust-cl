@@ -12,13 +12,19 @@ from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import GridSearchCV, KFold
 from typing import Union, Dict, Any
 
+try:
+    from xgboost import XGBRegressor
+except ImportError:
+    XGBRegressor = None
+
 ModelType = Union[
     ElasticNet,
     SVR,
     DecisionTreeRegressor,
     RandomForestRegressor,
     GradientBoostingRegressor,
-    MLPRegressor
+    MLPRegressor,
+    Any,
 ]
 
 
@@ -67,12 +73,24 @@ def train_model(X: np.ndarray,
             max_features=params.get("max_features", 1.0),
             random_state=random_state,
         )
-    elif model_type in ["xgb", "gbm"]:
+    elif model_type == "gbm":
         model = GradientBoostingRegressor(
             n_estimators=params.get("n_estimators", 50),
             learning_rate=params.get("learning_rate", 0.1),
             max_depth=params.get("max_depth", 3),
             random_state=random_state,
+        )
+    elif model_type == "xgb":
+        model = XGBRegressor(
+            n_estimators=params.get("n_estimators", 250),
+            learning_rate=params.get("learning_rate", 0.1),
+            max_depth=params.get("max_depth", 4),
+            colsample_bytree=params.get("colsample_bytree", 1.0),
+            gamma=params.get("gamma", 0.0),
+            min_child_weight=params.get("min_child_weight", 1),
+            subsample=params.get("subsample", 1.0),
+            random_state=random_state,
+            verbosity=0,
         )
     elif model_type == "mlp":
         model = MLPRegressor(

@@ -93,55 +93,55 @@ _GASTRIC_EMBED_CONFIGS = [
     {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 3, "n_estimators": 20, "random_state": 42}},
 ]
 
-# Table EC.12 ground-truth ensemble specs per outcome
+# Table EC.12 ground-truth ensemble specs per outcome (Linear, SVM, CART, RF, GBM, XGB)
 _GT_SPECS = {
     "dlt": [
         {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.6}},
         {"model_type": "svm", "params": {"C": 100}},
         {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.04, "max_features": 1.0}},
-        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
+        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": "sqrt"}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.05, "max_depth": 4, "n_estimators": 250}},
+        {"model_type": "xgb", "params": {"colsample_bytree": 0.8, "gamma": 0.5, "max_depth": 4, "min_child_weight": 10, "n_estimators": 250, "subsample": 1.0}},
     ],
     "blood": [
         {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.5}},
         {"model_type": "svm", "params": {"C": 100}},
         {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.06, "max_features": 1.0}},
-        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 8, "max_features": 1.0}},
+        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 8, "max_features": "sqrt"}},
         {"model_type": "gbm", "params": {"learning_rate": 0.025, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.05, "max_depth": 5, "n_estimators": 250}},
+        {"model_type": "xgb", "params": {"colsample_bytree": 1.0, "gamma": 0.5, "max_depth": 5, "min_child_weight": 1, "n_estimators": 250, "subsample": 0.8}},
     ],
     "constitutional": [
         {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.4}},
         {"model_type": "svm", "params": {"C": 1}},
         {"model_type": "cart", "params": {"max_depth": 4, "min_samples_leaf": 0.06, "max_features": 0.6}},
-        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
+        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": "sqrt"}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+        {"model_type": "xgb", "params": {"colsample_bytree": 0.8, "gamma": 1.0, "max_depth": 4, "min_child_weight": 10, "n_estimators": 250, "subsample": 0.8}},
     ],
     "infection": [
         {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.3}},
         {"model_type": "svm", "params": {"C": 10}},
         {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.06, "max_features": 0.6}},
-        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
+        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": "sqrt"}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+        {"model_type": "xgb", "params": {"colsample_bytree": 1.0, "gamma": 1.0, "max_depth": 4, "min_child_weight": 10, "n_estimators": 250, "subsample": 0.8}},
     ],
     "gi": [
         {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.7}},
         {"model_type": "svm", "params": {"C": 100}},
         {"model_type": "cart", "params": {"max_depth": 5, "min_samples_leaf": 0.06, "max_features": 0.6}},
-        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
+        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": "sqrt"}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 6, "n_estimators": 250}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 6, "n_estimators": 250}},
+        {"model_type": "xgb", "params": {"colsample_bytree": 0.8, "gamma": 0.5, "max_depth": 5, "min_child_weight": 1, "n_estimators": 250, "subsample": 0.8}},
     ],
     "os": [
         {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.8}},
         {"model_type": "svm", "params": {"C": 0.1}},
         {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.02, "max_features": 0.8}},
-        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 8, "max_features": 1.0}},
+        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 8, "max_features": "sqrt"}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
+        {"model_type": "xgb", "params": {"colsample_bytree": 1.0, "gamma": 10.0, "max_depth": 4, "min_child_weight": 10, "n_estimators": 250, "subsample": 1.0}},
     ],
 }
 
@@ -412,22 +412,29 @@ def gastric_cancer(seed: int = 42,
     # Extract OS
     y_os_raw = np.array([_float(row.get("OS")) for _, row in df.iterrows()])
 
-    # Extract the 5 Grade 4 blood toxicities
+    # Blood / G3-4 toxicity column sets (Appendix D.1)
     BLOOD_G4_COLS = ["Neutro4", "Thrombo4", "Leuko4", "Anemia4", "Lympho4"]
-    blood_data = np.zeros((n_rows, len(BLOOD_G4_COLS)))
-    for i, col in enumerate(BLOOD_G4_COLS):
-        blood_data[:, i] = np.array([_float(row.get(col)) for _, row in df.iterrows()])
-
-    # Extract the 4 specific Grade 3/4 non-blood toxicities used for DLTs
+    blood_cols_all = sorted([
+        c for c in df.columns
+        if any(k in c for k in ["Neutro", "Thrombo", "Leuko", "Anemia", "Lympho"])
+        and not c.startswith("Death")
+    ])
+    g34_cols_all = sorted(c for c in df.columns if "34" in c)
     NONBLOOD_DLT_COLS = {
         "constitutional": "CONSTITUTIONAL_34",
         "gi":             "GINONV_34",
         "infection":      "INFECTION_34",
-        "neurological":   "NEUROLOGICAL_34"
+        "neurological":   "NEUROLOGICAL_34",
     }
-    nonblood_data = np.zeros((n_rows, len(NONBLOOD_DLT_COLS)))
-    for i, col in enumerate(NONBLOOD_DLT_COLS.values()):
-        nonblood_data[:, i] = np.array([_float(row.get(col)) for _, row in df.iterrows()])
+
+    blood_all_raw = np.column_stack([
+        np.array([_float(row.get(c)) for _, row in df.iterrows()])
+        for c in blood_cols_all
+    ])
+    g34_all_raw = np.column_stack([
+        np.array([_float(row.get(c)) for _, row in df.iterrows()])
+        for c in g34_cols_all
+    ])
 
     # ------------------------------------------------------------------
     # 6. Filter to usable rows (TARGET: 461)
@@ -442,17 +449,12 @@ def gastric_cancer(seed: int = 42,
     print(f"Step 6: Filtered has OS and drugs. Observations: {np.sum(valid_os & valid_drug)}")
 
     # 2. Exclude rows with no reported blood toxicities (Appendix D.1)
-    blood_cols_all = [
-        c for c in df.columns
-        if any(k in c for k in ["Neutro", "Thrombo", "Leuko", "Anemia", "Lympho"])
-    ]
     valid_blood = np.array([
         any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in blood_cols_all)
         for _, row in df.iterrows()
     ])
 
     # 3. Exclude rows with no reported Grade 3/4 toxicities
-    g34_cols_all = [c for c in df.columns if "34" in c or "4" in c]
     valid_nonblood = np.array([
         any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in g34_cols_all)
         for _, row in df.iterrows()
@@ -466,53 +468,58 @@ def gastric_cancer(seed: int = 42,
     # Apply the mask to your arrays
     X_valid = X_all[valid_mask].copy()
     os_valid = y_os_raw[valid_mask].copy()
-    blood_valid_raw = blood_data[valid_mask].copy()
-    nonblood_valid_raw = nonblood_data[valid_mask].copy()
+    blood_all_masked = blood_all_raw[valid_mask].copy()
+    g34_all_masked = g34_all_raw[valid_mask].copy()
 
     # ------------------------------------------------------------------
-    # 6b. Multiple Imputation for Partial Missingness
+    # 6b. Multiple imputation (Appendix D.1)
+    #   - cohort characteristics: from other contextual variables only
+    #   - blood toxicities: full blood column block, then take G4 subset
+    #   - G3/4 toxicities: full G3/4 column block, then take DLT subset
     # ------------------------------------------------------------------
     from sklearn.experimental import enable_iterative_imputer
     from sklearn.impute import IterativeImputer
 
-    # Stack contextual features and all raw toxicities so they can borrow information from each other
-    combined_for_imputation = np.hstack([X_valid, blood_valid_raw, nonblood_valid_raw])
-    
-    imputer = IterativeImputer(random_state=seed, max_iter=10)
-    combined_imputed = imputer.fit_transform(combined_for_imputation)
+    ctx_start = n_drug_features
+    ctx_valid = X_valid[:, ctx_start:].copy()
+    if np.isnan(ctx_valid).any():
+        ctx_imputer = IterativeImputer(random_state=seed, max_iter=10)
+        X_valid[:, ctx_start:] = ctx_imputer.fit_transform(ctx_valid)
 
-    # Extract the imputed feature and toxicity arrays back out
-    idx_blood_start = X_valid.shape[1]
-    idx_nonblood_start = idx_blood_start + 5
+    blood_imputer = IterativeImputer(random_state=seed, max_iter=10)
+    blood_all_imputed = np.clip(blood_imputer.fit_transform(blood_all_masked), 0, 1)
 
-    X_valid = combined_imputed[:, :idx_blood_start]
-    blood_imputed = combined_imputed[:, idx_blood_start:idx_nonblood_start]
-    nonblood_imputed = combined_imputed[:, idx_nonblood_start:]
+    g34_imputer = IterativeImputer(random_state=seed, max_iter=10)
+    g34_all_imputed = np.clip(g34_imputer.fit_transform(g34_all_masked), 0, 1)
 
-    # Toxicities represent proportions/probabilities, so clip bounds to [0, 1]
-    blood_imputed = np.clip(blood_imputed, 0, 1)
-    nonblood_imputed = np.clip(nonblood_imputed, 0, 1)
+    blood_g4_idx = [blood_cols_all.index(c) for c in BLOOD_G4_COLS]
+    blood_g4_imputed = blood_all_imputed[:, blood_g4_idx]
+
+    dlt_col_names = list(NONBLOOD_DLT_COLS.values())
+    dlt_g34_idx = [g34_cols_all.index(c) for c in dlt_col_names]
+    nonblood_imputed = g34_all_imputed[:, dlt_g34_idx]
 
     # ------------------------------------------------------------------
     # 6c. Compute final derived outcomes from the IMPUTED data
     # ------------------------------------------------------------------
-    # Grade 4 blood toxicity is the MAX of the 5 individual blood toxicities
-    blood_valid = np.max(blood_imputed, axis=1)
+    blood_valid = np.max(blood_g4_imputed, axis=1)
 
-    # Calculate overall DLT = 1 - product(1 - t_i) for the 5 toxicity groups
     dlt_valid = np.zeros(np.sum(valid_mask))
     for i in range(np.sum(valid_mask)):
         prob_no_dlt = (1.0 - blood_valid[i])
-        for j in range(4): # constitutional, gi, infection, neurological
+        for j in range(len(dlt_col_names)):
             prob_no_dlt *= (1.0 - nonblood_imputed[i, j])
         dlt_valid[i] = 1.0 - prob_no_dlt
 
-    # Extract the individual constraint targets needed for Step 10
     const_valid = nonblood_imputed[:, 0]
     gi_valid    = nonblood_imputed[:, 1]
     inf_valid   = nonblood_imputed[:, 2]
 
-    print(f"Step 6b: Imputed partial missingness and computed outcomes. Observations: {X_valid.shape[0]}")
+    print(
+        f"Step 6b: Imputed partial missingness "
+        f"({len(blood_cols_all)} blood cols, {len(g34_cols_all)} G3/4 cols). "
+        f"Observations: {X_valid.shape[0]}"
+    )
 
     # ------------------------------------------------------------------
     # 7. Train/Test Split.
