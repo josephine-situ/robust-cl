@@ -57,6 +57,11 @@ class IncrementalMaster:
             gp.quicksum(instance.cost_vector[j] * self.x[j] for j in range(self.d)),
             GRB.MINIMIZE,
         )
+        for k, dc in enumerate(instance.domain_constraints):
+            self.opt.addConstr(
+                gp.quicksum(dc.coeffs[j] * self.x[j] for j in range(self.d)) <= dc.rhs,
+                name=f"domain_{k}",
+            )
         self.n_models = 0
         self.scenario_constrs = []
         self.scenario_vars_map = {}

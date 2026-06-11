@@ -64,6 +64,8 @@ def solve_nominal(instance: ProblemInstance,
     # Build optimization model
     opt = gp.Model("nominal")
     opt.Params.OutputFlag = 0
+    opt.Params.MIPGap = 0.01
+    opt.Params.MIPFocus = 1
 
     d = instance.n_features
     x = [
@@ -99,12 +101,15 @@ def solve_nominal(instance: ProblemInstance,
             
         opt.addConstr(gp.quicksum(f_pred_vars) <= constraint.rhs, name=f"ml_constr_{c_idx}")
 
+    for k, dc in enumerate(instance.domain_constraints):
+        opt.addConstr(
+            gp.quicksum(dc.coeffs[j] * x[j] for j in range(d)) <= dc.rhs,
+            name=f"domain_{k}",
+        )
+
     # Objective
     base_cost = gp.quicksum(instance.cost_vector[j] * x[j] for j in range(d))
     opt.setObjective(base_cost + gp.quicksum(obj_terms), GRB.MINIMIZE)
-
-    # Save model to file for debugging
-    opt.write("nominal.lp")
 
     opt.optimize()
     elapsed = time.time() - start
