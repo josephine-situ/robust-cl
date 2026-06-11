@@ -502,3 +502,67 @@ def embed_model(model: gp.Model,
 
     else:
         raise ValueError(f"Unsupported model type: {type(ml_model)}")
+
+
+def embedded_prediction_at_point(
+    ml_model: ModelType,
+    x_point: np.ndarray,
+    var_lb: np.ndarray,
+    var_ub: np.ndarray,
+    rho: float = 0.0,
+) -> float:
+    """Evaluate an embedded model at a fixed x by fixing all decision variables."""
+    x_point = np.asarray(x_point, dtype=float).ravel()
+    d = len(x_point)
+    m = gp.Model("embed_check")
+    m.Params.OutputFlag = 0
+    x_vars = [
+        m.addVar(lb=var_lb[j], ub=var_ub[j], name=f"x_{j}")
+        for j in range(d)
+    ]
+    f_var = embed_model(m, ml_model, x_vars, var_lb, var_ub, name_prefix="chk", rho=rho)
+    for j in range(d):
+        m.addConstr(x_vars[j] == float(x_point[j]), name=f"fix_{j}")
+    m.setObjective(f_var, GRB.MINIMIZE)
+    m.optimize()
+    if m.Status != GRB.OPTIMAL:
+        raise RuntimeError(f"Embedding check failed with Gurobi status {m.Status}")
+    return float(f_var.X)
+
+
+def verify_embedded_predictions(instance, configs, n_points: int = 5, seed: int = 0):
+    """
+    Confirm embedded predictions match sklearn at random feasible points.
+    Uses optimizer model configs (Table EC.10), not GT ensemble models.
+    """
+    try:
+        from ..models.train import train_model
+    except ImportError:
+        from src.models.train import train_model
+
+    rng = np.random.RandomState(seed)
+    X = instance.X_train
+    y = instance.constraints[0].models_data[0].y_train
+    lines = []
+    max_err = 0.0
+
+    for cfg in configs:
+        mtype = cfg["model_type"]
+        params = dict(cfg.get("model_params", {}))
+        params.setdefault("random_state", 42)
+        model = train_model(X, y, mtype, params)
+        errs = []
+        for _ in range(n_points):
+            idx = rng.randint(0, len(X))
+            x_pt = X[idx].copy()
+            sk = float(model.predict(x_pt.reshape(1, -1))[0])
+            gu = embedded_prediction_at_point(
+                model, x_pt, instance.variable_lb, instance.variable_ub,
+            )
+            errs.append(abs(sk - gu))
+        max_err = max(max_err, max(errs))
+        lines.append(
+            f"{mtype:6s} max|sklearn-embedded|={max(errs):.2e}  mean={np.mean(errs):.2e}"
+        )
+    lines.append(f"overall max error: {max_err:.2e}")
+    return lines

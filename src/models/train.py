@@ -83,12 +83,15 @@ def train_model(X: np.ndarray,
     elif model_type == "xgb":
         model = XGBRegressor(
             n_estimators=params.get("n_estimators", 250),
-            learning_rate=params.get("learning_rate", 0.1),
+            learning_rate=params.get("learning_rate", 0.01),
             max_depth=params.get("max_depth", 4),
             colsample_bytree=params.get("colsample_bytree", 1.0),
             gamma=params.get("gamma", 0.0),
             min_child_weight=params.get("min_child_weight", 1),
             subsample=params.get("subsample", 1.0),
+            reg_lambda=params.get("reg_lambda", 1.0),
+            reg_alpha=params.get("reg_alpha", 0.0),
+            objective="reg:squarederror",
             random_state=random_state,
             verbosity=0,
         )

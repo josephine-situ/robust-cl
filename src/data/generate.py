@@ -85,6 +85,9 @@ class ProblemInstance:
     # Observed trial outcomes on the test split (for diagnostics / replication checks)
     observed_test_outcomes: Optional[Dict[str, np.ndarray]] = None
 
+    # Full-cohort features/outcomes for GT R² diagnostics (461 retained arms)
+    gt_eval_data: Optional[Dict[str, Dict[str, np.ndarray]]] = None
+
 
 # Table EC.10 embedded model configs
 _GASTRIC_EMBED_CONFIGS = [
@@ -96,57 +99,249 @@ _GASTRIC_EMBED_CONFIGS = [
     {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 3, "n_estimators": 20, "random_state": 42}},
 ]
 
-# Table EC.12 ground-truth ensemble specs per outcome (Linear, SVM, CART, RF, GBM, XGB)
+# Table EC.12 ground-truth ensemble specs per outcome (Linear, SVM, CART, RF, GBM, XGB).
+# XGB entries add learning_rate (matched to GBM) and reg_lambda; gamma/min_child_weight
+# are adjusted where Python xgboost 3.x otherwise fits a constant predictor on sparse toxicities.
 _GT_SPECS = {
     "dlt": [
         {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.6}},
         {"model_type": "svm", "params": {"C": 100}},
         {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.04, "max_features": 1.0}},
-        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": "sqrt"}},
+        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {"colsample_bytree": 0.8, "gamma": 0.5, "max_depth": 4, "min_child_weight": 10, "n_estimators": 250, "subsample": 1.0}},
+        {"model_type": "xgb", "params": {
+            "colsample_bytree": 0.8, "gamma": 0.5, "max_depth": 4,
+            "min_child_weight": 1, "n_estimators": 250, "subsample": 1.0,
+            "learning_rate": 0.01, "reg_lambda": 1.0,
+        }},
     ],
     "blood": [
         {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.5}},
         {"model_type": "svm", "params": {"C": 100}},
         {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.06, "max_features": 1.0}},
-        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 8, "max_features": "sqrt"}},
+        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 8, "max_features": 1.0}},
         {"model_type": "gbm", "params": {"learning_rate": 0.025, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {"colsample_bytree": 1.0, "gamma": 0.5, "max_depth": 5, "min_child_weight": 1, "n_estimators": 250, "subsample": 0.8}},
+        {"model_type": "xgb", "params": {
+            "colsample_bytree": 1.0, "gamma": 0.5, "max_depth": 5,
+            "min_child_weight": 1, "n_estimators": 250, "subsample": 0.8,
+            "learning_rate": 0.025, "reg_lambda": 1.0,
+        }},
     ],
     "constitutional": [
         {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.4}},
         {"model_type": "svm", "params": {"C": 1}},
         {"model_type": "cart", "params": {"max_depth": 4, "min_samples_leaf": 0.06, "max_features": 0.6}},
-        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": "sqrt"}},
+        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {"colsample_bytree": 0.8, "gamma": 1.0, "max_depth": 4, "min_child_weight": 10, "n_estimators": 250, "subsample": 0.8}},
+        {"model_type": "xgb", "params": {
+            "colsample_bytree": 0.8, "gamma": 0.0, "max_depth": 4,
+            "min_child_weight": 10, "n_estimators": 250, "subsample": 0.8,
+            "learning_rate": 0.01, "reg_lambda": 1.0,
+        }},
     ],
     "infection": [
         {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.3}},
         {"model_type": "svm", "params": {"C": 10}},
         {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.06, "max_features": 0.6}},
-        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": "sqrt"}},
+        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {"colsample_bytree": 1.0, "gamma": 1.0, "max_depth": 4, "min_child_weight": 10, "n_estimators": 250, "subsample": 0.8}},
+        {"model_type": "xgb", "params": {
+            "colsample_bytree": 1.0, "gamma": 0.0, "max_depth": 4,
+            "min_child_weight": 10, "n_estimators": 250, "subsample": 0.8,
+            "learning_rate": 0.01, "reg_lambda": 1.0,
+        }},
     ],
     "gi": [
         {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.7}},
         {"model_type": "svm", "params": {"C": 100}},
         {"model_type": "cart", "params": {"max_depth": 5, "min_samples_leaf": 0.06, "max_features": 0.6}},
-        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": "sqrt"}},
+        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 6, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {"colsample_bytree": 0.8, "gamma": 0.5, "max_depth": 5, "min_child_weight": 1, "n_estimators": 250, "subsample": 0.8}},
+        {"model_type": "xgb", "params": {
+            "colsample_bytree": 0.8, "gamma": 0.0, "max_depth": 5,
+            "min_child_weight": 1, "n_estimators": 250, "subsample": 0.8,
+            "learning_rate": 0.01, "reg_lambda": 1.0,
+        }},
     ],
     "os": [
         {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.8}},
         {"model_type": "svm", "params": {"C": 0.1}},
         {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.02, "max_features": 0.8}},
-        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 8, "max_features": "sqrt"}},
+        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 8, "max_features": 1.0}},
         {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {"colsample_bytree": 1.0, "gamma": 10.0, "max_depth": 4, "min_child_weight": 10, "n_estimators": 250, "subsample": 1.0}},
+        {"model_type": "xgb", "params": {
+            "colsample_bytree": 1.0, "gamma": 10.0, "max_depth": 4,
+            "min_child_weight": 10, "n_estimators": 250, "subsample": 1.0,
+            "learning_rate": 0.05, "reg_lambda": 1.0,
+        }},
     ],
 }
+
+
+# Non-standard combined ECOG buckets (Bertsimas A.1: mark unavailable unless a
+# standard breakdown is available via ECOG_0..4 or ECOG_01).
+_NONSTANDARD_ECOG_COLS = (
+    "ECOG_23", "ECOG_12", "ECOG_034", "ECOG_012", "ECOG_234",
+)
+
+_INDIVIDUAL_KPS_COLS = tuple(f"KPS_{k}" for k in (100, 90, 80, 70, 60, 50, 40, 30, 20, 10))
+
+# Buccheri et al. (1996) KPS -> ECOG mapping (Bertsimas A.1).
+_KPS_TO_ECOG = (
+    (100, 0.0), (90, 0.0), (80, 1.0), (70, 1.0), (60, 2.0),
+    (50, 2.0), (40, 3.0), (30, 3.0), (20, 4.0), (10, 4.0),
+)
+
+
+def _fit_ecog01_frac0_predictor(df, _float):
+    """
+    Bertsimas et al. (2016) Appendix A.1: estimate p0/(p0+p1) from combined ECOG_01
+    using linear vs quadratic regression on arms with a full ECOG breakdown.
+    """
+    p01_vals, frac0_vals = [], []
+    for _, row in df.iterrows():
+        parts = {}
+        for g in range(5):
+            v = _float(row.get(f"ECOG_{g}"))
+            if not np.isnan(v):
+                parts[g] = v
+        if 0 in parts and 1 in parts:
+            p0, p1 = parts[0], parts[1]
+            denom = p0 + p1
+            if denom > 1e-12:
+                p01_vals.append(denom)
+                frac0_vals.append(p0 / denom)
+    if len(p01_vals) < 5:
+        return lambda p01: 0.5
+
+    x = np.asarray(p01_vals, dtype=float)
+    y = np.asarray(frac0_vals, dtype=float)
+    X_lin = np.column_stack([np.ones_like(x), x])
+    beta_lin, _, _, _ = np.linalg.lstsq(X_lin, y, rcond=None)
+    ssr_lin = float(np.sum((y - X_lin @ beta_lin) ** 2))
+
+    X_quad = np.column_stack([np.ones_like(x), x, x ** 2])
+    beta_quad, _, _, _ = np.linalg.lstsq(X_quad, y, rcond=None)
+    ssr_quad = float(np.sum((y - X_quad @ beta_quad) ** 2))
+
+    if ssr_quad < ssr_lin:
+        return lambda p01, b=beta_quad: float(np.clip(b[0] + b[1] * p01 + b[2] * p01 ** 2, 0.0, 1.0))
+    return lambda p01, b=beta_lin: float(np.clip(b[0] + b[1] * p01, 0.0, 1.0))
+
+
+def _has_nonstandard_ecog_grouping(row, _float) -> bool:
+    return any(
+        not np.isnan(_float(row.get(col)))
+        for col in _NONSTANDARD_ECOG_COLS
+    )
+
+
+def _mean_ecog_from_kps(row, _float, min_bins: int = 2):
+    """
+    KPS -> mean ECOG via Buccheri mapping (Bertsimas A.1).
+
+    Only arms reporting proportions on individual KPS bins (KPS_10 ... KPS_100)
+    are converted; grouped KPS columns alone are treated as unavailable.
+    """
+    weighted = 0.0
+    total = 0.0
+    n_bins = 0
+    for kps, ecog in _KPS_TO_ECOG:
+        v = _float(row.get(f"KPS_{kps}"))
+        if not np.isnan(v) and v > 0:
+            weighted += ecog * v
+            total += v
+            n_bins += 1
+    if n_bins >= min_bins and total > 0:
+        return weighted / total
+    return np.nan
+
+
+def _mean_ecog_row(row, _float, ecog01_frac0):
+    """
+    Mean ECOG from raw performance-status columns (Bertsimas A.1).
+
+    Maragno Appendix D.1 then imputes any remaining missing context (including
+    mean ECOG) via multiple imputation from the other cohort characteristics.
+
+    The shortcut ``0.5*ECOG_01 + 2*ECOG_2 + 3*ECOG_3`` is incorrect because it
+    (i) fixes the ECOG 0/1 split at 50/50 instead of estimating p0/(p0+p1)
+    from other trials, (ii) omits the denominator (total patient fraction),
+    and (iii) ignores ECOG_4.
+    """
+    parts = {}
+    for g in range(5):
+        v = _float(row.get(f"ECOG_{g}"))
+        if not np.isnan(v):
+            parts[g] = v
+
+    if len(parts) >= 2:
+        total = sum(parts.values())
+        if total > 0:
+            return sum(g * p for g, p in parts.items()) / total
+
+    e01 = _float(row.get("ECOG_01"))
+    if not np.isnan(e01) and e01 > 0:
+        frac0 = ecog01_frac0(e01)
+        p0 = frac0 * e01
+        p1 = (1.0 - frac0) * e01
+        e2 = _float(row.get("ECOG_2")); e2 = 0.0 if np.isnan(e2) else e2
+        e3 = _float(row.get("ECOG_3")); e3 = 0.0 if np.isnan(e3) else e3
+        e4 = _float(row.get("ECOG_4")); e4 = 0.0 if np.isnan(e4) else e4
+        total = p0 + p1 + e2 + e3 + e4
+        if total > 0:
+            return (p1 + 2.0 * e2 + 3.0 * e3 + 4.0 * e4) / total
+
+    kps_mean = _mean_ecog_from_kps(row, _float)
+    if not np.isnan(kps_mean):
+        return kps_mean
+
+    if _has_nonstandard_ecog_grouping(row, _float):
+        return np.nan
+
+    return np.nan
+
+
+def compute_gt_r2_table(instance: ProblemInstance):
+    """
+    In-sample R² for GT ensemble members (trained on full 461 cohort) vs Table EC.11.
+    GT models are separate from the embedded optimizer models (Table EC.10).
+    """
+    import pandas as pd
+    from sklearn.metrics import r2_score
+
+    try:
+        from ..models.train import train_model
+    except ImportError:
+        from src.models.train import train_model
+
+    paper_r2 = {
+        "dlt": {"linear": 0.301, "svm": 0.330, "cart": 0.250, "rf": 0.573, "gbm": 0.670, "xgb": 0.323},
+        "blood": {"linear": 0.287, "svm": 0.351, "cart": 0.211, "rf": 0.701, "gbm": 0.813, "xgb": 0.446},
+        "constitutional": {"linear": 0.139, "svm": 0.224, "cart": 0.246, "rf": 0.602, "gbm": 0.682, "xgb": 0.285},
+        "infection": {"linear": 0.217, "svm": 0.303, "cart": 0.139, "rf": 0.514, "gbm": 0.588, "xgb": 0.247},
+        "gi": {"linear": 0.201, "svm": 0.328, "cart": 0.238, "rf": 0.563, "gbm": 0.733, "xgb": 0.475},
+        "os": {"linear": 0.528, "svm": 0.469, "cart": 0.421, "rf": 0.815, "gbm": 0.827, "xgb": 0.756},
+    }
+    if instance.gt_eval_data is None:
+        raise ValueError("instance.gt_eval_data is required for GT R² diagnostics")
+
+    rows = []
+    for outcome_name, data in instance.gt_eval_data.items():
+        X, y = data["X"], data["y"]
+        for spec in _GT_SPECS[outcome_name]:
+            mtype = spec["model_type"]
+            model = train_model(X, y, mtype, spec.get("params", {}))
+            pred = model.predict(X)
+            r2 = float(r2_score(y, pred))
+            rows.append({
+                "outcome": outcome_name,
+                "model_type": mtype,
+                "r2": r2,
+                "paper_r2": paper_r2[outcome_name][mtype],
+                "delta": r2 - paper_r2[outcome_name][mtype],
+            })
+    return pd.DataFrame(rows)
 
 
 def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemInstance:
@@ -365,42 +560,16 @@ def gastric_cancer(seed: int = 42,
 
     # ------------------------------------------------------------------
     # 4.  Contextual features  (9 covariates from CL appendix)
+    #     Mean ECOG derived from raw performance-status columns (Bertsimas A.1)
+    #     before cohort-characteristic imputation in step 6b.
     # ------------------------------------------------------------------
-    def _mean_ecog(row):
-        """Weighted ECOG from the various reporting formats."""
-        parts = {}
-        for g in range(5):
-            v = _float(row.get(f"ECOG_{g}"))
-            if not np.isnan(v):
-                parts[g] = v
-        if len(parts) >= 2:
-            total = sum(parts.values())
-            if total > 0:
-                return sum(g * p for g, p in parts.items()) / total
-
-        # ECOG 0–1 combined
-        e01 = _float(row.get("ECOG_01"))
-        if not np.isnan(e01):
-            e2 = _float(row.get("ECOG_2")); e2 = 0. if np.isnan(e2) else e2
-            e3 = _float(row.get("ECOG_3")); e3 = 0. if np.isnan(e3) else e3
-            return 0.5 * e01 + 2.0 * e2 + 3.0 * e3
-
-        # KPS → ECOG rough map  (Buccheri et al. 1996, used in Bertsimas A.1)
-        for hi, lo, ecog_val in [
-            ("KPS_100_90", None, 0.0), ("KPS_80_70", None, 1.0),
-            ("KPS_60_50", None, 2.0),
-        ]:
-            v = _float(row.get(hi))
-            if not np.isnan(v):
-                # can't fully reconstruct; return rough midpoint
-                return ecog_val + 0.5
-        return np.nan
+    ecog01_frac0 = _fit_ecog01_frac0_predictor(df, _float)
 
     ctx_data = np.full((n_rows, 9), np.nan)
     for i, (_, row) in enumerate(df.iterrows()):
         ctx_data[i, 0] = _float(row.get("FRAC_MALE"))
         ctx_data[i, 1] = _float(row.get("AGE_MED"))
-        ctx_data[i, 2] = _mean_ecog(row)
+        ctx_data[i, 2] = _mean_ecog_row(row, _float, ecog01_frac0)
         ctx_data[i, 3] = _float(row.get("Primary_Stomach"))
         ctx_data[i, 4] = _float(row.get("Primary_GEJ"))
         ctx_data[i, 5] = _float(row.get("Prior_Palliative_Chemo"))
@@ -503,13 +672,13 @@ def gastric_cancer(seed: int = 42,
             f"(paper: 20%, 6%)"
         )
     if np.isnan(ctx_imputable).any():
-        ctx_imputer = IterativeImputer(random_state=seed, max_iter=10)
+        ctx_imputer = IterativeImputer(random_state=seed, max_iter=25, tol=1e-3)
         X_valid[:, ctx_start:ctx_start + 8] = ctx_imputer.fit_transform(ctx_imputable)
 
-    blood_imputer = IterativeImputer(random_state=seed, max_iter=10)
+    blood_imputer = IterativeImputer(random_state=seed, max_iter=25, tol=1e-3)
     blood_all_imputed = np.clip(blood_imputer.fit_transform(blood_all_masked), 0, 1)
 
-    g34_imputer = IterativeImputer(random_state=seed, max_iter=10)
+    g34_imputer = IterativeImputer(random_state=seed, max_iter=25, tol=1e-3)
     g34_all_imputed = np.clip(g34_imputer.fit_transform(g34_all_masked), 0, 1)
 
     blood_g4_idx = [blood_impute_cols.index(c) for c in BLOOD_G4_COLS]
@@ -530,6 +699,7 @@ def gastric_cancer(seed: int = 42,
     if blood_agg_imputed is not None:
         blood_valid = np.maximum(blood_valid, blood_agg_imputed)
 
+    # Maragno Appendix D.1: independent toxicity groups; blood = max(G4 cols, BLOOD_34).
     dlt_valid = np.zeros(np.sum(valid_mask))
     for i in range(np.sum(valid_mask)):
         prob_no_dlt = (1.0 - blood_valid[i])
@@ -782,6 +952,11 @@ def gastric_cancer(seed: int = 42,
 
     trust_region_points = X_train[:, decision_var_indices].copy()
 
+    gt_eval_data = {
+        name: {"X": X_valid, "y": y_t}
+        for name, y_t in full_targets.items()
+    }
+
     return ProblemInstance(
         X_test=X_test,
         X_train=X_train,
@@ -799,6 +974,7 @@ def gastric_cancer(seed: int = 42,
         trust_region_points=trust_region_points,
         eval_outcomes=eval_outcomes,
         observed_test_outcomes=observed_test,
+        gt_eval_data=gt_eval_data,
     )
 
 
@@ -852,6 +1028,23 @@ if __name__ == "__main__":
             obs_sat = float(np.mean(obs <= outcome.rhs))
             gt_sat = float(np.mean(outcome.gt_fn.predict(gastric_cancer_instance.X_test) <= outcome.rhs))
             print(f"  {outcome.label:18s} observed={obs_sat:.3f}  GT={gt_sat:.3f}  rhs={outcome.rhs:.4f}")
+
+    print("\nGT ensemble R² vs Table EC.11 (trained on full 461 cohort):")
+    gt_r2_df = compute_gt_r2_table(gastric_cancer_instance)
+    print(gt_r2_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
+    gt_r2_path = "results/gt_r2_ec11.csv"
+    gt_r2_df.to_csv(gt_r2_path, index=False)
+    print(f"Saved GT R² diagnostics to {gt_r2_path}")
+
+    from src.models.embed import verify_embedded_predictions
+    print("\nEmbedding exactness check (embedded Gurobi vs sklearn predict):")
+    embed_report = verify_embedded_predictions(
+        gastric_cancer_instance,
+        configs=_GASTRIC_EMBED_CONFIGS,
+        n_points=5,
+    )
+    for line in embed_report:
+        print(f"  {line}")
     print(summary_df.to_string(index=False))
     print("\nConstraint details:")
     print(constraint_df.to_string(index=False))

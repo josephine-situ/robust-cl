@@ -96,11 +96,13 @@ def solve_nominal(instance: ProblemInstance,
                 embedded_models_cache[m_id] = f_pred
                 models_embedded += 1
                 
-            f_pred_vars.append(model_data_weight * embedded_models_cache[m_id])
             if obj_weight != 0.0:
                 obj_terms.append(obj_weight * embedded_models_cache[m_id])
-            
-        opt.addConstr(gp.quicksum(f_pred_vars) <= constraint.rhs, name=f"ml_constr_{c_idx}")
+            else:
+                f_pred_vars.append(model_data_weight * embedded_models_cache[m_id])
+
+        if f_pred_vars:
+            opt.addConstr(gp.quicksum(f_pred_vars) <= constraint.rhs, name=f"ml_constr_{c_idx}")
 
     for k, dc in enumerate(instance.domain_constraints):
         opt.addConstr(

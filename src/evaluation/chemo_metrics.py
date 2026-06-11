@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List
 
 import numpy as np
 
@@ -49,16 +49,14 @@ def _outcome_values(x_rows: np.ndarray, outcome, instance: ProblemInstance) -> n
 
 def evaluate_given_table6(
     instance: ProblemInstance,
-    feasible_mask: Optional[np.ndarray] = None,
+    feasible_mask: np.ndarray,
 ) -> Dict[str, np.ndarray]:
-    """Given-treatment outcomes on observed regimens for the evaluation cohort."""
-    X_test = instance.X_test
-    if feasible_mask is not None:
-        X_test = X_test[feasible_mask]
-    results = {}
-    for outcome in instance.eval_outcomes:
-        results[outcome.label] = _outcome_values(X_test, outcome, instance)
-    return results
+    """Given-treatment outcomes on observed regimens for the feasible test cohort."""
+    X_test = instance.X_test[feasible_mask]
+    return {
+        outcome.label: _outcome_values(X_test, outcome, instance)
+        for outcome in instance.eval_outcomes
+    }
 
 
 def evaluate_prescribed_table6(

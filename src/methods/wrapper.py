@@ -178,7 +178,6 @@ def solve_wrapper(instance: ProblemInstance,
                     preds.append(weight * embedded_models_cache[m_id])
                 avg_pred = (1.0 / P) * gp.quicksum(preds)
                 obj_terms.append(obj_weight * avg_pred)
-                opt.addConstr(avg_pred <= constraint.rhs, name=f"wrapper_os_bound_{c_idx}")
         else:
             z = opt.addVars(P, vtype=GRB.BINARY, name=f"z_wrapper_c{c_idx}")
             for p in range(P):
@@ -280,7 +279,6 @@ def solve_tree_violation_wrapper(instance: ProblemInstance,
                     )
                     models_embedded += 1
                 f_pred = embedded_cache[m_id]
-                f_pred_vars.append(weight * f_pred)
                 obj_terms.append(obj_weight * f_pred)
             elif isinstance(ml_model, RandomForestRegressor):
                 models_embedded += _add_rf_tree_violation(
