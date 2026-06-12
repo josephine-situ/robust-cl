@@ -6,7 +6,6 @@ saves results.
 """
 
 import yaml
-import numpy as np
 import pandas as pd
 import os
 import sys
@@ -16,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.data.generate import synthetic_nonlinear, gastric_cancer
 from src.methods.nominal import solve_nominal
 from src.methods.robust_classification import solve_robust_classification
-from src.methods.wrapper import solve_wrapper
+from src.methods.wrapper import solve_wrapper, _get_shared_bootstrap_indices
 from src.methods.cp import solve_cp
 from src.evaluation.metrics import evaluate_all
 
@@ -33,7 +32,6 @@ def run_experiment(config):
     print("ROBUST CONSTRAINT LEARNING EXPERIMENT")
     print("=" * 60)
 
-    # --- Generate data ---
     print(f"\n[1] Generating problem instance ({config['data']['type']})...")
     if config["data"]["type"] == "gastric_cancer":
         instance = gastric_cancer()
@@ -45,61 +43,71 @@ def run_experiment(config):
         )
     print(f"    n_train (model 1)={len(instance.constraints[0].models_data[0].y_train)}, "
           f"d={instance.n_features}, "
-          f"noise_std={config['data']['noise_std']}")
+          f"noise_std={config['data'].get('noise_std', 'n/a')}")
 
     model_type = config["model"]["type"]
     model_params = config["model"]["params"]
-    delta_bar = config["uncertainty"]["delta_bar"]
-    gamma = config["uncertainty"]["gamma"]
-    
+    unc = config["uncertainty"]
+    n_bootstrap = unc.get("n_bootstrap", 25)
+    bootstrap_seed = unc.get("bootstrap_seed", 42)
+    cp_k_neighbors_frac = unc.get("cp_k_neighbors_frac", 0.1)
+    cp_n_candidates = unc.get("cp_n_candidates", 20)
+
     from functools import partial
-    
+
+    bootstrap_cache = _get_shared_bootstrap_indices(
+        instance, model_type, model_params, n_bootstrap, bootstrap_seed
+    )
+
     solver_fns = {}
 
-    # --- Method 1: Nominal ---
     solver_fns["nominal"] = partial(
         solve_nominal, model_type=model_type, model_params=model_params, rho=0.0
     )
-          
-    # --- Method 1.5: Robust Param ---
+
     robust_param_cfg = config["methods"].get("robust_param", {})
     robust_rho = robust_param_cfg.get("rho", 0.0)
     solver_fns["robust_param"] = partial(
         solve_nominal, model_type=model_type, model_params=model_params, rho=robust_rho
     )
 
-    # --- Method 2: Robust Classification ---
     solver_fns["robust_cls"] = partial(
-        solve_robust_classification, model_type=model_type, model_params=model_params,
-        delta_bar=delta_bar, gamma=gamma, rho=0.0,
-        n_perturbations=config["methods"]["robust_classification"].get("n_perturbations", 50)
+        solve_robust_classification,
+        model_type=model_type,
+        model_params=model_params,
+        n_bootstrap=n_bootstrap,
+        seed=bootstrap_seed,
+        rho=0.0,
+        bootstrap_cache=bootstrap_cache,
     )
 
-    # --- Method 3: Wrapper ---
     wrapper_cfg = config["methods"]["wrapper"]
     solver_fns["wrapper"] = partial(
-        solve_wrapper, model_type=model_type, model_params=model_params, rho=0.0,
-        n_estimators=wrapper_cfg["n_estimators"],
-        alpha=wrapper_cfg["alpha"]
+        solve_wrapper,
+        model_type=model_type,
+        model_params=model_params,
+        rho=0.0,
+        n_estimators=n_bootstrap,
+        alpha=wrapper_cfg["alpha"],
+        seed=bootstrap_seed,
+        bootstrap_cache=bootstrap_cache,
     )
 
-    # --- Method 5: CP ---
     cp_cfg = config["methods"]["cp"]
     solver_fns["cp"] = partial(
-        solve_cp, model_type=model_type, model_params=model_params,
-        delta_bar=delta_bar, gamma=gamma, rho=0.0,
+        solve_cp,
+        model_type=model_type,
+        model_params=model_params,
+        rho=0.0,
         max_iterations=cp_cfg["max_iterations"],
-        separation_strategy=cp_cfg["separation_strategy"],
-        n_greedy_candidates=cp_cfg["n_greedy_candidates"]
+        cp_k_neighbors_frac=cp_k_neighbors_frac,
+        cp_n_candidates=cp_n_candidates,
+        seed=bootstrap_seed,
     )
 
-    # --- Evaluate all ---
     print("\n[Evaluating all methods prescriptively...]")
-    evaluations = evaluate_all(
-        solver_fns, instance
-    )
+    evaluations = evaluate_all(solver_fns, instance)
 
-    # --- Results table ---
     rows = []
     for ev in evaluations:
         row = {
@@ -124,11 +132,11 @@ def run_experiment(config):
     print("=" * 60)
     print(df.to_string(index=False))
 
-    # --- Save ---
     os.makedirs("results", exist_ok=True)
     df.to_csv("results/results.csv", index=False)
-    
+
     return df, None
+
 
 if __name__ == "__main__":
     config = load_config()

@@ -19,28 +19,43 @@ optimization:
   variable_bounds: [0.0, 1.0]
 
 uncertainty:
-  delta_bar: 0.2  # max perturbation per label
-  gamma: 5.0  # budget of uncertainty (L1 norm)
+  n_bootstrap: 25  # P — shared fixed resamples for wrapper + robust_cls
+  bootstrap_seed: 42
+  cp_k_neighbors_frac: 0.1  # fraction of n_train for CP localized pool
+  cp_n_candidates: 20  # bootstrap candidates per CP separation call
 
 methods:
+  embedding_mode: "hard"  # "hard" | "tree_violation"
+
   robust_param:
     rho: 0.05  # parameter robustness on the splits (dual norm penalty)
-    
+
   wrapper:
-    n_estimators: 25  # P (bootstrap / WFP-style wrapper via solve_wrapper)
+    n_estimators: 25  # P (bootstrap wrapper; uses uncertainty.n_bootstrap in chemo runner)
     alpha: 0.1  # violation fraction across bootstrap models
 
   chemo_wrapper:
     alpha: 0.25  # max fraction of embedded RF trees allowed to violate
 
   cp:
-    max_iterations: 50
-    separation_strategy: "proxy-bootstrap"  # "greedy" or "random" or "proxy" or "proxy-bootstrap"
-    n_greedy_candidates: 20
+    max_iterations: 20
 
-  robust_classification:
-    uncertainty_set_size: 0.2
-
-evaluation:
-  n_held_out: 100  # M held-out perturbations
-  seed: 42
+  chemo:
+    methods_to_run:
+      - nominal
+      - tree_violation # like paper
+      - robust_param
+      - robust_cls
+      - cp
+      - wrapper
+    constraint_modes:
+      - all_constraints
+      - dlt_only
+    quick:
+      max_test_rows: 5
+      methods_to_run: [nominal, cp, wrapper]
+      constraint_modes: [all_constraints]
+      n_bootstrap: 5
+      cp_max_iterations: 5
+      cp_n_candidates: 5
+      cp_k_neighbors_frac: 0.05
