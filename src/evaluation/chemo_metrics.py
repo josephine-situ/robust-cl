@@ -63,6 +63,9 @@ def evaluate_prescribed_table6(
     solver_fn: Callable,
     instance: ProblemInstance,
     eval_mask: np.ndarray | None = None,
+    max_test_rows: int | None = None,
+    method_name: str | None = None,
+    constraint_mode: str | None = None,
     **solver_kwargs,
 ) -> tuple[Dict[str, np.ndarray], np.ndarray, float, float]:
     """
@@ -79,17 +82,32 @@ def evaluate_prescribed_table6(
     feasible_mask : bool array length n_test (optimizer feasibility per row)
     mean_solve_time, solve_time_sd : per-cohort re-optimization times (seconds)
     """
+    label = method_name or getattr(solver_fn, "func", solver_fn).__name__
+    if constraint_mode:
+        label = f"{label}/{constraint_mode}"
+
+    print(f"  [{label}] Building initial MIP (train + embed)...", flush=True)
+    t_build = time.time()
     result = solver_fn(instance, **solver_kwargs)
     if isinstance(result, tuple):
         result = result[0]
+    build_time = time.time() - t_build
+    print(
+        f"  [{label}] Initial solve done in {build_time:.1f}s "
+        f"(status={result.status}, models_embedded={result.models_embedded})",
+        flush=True,
+    )
 
     n_test = instance.X_test.shape[0]
+    n_eval_rows = n_test if max_test_rows is None else min(max_test_rows, n_test)
     feasible_mask = np.zeros(n_test, dtype=bool)
     row_times: List[float] = []
 
     outcome_buffers = {o.label: np.full(n_test, np.nan) for o in instance.eval_outcomes}
 
-    for i in range(n_test):
+    print(f"  [{label}] Prescribing per test cohort ({n_eval_rows} rows)...", flush=True)
+
+    for i in range(n_eval_rows):
         for c_idx in instance.context_var_indices:
             result.x[c_idx].lb = instance.variable_lb[c_idx]
             result.x[c_idx].ub = instance.variable_ub[c_idx]
@@ -102,14 +120,28 @@ def evaluate_prescribed_table6(
         result.opt.Params.MIPGap = 0.01
         result.opt.update()
 
+        print(f"  [{label}] test row {i + 1}/{n_eval_rows}: optimizing...", flush=True)
         t0 = time.time()
         result.opt.optimize()
-        row_times.append(time.time() - t0)
+        row_elapsed = time.time() - t0
+        row_times.append(row_elapsed)
 
-        if n_test > 1 and (i == 0 or (i + 1) % 10 == 0 or i + 1 == n_test):
-            print(f"  prescribed: test row {i + 1}/{n_test}", flush=True)
+        status = result.opt.Status
+        if status == 2:
+            status_str = "optimal"
+        elif status == 3:
+            status_str = "infeasible"
+        elif status == 9:
+            status_str = "time_limit"
+        else:
+            status_str = f"status={status}"
+        print(
+            f"  [{label}] test row {i + 1}/{n_eval_rows}: "
+            f"{status_str} in {row_elapsed:.1f}s",
+            flush=True,
+        )
 
-        if result.opt.Status != 2:
+        if status != 2:
             continue
 
         feasible_mask[i] = True
@@ -123,6 +155,13 @@ def evaluate_prescribed_table6(
 
     mean_time = float(np.mean(row_times)) if row_times else np.nan
     sd_time = float(np.std(row_times, ddof=1)) if len(row_times) > 1 else 0.0
+    n_feasible = int(feasible_mask[:n_eval_rows].sum())
+    print(
+        f"  [{label}] Prescription pass complete: "
+        f"{n_feasible}/{n_eval_rows} feasible, "
+        f"mean re-solve {mean_time:.2f}s",
+        flush=True,
+    )
 
     report_mask = feasible_mask if eval_mask is None else (feasible_mask & eval_mask)
     feasible_outcomes = {

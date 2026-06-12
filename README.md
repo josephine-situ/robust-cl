@@ -36,11 +36,30 @@ Following our latest experimental design, we employ data-driven uncertainty cali
 | **Nominal**| None | None | --- |
 | **Robust Classification**| CV / Bootstrap | Train one model robust to data noise, then embed | CV predictive accuracy |
 | **Wrapper** | Bootstrap | Maragno et al. ensemble chance constraint ($\alpha$ viol.) | CV feasibility + cost |
-| **Cutting Planes (Ours)**| CV / Bootstrap | Adversarial scenarios ($\Gamma$ perturbation budget) | CV feasibility + cost |
+| **Cutting Planes (Ours)**| Bootstrap | Localized bootstrap separation at $x^k$ | CV feasibility + cost |
 
 **Separation Oracle:** 
-Our current separation oracle uses an uncertainty set over continuous label perturbations (with a $L_1$ budget $\Gamma$ and $L_\infty$ bounds $\bar{\delta}$) to find the worst-case constraints for the current $x^k$.
-*TODO: Update the separation oracle to search directly over training samples (e.g. adversarial bootstrap/resampling) as a discrete strategy better suited for tree models.*
+The separation oracle uses **localized bootstrap resampling**: at each iteration, training arms nearest to the current prescription $x^k$ are resampled to find worst-case constraint models. Wrapper and robust classification share a fixed set of $P$ bootstrap resamples; CP generates fresh localized candidates each iteration.
+
+## Gastric Cancer Chemotherapy Experiment
+
+Compare all robust methods on the OptiCL gastric cancer case study (Table 6 metrics):
+
+```bash
+# Local smoke run (5 test cohorts, 3 methods)
+python experiments/run_chemo_robust.py --quick
+
+# Full comparison (cluster or long local run)
+python experiments/run_chemo_robust.py
+
+# OptiCL replication baseline only
+python experiments/run_chemo_replication.py
+
+# SLURM (12h, full run)
+sbatch experiments/submit_chemo_robust.sh
+```
+
+Uncertainty is **data-driven**: bootstrap resamples of observed training labels (no parametric label noise). Config: `uncertainty.n_bootstrap`, `cp_k_neighbors_frac`, `cp_n_candidates` in `config.yaml`.
 
 ## Synthetic Experiment
 
@@ -93,7 +112,7 @@ python experiments/run_sweep.py --sweep all --plot-only
 Edit `config.yaml` to change:
 - Data: number of training points, features, noise level
 - Model: type (cart/rf/xgb), hyperparameters
-- Uncertainty: perturbation budgets and bounds
+- Uncertainty: bootstrap resamples (`n_bootstrap`, `cp_k_neighbors_frac`)
 - Method-specific: wrapper alpha/P, number of scenarios, Cutting Planes settings
 - Evaluation: CV folds, Bootstrap resamples
 

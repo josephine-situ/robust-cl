@@ -34,7 +34,7 @@ Thumbs.db
 
 # Other
 *.err
-data
+/data/
 
 # Gurobi debug dumps
 *.lp
@@ -42,3 +42,15 @@ data
 
 # Local debug notebooks
 notebooks/
+
+# LaTeX presentation build artifacts
+presentations/build/
+presentations/*.aux
+presentations/*.log
+presentations/*.nav
+presentations/*.out
+presentations/*.snm
+presentations/*.toc
+presentations/*.fls
+presentations/*.fdb_latexmk
+presentations/*.synctex.gz
