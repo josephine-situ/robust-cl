@@ -222,3 +222,81 @@ def retrain_on_bootstrap(X: np.ndarray,
     Retrain model on bootstrap sample specified by indices.
     """
     return train_model(X[indices], y[indices], model_type, params)
+
+
+def generate_bootstrap_samples(n: int, P: int, seed: int = 42) -> list:
+    """Generate P fixed bootstrap index vectors of length n."""
+    rng = np.random.RandomState(seed)
+    return [rng.choice(n, size=n, replace=True) for _ in range(P)]
+
+
+def train_bootstrap_models(X: np.ndarray,
+                           y: np.ndarray,
+                           model_type: str,
+                           params: dict,
+                           bootstrap_indices: list,
+                           seed: int = 42) -> list:
+    """Train one model per bootstrap index vector."""
+    models = []
+    for p, idx in enumerate(bootstrap_indices):
+        pparams = (params or {}).copy()
+        pparams["random_state"] = seed + p
+        models.append(retrain_on_bootstrap(X, y, idx, model_type, pparams))
+    return models
+
+
+def oob_worst_case_error(models: list,
+                          bootstrap_indices: list,
+                          X: np.ndarray,
+                          y: np.ndarray) -> tuple:
+    """
+    For each model, compute worst OOB absolute error on training labels.
+    Returns (best_model_index, best_worst_error, per_model_worst_errors).
+    """
+    n = len(y)
+    n_models = len(models)
+    oob_counts = np.zeros(n)
+    oob_sum = np.zeros(n)
+    oob_sq_sum = np.zeros(n)
+
+    for model, idx in zip(models, bootstrap_indices):
+        oob_mask = np.ones(n, dtype=bool)
+        oob_mask[idx] = False
+        if not oob_mask.any():
+            continue
+        preds = model.predict(X[oob_mask])
+        oob_sum[oob_mask] += preds
+        oob_sq_sum[oob_mask] += preds
+        oob_counts[oob_mask] += 1
+
+    per_model_worst = []
+    for p, (model, idx) in enumerate(zip(models, bootstrap_indices)):
+        oob_mask = np.ones(n, dtype=bool)
+        oob_mask[idx] = False
+        if not oob_mask.any():
+            per_model_worst.append(np.inf)
+            continue
+        preds = model.predict(X[oob_mask])
+        errors = np.abs(y[oob_mask] - preds)
+        per_model_worst.append(float(np.max(errors)))
+
+    best_idx = int(np.argmin(per_model_worst))
+    return best_idx, per_model_worst[best_idx], per_model_worst
+
+
+def localized_bootstrap_indices(X: np.ndarray,
+                                x_star: np.ndarray,
+                                k_neighbors_frac: float,
+                                n_candidates: int,
+                                seed: int = 42) -> list:
+    """
+    Generate bootstrap candidates resampling only from training points
+    nearest to x_star in feature space.
+    """
+    n = X.shape[0]
+    k = max(1, int(round(k_neighbors_frac * n)))
+    x_star = np.asarray(x_star, dtype=float).ravel()
+    distances = np.linalg.norm(X - x_star, axis=1)
+    pool = np.argsort(distances)[:k]
+    rng = np.random.RandomState(seed)
+    return [rng.choice(pool, size=n, replace=True) for _ in range(n_candidates)]
