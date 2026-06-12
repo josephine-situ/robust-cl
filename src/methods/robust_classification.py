@@ -1,160 +1,127 @@
 """
 Robust classification / regression approach:
-Train a single model robustly (protecting against label noise),
+Train a single model robustly via bootstrap minimax (OOB error),
 then embed it as a standard constraint.
-
-This is the "modular" approach: robustify training, then embed.
-Not decision-aware.
-
-Approximation: train on multiple perturbed datasets, select the
-model with best worst-case training loss.
 """
 
+import time
+
 import numpy as np
-from src.data.generate import ProblemInstance
-from src.methods.nominal import SolutionResult
-from src.models.train import train_model, retrain_on_perturbed
-from src.models.embed import embed_model
-from src.utils.perturbations import sample_multiple_perturbations
 import gurobipy as gp
 from gurobipy import GRB
-import time
+
+from src.data.generate import ProblemInstance
+from src.methods.nominal import (
+    SolutionResult,
+    resolve_constraint_config,
+    build_decision_vars,
+    add_problem_constraints,
+    build_and_set_objective,
+    embed_constraints,
+)
+from src.methods.wrapper import _get_shared_bootstrap_indices
+from src.models.train import train_bootstrap_models, oob_worst_case_error
 
 
 def solve_robust_classification(
         instance: ProblemInstance,
         model_type: str = "rf",
         model_params: dict = None,
-        delta_bar: float = 0.2,
-        gamma: float = 5.0,
-        n_perturbations: int = 50,
+        n_bootstrap: int = 25,
         seed: int = 42,
-        rho: float = 0.0) -> SolutionResult:
+        rho: float = 0.0,
+        embedding_mode: str = "hard",
+        rf_alpha: float = 0.25,
+        bootstrap_cache=None) -> SolutionResult:
     """
-    Robust classification approach.
-
-    1. Sample many perturbations delta_1, ..., delta_M
-    2. For each, train model on (X, y + delta_m)
-    3. Select model with best worst-case loss across all
-       perturbations (minimax over training loss)
-    4. Embed that single model
-
-    This is an approximation to true robust training.
+    Bootstrap minimax robust training:
+    1. Train P models on shared bootstrap resamples
+    2. Select model with lowest worst-case OOB error
+    3. Embed that single model
     """
-    from sklearn.metrics import mean_squared_error
-    
     start = time.time()
     models_embedded = 0
-    
-    # Train robust models for constraints
+
+    if bootstrap_cache is None:
+        bootstrap_cache = _get_shared_bootstrap_indices(
+            instance, model_type, model_params, n_bootstrap, seed
+        )
+
     trained_models_cache = {}
     trained_constraints = []
-    
-    for c_idx, constraint in enumerate(instance.constraints):
+    config_idx = 0
+
+    for constraint in instance.constraints:
         constraint_trained_models = []
-        for m_idx, model_data in enumerate(constraint.models_data):
+        for model_data in constraint.models_data:
             md_id = id(model_data)
-            
             if md_id not in trained_models_cache:
-                n = len(model_data.y_train)
-                perturbations = sample_multiple_perturbations(
-                    n, delta_bar, gamma, n_perturbations, seed + c_idx*100 + m_idx
+                m_type, m_params = resolve_constraint_config(
+                    instance, config_idx, model_type, model_params
                 )
-                # Add the zero perturbation
-                perturbations = [np.zeros(n)] + perturbations
-
-                # Train a model on each perturbation
-                models = []
-                for delta in perturbations:
-                    m = retrain_on_perturbed(
-                        model_data.X_train, model_data.y_train, delta,
-                        model_type, model_params,
-                    )
-                    models.append(m)
-
-                best_model = None
-                best_worst_loss = np.inf
-
-                for model in models:
-                    worst_loss = 0.0
-                    for delta in perturbations:
-                        y_pert = model_data.y_train + delta
-                        pred = model.predict(model_data.X_train)
-                        loss = mean_squared_error(y_pert, pred)
-                        worst_loss = max(worst_loss, loss)
-
-                    if worst_loss < best_worst_loss:
-                        best_worst_loss = worst_loss
-                        best_model = model
-                
-                trained_models_cache[md_id] = best_model
-                
-            constraint_trained_models.append((model_data.weight, trained_models_cache[md_id]))
-            
+                print(
+                    f"    [robust_cls] Bootstrap minimax for {constraint.name} "
+                    f"({n_bootstrap} models, type={m_type})...",
+                    flush=True,
+                )
+                t0 = time.time()
+                bootstrap_indices = bootstrap_cache[md_id]
+                ensemble = train_bootstrap_models(
+                    model_data.X_train, model_data.y_train,
+                    m_type, m_params, bootstrap_indices,
+                    seed + config_idx * 100,
+                )
+                best_idx, best_oob, _ = oob_worst_case_error(
+                    ensemble, bootstrap_indices,
+                    model_data.X_train, model_data.y_train,
+                )
+                trained_models_cache[md_id] = ensemble[best_idx]
+                print(
+                    f"    [robust_cls] {constraint.name} selected model {best_idx} "
+                    f"(worst OOB err={best_oob:.4f}) in {time.time() - t0:.1f}s",
+                    flush=True,
+                )
+            constraint_trained_models.append((
+                model_data.weight,
+                trained_models_cache[md_id],
+                model_data.obj_weight,
+            ))
+            config_idx += 1
         trained_constraints.append(constraint_trained_models)
 
-
-    # Embed the selected robust models
     opt = gp.Model("robust_classification")
     opt.Params.OutputFlag = 0
+    opt.Params.MIPGap = 0.01
+    opt.Params.MIPFocus = 1
 
-    d = instance.n_features
-    x = [
-        opt.addVar(lb=instance.variable_lb[j],
-                   ub=instance.variable_ub[j],
-                   name=f"x_{j}")
-        for j in range(d)
-    ]
-
-    opt.setObjective(
-        gp.quicksum(
-            instance.cost_vector[j] * x[j] for j in range(d)
-        ),
-        GRB.MINIMIZE,
+    x = build_decision_vars(opt, instance)
+    models_embedded, _, obj_terms = embed_constraints(
+        opt, x, instance, trained_constraints,
+        rho=rho, embedding_mode=embedding_mode, rf_alpha=rf_alpha,
+        name_prefix="robust_cls",
     )
-
-    embedded_models_cache = {}
-
-    for c_idx, constraint_models in enumerate(trained_constraints):
-        constraint = instance.constraints[c_idx]
-        
-        f_pred_vars = []
-        for m_idx, (weight, best_model) in enumerate(constraint_models):
-            m_id = id(best_model)
-            if m_id not in embedded_models_cache:
-                f_pred = embed_model(
-                    opt, best_model, x,
-                    instance.variable_lb, instance.variable_ub,
-                    name_prefix=f"robust_cls_c{c_idx}_m{m_idx}", rho=rho
-                )
-                embedded_models_cache[m_id] = f_pred
-                models_embedded += 1
-            f_pred_vars.append(weight * embedded_models_cache[m_id])
-            
-        opt.addConstr(gp.quicksum(f_pred_vars) <= constraint.rhs, name=f"ml_constr_{c_idx}")
-
+    add_problem_constraints(opt, x, instance)
+    build_and_set_objective(opt, x, instance, obj_terms)
 
     opt.optimize()
     elapsed = time.time() - start
 
     if opt.Status == GRB.OPTIMAL:
-        x_opt = np.array([x[j].X for j in range(d)])
         return SolutionResult(
-            x_opt=x_opt,
+            x_opt=np.array([v.X for v in x]),
             obj_value=opt.ObjVal,
             status="optimal",
             models_embedded=models_embedded,
             solve_time=elapsed,
             opt=opt,
-            x=x
+            x=x,
         )
-    else:
-        return SolutionResult(
-            x_opt=np.zeros(d),
-            obj_value=np.inf,
-            status="infeasible",
-            models_embedded=models_embedded,
-            solve_time=elapsed,
-            opt=opt,
-            x=x
-        )
+    return SolutionResult(
+        x_opt=np.zeros(instance.n_features),
+        obj_value=np.inf,
+        status="infeasible",
+        models_embedded=models_embedded,
+        solve_time=elapsed,
+        opt=opt,
+        x=x,
+    )
