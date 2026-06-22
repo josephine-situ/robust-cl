@@ -5,7 +5,7 @@ Supports Linear, SVM, CART, Random Forest, XGB/GBM, and MLP.
 
 import numpy as np
 from sklearn.linear_model import ElasticNet
-from sklearn.svm import SVR
+from sklearn.svm import LinearSVR
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.neural_network import MLPRegressor
@@ -19,7 +19,7 @@ except ImportError:
 
 ModelType = Union[
     ElasticNet,
-    SVR,
+    LinearSVR,
     DecisionTreeRegressor,
     RandomForestRegressor,
     GradientBoostingRegressor,
@@ -47,7 +47,7 @@ def train_model(X: np.ndarray,
     Trained sklearn model
     """
     params = params or {}
-    random_state = params.get("random_state", 42)
+    random_state = params.get("random_state", 1)
 
     if model_type == "linear":
         model = ElasticNet(
@@ -56,8 +56,11 @@ def train_model(X: np.ndarray,
             random_state=random_state
         )
     elif model_type == "svm":
-        model = SVR(
-            C=params.get("C", 1.0)
+        model = LinearSVR(
+            C=params.get("C", 1.0),
+            max_iter=params.get("max_iter", 100_000),
+            dual=params.get("dual", False),
+            loss=params.get("loss", "squared_epsilon_insensitive"),
         )
     elif model_type == "cart":
         model = DecisionTreeRegressor(
@@ -67,10 +70,14 @@ def train_model(X: np.ndarray,
             random_state=random_state,
         )
     elif model_type == "rf":
+        max_features = params.get("max_features", 1.0)
+        if max_features == "auto":
+            # CL v11 / legacy sklearn: regression RF used all features
+            max_features = 1.0
         model = RandomForestRegressor(
             n_estimators=params.get("n_estimators", 50),
             max_depth=params.get("max_depth", 5),
-            max_features=params.get("max_features", 1.0),
+            max_features=max_features,
             random_state=random_state,
         )
     elif model_type == "gbm":
@@ -81,20 +88,25 @@ def train_model(X: np.ndarray,
             random_state=random_state,
         )
     elif model_type == "xgb":
-        model = XGBRegressor(
-            n_estimators=params.get("n_estimators", 250),
-            learning_rate=params.get("learning_rate", 0.01),
-            max_depth=params.get("max_depth", 4),
-            colsample_bytree=params.get("colsample_bytree", 1.0),
-            gamma=params.get("gamma", 0.0),
-            min_child_weight=params.get("min_child_weight", 1),
-            subsample=params.get("subsample", 1.0),
-            reg_lambda=params.get("reg_lambda", 1.0),
-            reg_alpha=params.get("reg_alpha", 0.0),
-            objective="reg:squarederror",
-            random_state=random_state,
-            verbosity=0,
-        )
+        xgb_kwargs = {
+            "n_estimators": params.get("n_estimators", 250),
+            "max_depth": params.get("max_depth", 4),
+            "colsample_bytree": params.get("colsample_bytree", 1.0),
+            "gamma": params.get("gamma", 0.0),
+            "min_child_weight": params.get("min_child_weight", 1),
+            "subsample": params.get("subsample", 1.0),
+            "tree_method": params.get("tree_method", "exact"),
+            "objective": "reg:squarederror",
+            "random_state": random_state,
+            "verbosity": 0,
+        }
+        if "learning_rate" in params:
+            xgb_kwargs["learning_rate"] = params["learning_rate"]
+        if "reg_lambda" in params:
+            xgb_kwargs["reg_lambda"] = params["reg_lambda"]
+        if "reg_alpha" in params:
+            xgb_kwargs["reg_alpha"] = params["reg_alpha"]
+        model = XGBRegressor(**xgb_kwargs)
     elif model_type == "mlp":
         model = MLPRegressor(
             hidden_layer_sizes=params.get("hidden_layer_sizes", (100,)),
@@ -127,7 +139,7 @@ def train_best_model_cv(X: np.ndarray,
         if model_type == "linear":
             base_model = ElasticNet(random_state=random_state)
         elif model_type == "svm":
-            base_model = SVR()
+            base_model = LinearSVR(max_iter=100_000, dual=False, loss="squared_epsilon_insensitive")
         elif model_type == "cart":
             base_model = DecisionTreeRegressor(random_state=random_state)
         elif model_type == "rf":
@@ -184,7 +196,7 @@ def train_ensemble_model_cv(X: np.ndarray,
         if model_type == "linear":
             base_model = ElasticNet(random_state=random_state)
         elif model_type == "svm":
-            base_model = SVR()
+            base_model = LinearSVR(max_iter=100_000, dual=False, loss="squared_epsilon_insensitive")
         elif model_type == "cart":
             base_model = DecisionTreeRegressor(random_state=random_state)
         elif model_type == "rf":

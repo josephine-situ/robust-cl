@@ -30,6 +30,8 @@ from src.evaluation.chemo_metrics import (
     evaluate_given_table6,
     evaluate_prescribed_table6,
     build_table6_rows,
+    samestore_eval_mask,
+    subset_table6_outcomes,
 )
 
 ALL_CONSTRAINTS = [
@@ -186,8 +188,6 @@ def run_chemo_robust(config, args):
     solvers = _build_solvers(config, settings, instance)
 
     all_rows = []
-    eval_mask = None
-    given_values = None
 
     for method in settings["methods_to_run"]:
         if method not in solvers:
@@ -197,6 +197,7 @@ def run_chemo_robust(config, args):
         solver_fn = solvers[method]
         print(f"\n{'=' * 40}\nMethod: {method}\n{'=' * 40}")
 
+        mode_results = {}
         for constraint_mode in settings["constraint_modes"]:
             if constraint_mode == "all_constraints":
                 names = ALL_CONSTRAINTS
@@ -208,35 +209,48 @@ def run_chemo_robust(config, args):
             sub = filter_constraints(instance, names)
             print(f"\n  constraint_mode={constraint_mode}")
 
-            prescribed, feasible_mask, mean_time, sd_time = evaluate_prescribed_table6(
+            _, feasible_mask, mean_time, sd_time, full_outcomes = evaluate_prescribed_table6(
                 solver_fn,
                 sub,
-                eval_mask=eval_mask,
                 max_test_rows=settings["max_test_rows"],
                 method_name=method,
                 constraint_mode=constraint_mode,
             )
             n_feasible = int(feasible_mask.sum())
             print(f"  Feasible prescriptions: {n_feasible}/{n_test}")
+            mode_results[constraint_mode] = {
+                "mask": feasible_mask,
+                "mean_time": mean_time,
+                "sd_time": sd_time,
+                "full_outcomes": full_outcomes,
+            }
 
-            if constraint_mode == "all_constraints" and eval_mask is None:
-                eval_mask = feasible_mask.copy()
-                given_values = evaluate_given_table6(instance, eval_mask)
-                n_eval = int(eval_mask.sum())
-                print(f"  Shared evaluation cohort: {n_eval} test rows")
+        if "all_constraints" in mode_results and "dlt_only" in mode_results:
+            eval_mask = samestore_eval_mask(
+                mode_results["all_constraints"]["mask"],
+                mode_results["dlt_only"]["mask"],
+            )
+        elif "all_constraints" in mode_results:
+            eval_mask = mode_results["all_constraints"]["mask"]
+        else:
+            eval_mask = mode_results["dlt_only"]["mask"]
 
-            report_mask = eval_mask if eval_mask is not None else feasible_mask
-            n_prescribed = int((feasible_mask & report_mask).sum()) if report_mask is not None else n_feasible
+        n_eval = int(eval_mask.sum())
+        print(f"  Samestore evaluation cohort: {n_eval} test rows")
+        given_values = evaluate_given_table6(instance, eval_mask)
 
+        for constraint_mode in settings["constraint_modes"]:
+            res = mode_results[constraint_mode]
+            prescribed = subset_table6_outcomes(res["full_outcomes"], eval_mask)
             rows = build_table6_rows(
                 instance,
                 constraint_mode=constraint_mode,
-                given_values=given_values or evaluate_given_table6(instance, report_mask),
+                given_values=given_values,
                 prescribed_values=prescribed,
                 n_test=n_test,
-                n_prescribed=n_prescribed,
-                mean_solve_time=mean_time,
-                solve_time_sd=sd_time,
+                n_prescribed=n_eval,
+                mean_solve_time=res["mean_time"],
+                solve_time_sd=res["sd_time"],
             )
             for row in rows:
                 row_dict = row.__dict__.copy()

@@ -4,8 +4,7 @@ Replicate OptiCL chemotherapy Table 6 (Maragno et al. 2025, Section 5.5).
 Compares observed (given) regimens to prescriptions from the paper's full model
 (RF tree-violation wrapper with alpha=0.25) under All Constraints vs DLT Only.
 
-Evaluation cohort: test rows with a feasible all-constraints prescription (paper
-Section 5.5). Given and prescribed metrics use this same cohort for both modes.
+Evaluation cohort: samestore test rows (feasible under both constraint modes).
 """
 
 import os
@@ -23,6 +22,8 @@ from src.evaluation.chemo_metrics import (
     evaluate_prescribed_table6,
     build_table6_rows,
     table6_results_to_dataframe,
+    samestore_eval_mask,
+    subset_table6_outcomes,
 )
 
 
@@ -64,14 +65,28 @@ def run_chemo_replication(config):
 
     all_sub = filter_constraints(instance, ALL_CONSTRAINTS)
     print("\nOptimizing prescriptions (all_constraints)...")
-    prescribed_all, eval_mask, mean_time_all, sd_time_all = evaluate_prescribed_table6(
-        solver_fn, all_sub,
+    _, mask_all, mean_time_all, sd_time_all, full_all = evaluate_prescribed_table6(
+        solver_fn, all_sub, constraint_mode="all_constraints",
     )
+    print(f"  Feasible prescriptions: {int(mask_all.sum())}/{n_test}")
+
+    dlt_sub = filter_constraints(instance, DLT_ONLY)
+    print("\nOptimizing prescriptions (dlt_only)...")
+    _, mask_dlt, mean_time_dlt, sd_time_dlt, full_dlt = evaluate_prescribed_table6(
+        solver_fn, dlt_sub, constraint_mode="dlt_only",
+    )
+    print(f"  Feasible prescriptions: {int(mask_dlt.sum())}/{n_test}")
+
+    eval_mask = samestore_eval_mask(mask_all, mask_dlt)
     n_eval = int(eval_mask.sum())
-    print(f"  Feasible prescriptions: {n_eval}/{n_test}")
-    print(f"  Shared evaluation cohort: {n_eval} test rows (all-constraints feasible)")
+    print(
+        f"  Samestore evaluation cohort: {n_eval} test rows "
+        f"(feasible under all-constraints and DLT-only)"
+    )
 
     given_values = evaluate_given_table6(instance, eval_mask)
+    prescribed_all = subset_table6_outcomes(full_all, eval_mask)
+    prescribed_dlt = subset_table6_outcomes(full_dlt, eval_mask)
 
     rows.extend(build_table6_rows(
         instance,
@@ -84,21 +99,13 @@ def run_chemo_replication(config):
         solve_time_sd=sd_time_all,
     ))
 
-    dlt_sub = filter_constraints(instance, DLT_ONLY)
-    print("\nOptimizing prescriptions (dlt_only)...")
-    prescribed_dlt, _, mean_time_dlt, sd_time_dlt = evaluate_prescribed_table6(
-        solver_fn, dlt_sub, eval_mask=eval_mask,
-    )
-    n_dlt_on_eval = len(next(iter(prescribed_dlt.values())))
-    print(f"  Prescriptions on evaluation cohort: {n_dlt_on_eval}/{n_eval}")
-
     rows.extend(build_table6_rows(
         instance,
         constraint_mode="dlt_only",
         given_values=given_values,
         prescribed_values=prescribed_dlt,
         n_test=n_test,
-        n_prescribed=n_dlt_on_eval,
+        n_prescribed=n_eval,
         mean_solve_time=mean_time_dlt,
         solve_time_sd=sd_time_dlt,
     ))

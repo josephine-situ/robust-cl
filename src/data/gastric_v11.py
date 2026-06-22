@@ -46,6 +46,17 @@ BLOOD_COLS_ALL = [
 BLOOD_G4_COLS = ["Neutro4", "Thrombo4", "Leuko4", "Anemia4", "Lympho4"]
 TOX_NB_COLS = ["GI_34", "INFECTION_34", "CONSTITUTIONAL_34"]
 
+# Paper / constraint-learning v11: toxicity UB and Table 6 satisfaction threshold
+GASTRIC_TOX_UB = 0.6
+
+
+def train_percentile_scores(y_train_ref: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Percentile rank within train reference, scaled to [0, 1] (v11 train_models.py)."""
+    from scipy import stats
+
+    ref = np.asarray(y_train_ref, dtype=float)
+    return np.array([stats.percentileofscore(ref, x) / 100.0 for x in y], dtype=float)
+
 
 def _float(v) -> float:
     try:

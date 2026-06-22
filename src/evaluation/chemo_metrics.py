@@ -2,9 +2,12 @@
 Paper-aligned evaluation for OptiCL chemotherapy Table 6.
 
 Metrics match Maragno et al. (2025) Section 5.5:
-- Constraint satisfaction: binary indicator GT(x) <= threshold
+- All reported given/prescribed outcomes use the **ground-truth (GT) ensemble**
+  (6 sklearn models per outcome, Table EC.12), not the embedded MIP models.
+- Toxicity satisfaction: binary indicator GT(x) <= 0.6 on percentile-scale predictions
 - Overall survival: GT ensemble prediction in months
-- Prescribed and given results averaged over a shared evaluation cohort (all-constraints feasible)
+- Prescribed and given results averaged over a shared samestore cohort
+  (feasible under both all-constraints and DLT-only prescriptions)
 """
 
 from __future__ import annotations
@@ -31,6 +34,23 @@ class ChemoTable6Result:
     n_prescribed_eval: int
     mean_solve_time: float
     solve_time_sd: float
+
+
+def samestore_eval_mask(*feasible_masks: np.ndarray) -> np.ndarray:
+    """Intersection of per-mode optimizer feasibility (constraint-learning samestore)."""
+    if not feasible_masks:
+        raise ValueError("At least one feasibility mask is required")
+    out = feasible_masks[0].astype(bool).copy()
+    for mask in feasible_masks[1:]:
+        out &= mask.astype(bool)
+    return out
+
+
+def subset_table6_outcomes(
+    full_outcomes: Dict[str, np.ndarray],
+    mask: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    return {label: values[mask] for label, values in full_outcomes.items()}
 
 
 def _predict_outcome(gt_fn, x: np.ndarray) -> float:
@@ -67,20 +87,21 @@ def evaluate_prescribed_table6(
     method_name: str | None = None,
     constraint_mode: str | None = None,
     **solver_kwargs,
-) -> tuple[Dict[str, np.ndarray], np.ndarray, float, float]:
+) -> tuple[Dict[str, np.ndarray], np.ndarray, float, float, Dict[str, np.ndarray]]:
     """
     Optimize a prescription per test cohort; return outcome vectors on feasible cohorts.
 
     If eval_mask is provided, returned outcome vectors are restricted to
     test indices where both the optimizer is feasible and eval_mask is True.
-    Use a shared eval_mask (e.g. all-constraints feasibility) for cross-mode
-    Table 6 comparisons.
+    The fifth return value is the full-length (n_test) outcome vectors for
+    building a samestore cohort across constraint modes.
 
     Returns
     -------
     outcomes : dict outcome_label -> values on reported test indices
     feasible_mask : bool array length n_test (optimizer feasibility per row)
     mean_solve_time, solve_time_sd : per-cohort re-optimization times (seconds)
+    full_outcomes : dict outcome_label -> length n_test arrays (nan if infeasible)
     """
     label = method_name or getattr(solver_fn, "func", solver_fn).__name__
     if constraint_mode:
@@ -168,7 +189,7 @@ def evaluate_prescribed_table6(
         label: values[report_mask]
         for label, values in outcome_buffers.items()
     }
-    return feasible_outcomes, feasible_mask, mean_time, sd_time
+    return feasible_outcomes, feasible_mask, mean_time, sd_time, outcome_buffers
 
 
 def build_table6_rows(

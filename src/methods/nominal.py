@@ -71,10 +71,17 @@ def train_constraint_models(instance: ProblemInstance,
 
 def build_decision_vars(opt: gp.Model, instance: ProblemInstance) -> list:
     d = instance.n_features
-    return [
-        opt.addVar(lb=instance.variable_lb[j], ub=instance.variable_ub[j], name=f"x_{j}")
-        for j in range(d)
-    ]
+    binary = set(instance.binary_var_indices or [])
+    x = []
+    for j in range(d):
+        vtype = GRB.BINARY if j in binary else GRB.CONTINUOUS
+        x.append(opt.addVar(
+            lb=instance.variable_lb[j],
+            ub=instance.variable_ub[j],
+            vtype=vtype,
+            name=f"x_{j}",
+        ))
+    return x
 
 
 def add_domain_constraints(opt: gp.Model, x, instance: ProblemInstance) -> None:
@@ -91,7 +98,7 @@ def add_problem_constraints(opt: gp.Model, x, instance: ProblemInstance) -> None
     add_trust_region(opt, x, instance)
 
 
-def _add_rf_tree_violation(opt, rf_model, x, instance, rhs, alpha, prefix, rho, M_val=1e4):
+def _add_rf_tree_violation(opt, rf_model, x, instance, rhs, alpha, prefix, rho, M_val=1e5):
     """Embed each RF tree; at least (1-alpha) fraction must satisfy f_t <= rhs."""
     T = len(rf_model.estimators_)
     z = opt.addVars(T, vtype=GRB.BINARY, name=f"{prefix}_z")

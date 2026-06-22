@@ -85,97 +85,11 @@ class ProblemInstance:
     # Observed trial outcomes on the test split (for diagnostics / replication checks)
     observed_test_outcomes: Optional[Dict[str, np.ndarray]] = None
 
+    # Indices of decision variables that must be binary (e.g. drug _Ind columns)
+    binary_var_indices: List[int] = field(default_factory=list)
+
     # Full-cohort features/outcomes for GT R² diagnostics (461 retained arms)
     gt_eval_data: Optional[Dict[str, Dict[str, np.ndarray]]] = None
-
-
-# Table EC.10 embedded model configs
-_GASTRIC_EMBED_CONFIGS = [
-    {"model_type": "gbm", "model_params": {"learning_rate": 0.2, "max_depth": 2, "n_estimators": 20, "random_state": 42}},
-    {"model_type": "linear", "model_params": {"alpha": 0.1, "l1_ratio": 0.7, "random_state": 42}},
-    {"model_type": "rf", "model_params": {"n_estimators": 25, "max_depth": 4, "max_features": 1.0, "random_state": 42}},
-    {"model_type": "linear", "model_params": {"alpha": 1.0, "l1_ratio": 0.5, "random_state": 42}},
-    {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 4, "n_estimators": 20, "random_state": 42}},
-    {"model_type": "gbm", "model_params": {"learning_rate": 0.1, "max_depth": 3, "n_estimators": 20, "random_state": 42}},
-]
-
-# Table EC.12 ground-truth ensemble specs per outcome (Linear, SVM, CART, RF, GBM, XGB).
-# XGB entries add learning_rate (matched to GBM) and reg_lambda; gamma/min_child_weight
-# are adjusted where Python xgboost 3.x otherwise fits a constant predictor on sparse toxicities.
-_GT_SPECS = {
-    "dlt": [
-        {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.6}},
-        {"model_type": "svm", "params": {"C": 100}},
-        {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.04, "max_features": 1.0}},
-        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {
-            "colsample_bytree": 0.8, "gamma": 0.5, "max_depth": 4,
-            "min_child_weight": 1, "n_estimators": 250, "subsample": 1.0,
-            "learning_rate": 0.01, "reg_lambda": 1.0,
-        }},
-    ],
-    "blood": [
-        {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.5}},
-        {"model_type": "svm", "params": {"C": 100}},
-        {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.06, "max_features": 1.0}},
-        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 8, "max_features": 1.0}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.025, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {
-            "colsample_bytree": 1.0, "gamma": 0.5, "max_depth": 5,
-            "min_child_weight": 1, "n_estimators": 250, "subsample": 0.8,
-            "learning_rate": 0.025, "reg_lambda": 1.0,
-        }},
-    ],
-    "constitutional": [
-        {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.4}},
-        {"model_type": "svm", "params": {"C": 1}},
-        {"model_type": "cart", "params": {"max_depth": 4, "min_samples_leaf": 0.06, "max_features": 0.6}},
-        {"model_type": "rf", "params": {"n_estimators": 500, "max_depth": 6, "max_features": 1.0}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {
-            "colsample_bytree": 0.8, "gamma": 0.0, "max_depth": 4,
-            "min_child_weight": 10, "n_estimators": 250, "subsample": 0.8,
-            "learning_rate": 0.01, "reg_lambda": 1.0,
-        }},
-    ],
-    "infection": [
-        {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.3}},
-        {"model_type": "svm", "params": {"C": 10}},
-        {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.06, "max_features": 0.6}},
-        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {
-            "colsample_bytree": 1.0, "gamma": 0.0, "max_depth": 4,
-            "min_child_weight": 10, "n_estimators": 250, "subsample": 0.8,
-            "learning_rate": 0.01, "reg_lambda": 1.0,
-        }},
-    ],
-    "gi": [
-        {"model_type": "linear", "params": {"alpha": 1.0, "l1_ratio": 0.7}},
-        {"model_type": "svm", "params": {"C": 100}},
-        {"model_type": "cart", "params": {"max_depth": 5, "min_samples_leaf": 0.06, "max_features": 0.6}},
-        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 6, "max_features": 1.0}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 6, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {
-            "colsample_bytree": 0.8, "gamma": 0.0, "max_depth": 5,
-            "min_child_weight": 1, "n_estimators": 250, "subsample": 0.8,
-            "learning_rate": 0.01, "reg_lambda": 1.0,
-        }},
-    ],
-    "os": [
-        {"model_type": "linear", "params": {"alpha": 0.1, "l1_ratio": 0.8}},
-        {"model_type": "svm", "params": {"C": 0.1}},
-        {"model_type": "cart", "params": {"max_depth": 3, "min_samples_leaf": 0.02, "max_features": 0.8}},
-        {"model_type": "rf", "params": {"n_estimators": 250, "max_depth": 8, "max_features": 1.0}},
-        {"model_type": "gbm", "params": {"learning_rate": 0.01, "max_depth": 5, "n_estimators": 250}},
-        {"model_type": "xgb", "params": {
-            "colsample_bytree": 1.0, "gamma": 10.0, "max_depth": 4,
-            "min_child_weight": 10, "n_estimators": 250, "subsample": 1.0,
-            "learning_rate": 0.05, "reg_lambda": 1.0,
-        }},
-    ],
-}
 
 
 # Non-standard combined ECOG buckets (Bertsimas A.1: mark unavailable unless a
@@ -315,21 +229,20 @@ def compute_gt_r2_table(instance: ProblemInstance):
     except ImportError:
         from src.models.train import train_model
 
-    paper_r2 = {
-        "dlt": {"linear": 0.301, "svm": 0.330, "cart": 0.250, "rf": 0.573, "gbm": 0.670, "xgb": 0.323},
-        "blood": {"linear": 0.287, "svm": 0.351, "cart": 0.211, "rf": 0.701, "gbm": 0.813, "xgb": 0.446},
-        "constitutional": {"linear": 0.139, "svm": 0.224, "cart": 0.246, "rf": 0.602, "gbm": 0.682, "xgb": 0.285},
-        "infection": {"linear": 0.217, "svm": 0.303, "cart": 0.139, "rf": 0.514, "gbm": 0.588, "xgb": 0.247},
-        "gi": {"linear": 0.201, "svm": 0.328, "cart": 0.238, "rf": 0.563, "gbm": 0.733, "xgb": 0.475},
-        "os": {"linear": 0.528, "svm": 0.469, "cart": 0.421, "rf": 0.815, "gbm": 0.827, "xgb": 0.756},
-    }
+    try:
+        from .gastric_model_specs import GT_ENSEMBLE_SPECS, GT_ENSEMBLE_PAPER_R2
+    except ImportError:
+        from src.data.gastric_model_specs import GT_ENSEMBLE_SPECS, GT_ENSEMBLE_PAPER_R2
+
+    paper_r2 = GT_ENSEMBLE_PAPER_R2
     if instance.gt_eval_data is None:
         raise ValueError("instance.gt_eval_data is required for GT R² diagnostics")
 
     rows = []
     for outcome_name, data in instance.gt_eval_data.items():
-        X, y = data["X"], data["y"]
-        for spec in _GT_SPECS[outcome_name]:
+        X = data["X"]
+        y = data["y_pct"] if outcome_name != "os" else data["y"]
+        for spec in GT_ENSEMBLE_SPECS[outcome_name]:
             mtype = spec["model_type"]
             model = train_model(X, y, mtype, spec.get("params", {}))
             pred = model.predict(X)
@@ -368,6 +281,8 @@ def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemIn
         trust_region_points=instance.trust_region_points,
         eval_outcomes=instance.eval_outcomes,
         observed_test_outcomes=instance.observed_test_outcomes,
+        gt_eval_data=instance.gt_eval_data,
+        binary_var_indices=list(instance.binary_var_indices or []),
     )
 
 def _synthetic_f_true(x):
@@ -460,7 +375,8 @@ def gastric_cancer(seed: int = 42,
 
     Data processing follows constraint-learning v11 (Data Processing v10.ipynb):
     context-first features, weekly average dose, GI_34 outcomes, and
-    BLOOD_4 = min(BLOOD_34, max(G4)).
+    BLOOD_4 = min(BLOOD_34, max(G4)). Constraint/GT models use train-set
+    percentile toxicity targets with UB 0.6 (Section 5.5).
     """
     import os
     import pandas as pd
@@ -468,17 +384,23 @@ def gastric_cancer(seed: int = 42,
     try:
         from .gastric_v11 import (
             GASTRIC_CTX_COLS,
+            GASTRIC_TOX_UB,
             build_gastric_cohort,
             cohort_to_arrays,
             split_gastric_v11,
+            train_percentile_scores,
         )
+        from .gastric_model_specs import GASTRIC_EMBED_CONFIGS, GT_ENSEMBLE_SPECS
     except ImportError:
         from src.data.gastric_v11 import (
             GASTRIC_CTX_COLS,
+            GASTRIC_TOX_UB,
             build_gastric_cohort,
             cohort_to_arrays,
             split_gastric_v11,
+            train_percentile_scores,
         )
+        from src.data.gastric_model_specs import GASTRIC_EMBED_CONFIGS, GT_ENSEMBLE_SPECS
 
     # ------------------------------------------------------------------
     # 1.  Load raw data
@@ -540,32 +462,32 @@ def gastric_cancer(seed: int = 42,
     context_var_indices = list(range(n_ctx))
 
     # ------------------------------------------------------------------
-    # 10.  Constraint RHS
+    # 10.  Constraint models (percentile targets, fixed UB=0.6; v11 / Sec. 5.5)
     # ------------------------------------------------------------------
     constraints = []
-    
-    constraint_targets = {
+
+    raw_train_targets = {
         "dlt": dlt_train,
         "blood": blood_train,
         "constitutional": const_train,
         "infection": inf_train,
-        "gi": gi_train
+        "gi": gi_train,
     }
-    
-    for name, y_target in constraint_targets.items():
-        rhs_val = np.quantile(y_target, 0.6)
+
+    for name, y_raw in raw_train_targets.items():
+        y_pct = train_percentile_scores(y_raw, y_raw)
         model_data = MLModelData(
             X_train=X_train,
-            y_train=y_target,
-            y_true=y_target,
+            y_train=y_pct,
+            y_true=y_raw,
             weight=1.0,
-            obj_weight=0.0
+            obj_weight=0.0,
         )
         constraints.append(LearnedConstraint(
             name=f"{name}_constraint",
             models_data=[model_data],
-            rhs=rhs_val,
-            f_true=None
+            rhs=GASTRIC_TOX_UB,
+            f_true=None,
         ))
         
     # Inject OS model as an unconstrained bounding system directly applied to the objective
@@ -618,7 +540,7 @@ def gastric_cancer(seed: int = 42,
             for md in c.models_data:
                 constraint_model_configs.append(fixed_constraint_configs)
     else:
-        constraint_model_configs = list(_GASTRIC_EMBED_CONFIGS)
+        constraint_model_configs = list(GASTRIC_EMBED_CONFIGS)
 
     # ------------------------------------------------------------------
     # 11.  Ground Truth Models (fit on all 461 retained arms; Appendix D.3).
@@ -631,11 +553,20 @@ def gastric_cancer(seed: int = 42,
         "gi": gi_valid,
         "os": os_valid,
     }
+    gt_train_pct = {
+        name: train_percentile_scores(raw_train_targets[name], raw_train_targets[name])
+        for name in raw_train_targets
+    }
+    gt_fit_targets = {
+        **{name: train_percentile_scores(raw_train_targets[name], gt_target_arrays[name])
+           for name in raw_train_targets},
+        "os": os_valid,
+    }
 
     gt_models = {}
     print("Training Ground Truth ensemble models...")
-    for t_name, y_t in gt_target_arrays.items():
-        gt_models[t_name] = train_fixed_ensemble(X_valid, y_t, _GT_SPECS[t_name])
+    for t_name, y_t in gt_fit_targets.items():
+        gt_models[t_name] = train_fixed_ensemble(X_valid, y_t, GT_ENSEMBLE_SPECS[t_name])
 
     # Objective is to maximize OS (so c = -1 for OS). We create a callable that returns the predicted OS.
     # We want to minimize -OS -> maximize OS
@@ -670,11 +601,10 @@ def gastric_cancer(seed: int = 42,
         ("infection", "Infection"),
         ("gi", "Gastrointestinal"),
     ]:
-        c = next(con for con in constraints if con.name == f"{outcome_name}_constraint")
         eval_outcomes.append(EvalOutcome(
             label=label,
             name=outcome_name,
-            rhs=c.rhs,
+            rhs=GASTRIC_TOX_UB,
             gt_fn=gt_models[outcome_name],
             is_survival=False,
         ))
@@ -687,10 +617,18 @@ def gastric_cancer(seed: int = 42,
     ))
 
     trust_region_points = X_train[:, decision_var_indices].copy()
+    binary_var_indices = [
+        n_ctx + j for j, col in enumerate(t_cols) if col.endswith("_Ind")
+    ]
 
     gt_eval_data = {
-        name: {"X": X_valid, "y": y_t}
-        for name, y_t in gt_target_arrays.items()
+        name: {
+            "X": X_valid,
+            "y": gt_target_arrays[name],
+            "y_pct": gt_fit_targets[name],
+            "y_train_pct_ref": gt_train_pct.get(name),
+        }
+        for name in gt_target_arrays
     }
 
     return ProblemInstance(
@@ -711,6 +649,7 @@ def gastric_cancer(seed: int = 42,
         eval_outcomes=eval_outcomes,
         observed_test_outcomes=observed_test,
         gt_eval_data=gt_eval_data,
+        binary_var_indices=binary_var_indices,
     )
 
 
@@ -760,14 +699,15 @@ if __name__ == "__main__":
     print("=" * 60)
     print(f"  total={n_total}  train={n_train}  test={n_test}  drugs={n_drugs}")
     if gastric_cancer_instance.observed_test_outcomes and gastric_cancer_instance.eval_outcomes:
-        print("\nTest-set satisfaction (observed labels vs GT ensemble):")
+        print("\nTest-set satisfaction (GT ensemble, tox_limit=0.6):")
         for outcome in gastric_cancer_instance.eval_outcomes:
             if outcome.is_survival:
+                gt_mean = float(outcome.gt_fn.predict(gastric_cancer_instance.X_test).mean())
+                print(f"  {outcome.label:18s} GT mean months={gt_mean:.3f}")
                 continue
-            obs = gastric_cancer_instance.observed_test_outcomes[outcome.name]
-            obs_sat = float(np.mean(obs <= outcome.rhs))
-            gt_sat = float(np.mean(outcome.gt_fn.predict(gastric_cancer_instance.X_test) <= outcome.rhs))
-            print(f"  {outcome.label:18s} observed={obs_sat:.3f}  GT={gt_sat:.3f}  rhs={outcome.rhs:.4f}")
+            gt_pred = outcome.gt_fn.predict(gastric_cancer_instance.X_test)
+            gt_sat = float(np.mean(gt_pred <= outcome.rhs))
+            print(f"  {outcome.label:18s} GT sat={gt_sat:.3f}  (rhs={outcome.rhs:.1f})")
 
     print("\nGT ensemble R² vs Table EC.11 (trained on full 461 cohort):")
     gt_r2_df = compute_gt_r2_table(gastric_cancer_instance)
@@ -780,7 +720,7 @@ if __name__ == "__main__":
     print("\nEmbedding exactness check (embedded Gurobi vs sklearn predict):")
     embed_report = verify_embedded_predictions(
         gastric_cancer_instance,
-        configs=_GASTRIC_EMBED_CONFIGS,
+        configs=GASTRIC_EMBED_CONFIGS,
         n_points=5,
     )
     for line in embed_report:
