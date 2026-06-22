@@ -34,12 +34,12 @@ Following our latest experimental design, we employ data-driven uncertainty cali
 | Method | Calibration | Robustness Mechanism | Hyperparameter Tuning |
 |--------|-------------|----------------------|-----------------------|
 | **Nominal**| None | None | --- |
-| **Robust Classification**| CV / Bootstrap | Train one model robust to data noise, then embed | CV predictive accuracy |
+| **Robust Regression**| CV / Bootstrap | Train one model robust to data noise, then embed | CV predictive accuracy |
 | **Wrapper** | Bootstrap | Maragno et al. ensemble chance constraint ($\alpha$ viol.) | CV feasibility + cost |
 | **Cutting Planes (Ours)**| Bootstrap | Localized bootstrap separation at $x^k$ | CV feasibility + cost |
 
 **Separation Oracle:** 
-The separation oracle uses **localized bootstrap resampling**: at each iteration, training arms nearest to the current prescription $x^k$ are resampled to find worst-case constraint models. Wrapper and robust classification share a fixed set of $P$ bootstrap resamples; CP generates fresh localized candidates each iteration.
+The separation oracle uses **localized bootstrap resampling**: at each iteration, training arms nearest to the current prescription $x^k$ are resampled to find worst-case constraint models. Wrapper and robust regression share a fixed set of $P$ bootstrap resamples; CP generates fresh localized candidates each iteration.
 
 ## Gastric Cancer Chemotherapy Experiment
 
@@ -64,7 +64,7 @@ Uncertainty is **data-driven**: bootstrap resamples of observed training labels 
 ## Synthetic Experiment
 
 The current codebase includes a synthetic nonlinear experiment. We generate a dataset using an underlying nonlinear function where $y$ values simulate constraints $f(x) \leq 0.5$. The variables $x$ are bounded within $[0, 1]$. Label noise is injected during dataset generation based on a configurable noise standard deviation $\sigma$. The models trained are constraint learning classifiers.
-The experiments compare Nominal constraint learning, Robust Classification, Wrapper (ensemble chance constraints), and our robust Cutting Planes approach. We evaluate the performance under different constraint violation vulnerability criteria.
+The experiments compare Nominal constraint learning, Robust Regression, Wrapper (ensemble chance constraints), and our robust Cutting Planes approach. We evaluate the performance under different constraint violation vulnerability criteria.
 
 ## Setup
 
@@ -129,7 +129,7 @@ robust-cl/
 │   │   └── embed.py          # MIO embedding of trees
 │   ├── methods/
 │   │   ├── nominal.py        # Standard constraint learning
-│   │   ├── robust_classification.py
+│   │   ├── robust_regression.py
 │   │   ├── wrapper.py        # Maragno et al. ensemble wrapper
 │   │   └── cp.py             # Cutting Planes / Cutting Planes
 │   ├── evaluation/

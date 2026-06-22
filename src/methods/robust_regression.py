@@ -1,5 +1,5 @@
 """
-Robust classification / regression approach:
+Robust regression approach:
 Train a single model robustly via bootstrap minimax (OOB error),
 then embed it as a standard constraint.
 """
@@ -23,7 +23,7 @@ from src.methods.wrapper import _get_shared_bootstrap_indices
 from src.models.train import train_bootstrap_models, oob_worst_case_error
 
 
-def solve_robust_classification(
+def solve_robust_regression(
         instance: ProblemInstance,
         model_type: str = "rf",
         model_params: dict = None,
@@ -60,7 +60,7 @@ def solve_robust_classification(
                     instance, config_idx, model_type, model_params
                 )
                 print(
-                    f"    [robust_cls] Bootstrap minimax for {constraint.name} "
+                    f"    [robust_reg] Bootstrap minimax for {constraint.name} "
                     f"({n_bootstrap} models, type={m_type})...",
                     flush=True,
                 )
@@ -77,7 +77,7 @@ def solve_robust_classification(
                 )
                 trained_models_cache[md_id] = ensemble[best_idx]
                 print(
-                    f"    [robust_cls] {constraint.name} selected model {best_idx} "
+                    f"    [robust_reg] {constraint.name} selected model {best_idx} "
                     f"(worst OOB err={best_oob:.4f}) in {time.time() - t0:.1f}s",
                     flush=True,
                 )
@@ -89,7 +89,7 @@ def solve_robust_classification(
             config_idx += 1
         trained_constraints.append(constraint_trained_models)
 
-    opt = gp.Model("robust_classification")
+    opt = gp.Model("robust_regression")
     opt.Params.OutputFlag = 0
     opt.Params.MIPGap = 0.01
     opt.Params.MIPFocus = 1
@@ -98,7 +98,7 @@ def solve_robust_classification(
     models_embedded, _, obj_terms = embed_constraints(
         opt, x, instance, trained_constraints,
         rho=rho, embedding_mode=embedding_mode, rf_alpha=rf_alpha,
-        name_prefix="robust_cls",
+        name_prefix="robust_reg",
     )
     add_problem_constraints(opt, x, instance)
     build_and_set_objective(opt, x, instance, obj_terms)

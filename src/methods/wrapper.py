@@ -24,7 +24,7 @@ from src.models.embed import embed_model
 
 
 def _get_shared_bootstrap_indices(instance, model_type, model_params, n_bootstrap, seed):
-    """Fixed P bootstrap index vectors per MLModelData (shared by wrapper and robust_cls)."""
+    """Fixed P bootstrap index vectors per MLModelData (shared by wrapper and robust_reg)."""
     cache = {}
     config_idx = 0
     for constraint in instance.constraints:

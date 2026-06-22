@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data.generate import synthetic_nonlinear, gastric_cancer
 from src.methods.nominal import solve_nominal
-from src.methods.robust_classification import solve_robust_classification
+from src.methods.robust_regression import solve_robust_regression
 from src.methods.wrapper import solve_wrapper, _get_shared_bootstrap_indices
 from src.methods.cp import solve_cp
 from src.evaluation.metrics import evaluate_all
@@ -71,8 +71,8 @@ def run_experiment(config):
         solve_nominal, model_type=model_type, model_params=model_params, rho=robust_rho
     )
 
-    solver_fns["robust_cls"] = partial(
-        solve_robust_classification,
+    solver_fns["robust_reg"] = partial(
+        solve_robust_regression,
         model_type=model_type,
         model_params=model_params,
         n_bootstrap=n_bootstrap,
