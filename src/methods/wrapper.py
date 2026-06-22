@@ -112,7 +112,7 @@ def solve_wrapper(instance: ProblemInstance,
 
     opt = gp.Model("wrapper")
     opt.Params.OutputFlag = 0
-    opt.Params.MIPGap = 0.01
+    opt.Params.MIPGap = 1e-4
     opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)
@@ -216,7 +216,7 @@ def solve_tree_violation_wrapper(instance: ProblemInstance,
 
     opt = gp.Model("tree_violation_wrapper")
     opt.Params.OutputFlag = 0
-    opt.Params.MIPGap = 0.01
+    opt.Params.MIPGap = 1e-4
     opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)

@@ -451,36 +451,34 @@ def synthetic_nonlinear(n_train: int = 200,
     )
 
 
-def gastric_cancer(seed: int = 42, 
+def gastric_cancer(seed: int = 42,
                    cv_tune_gt: bool = False,
                    constraint_cv: bool = False,
                    fixed_constraint_configs: dict = None) -> ProblemInstance:
     """
     Chemotherapy regimen design for advanced gastric cancer.
 
-    Based on Bertsimas et al. (Management Science, 2016) and
-    Maragno et al. (Operations Research, 2025).
-
-    Each trial arm is encoded with three variables per drug
-    (binary indicator, instantaneous dose mg/m², average weekly
-    dose mg/m²/week) plus nine contextual covariates that are
-    fixed at their training-set means during optimization.
-
-    Learned constraints: Overall survival
-                         Grade 3/4 constitutional
-                         Grade 3/4 gastrointestinal
-                         Grade 3/4 infection
-                         Grade 4 blood (max of neutro/thrombo/leuko/lympho/anemia)
-                         Any DLT: DLT = 1 − Π_g (1 − group_score_g))
-                          
-    Linear objective: maximize overall survival
-
+    Data processing follows constraint-learning v11 (Data Processing v10.ipynb):
+    context-first features, weekly average dose, GI_34 outcomes, and
+    BLOOD_4 = min(BLOOD_34, max(G4)).
     """
-    import pandas as pd
     import os
-    from collections import Counter
+    import pandas as pd
 
-    rng = np.random.RandomState(seed)
+    try:
+        from .gastric_v11 import (
+            GASTRIC_CTX_COLS,
+            build_gastric_cohort,
+            cohort_to_arrays,
+            split_gastric_v11,
+        )
+    except ImportError:
+        from src.data.gastric_v11 import (
+            GASTRIC_CTX_COLS,
+            build_gastric_cohort,
+            cohort_to_arrays,
+            split_gastric_v11,
+        )
 
     # ------------------------------------------------------------------
     # 1.  Load raw data
@@ -490,320 +488,56 @@ def gastric_cancer(seed: int = 42,
     df = pd.read_csv(csv_path, encoding="latin-1")
     print(f"Step 1: Loaded raw data. Observations: {len(df)}")
 
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
-    def _float(v):
-        """Coerce to float; return NaN on failure."""
-        # if isinstance(v, str):
-        #     v = v.strip()
-        #     if v.upper() == "NC":
-        #         return 0.0  # Test if the authors assumed Not Collected = 0%
-        #     # Also watch out for strings like "<0.01" or "12%" which float() will choke on
-        #     v = v.replace('<', '').replace('>', '').replace('%', '')
-        try:
-            return float(v)
-        except (ValueError, TypeError):
-            return np.nan
 
-    # ------------------------------------------------------------------
-    # 2.  Identify the set of "common" drugs (appear in ≥ 3 arms)
-    #     This results in 28 drugs (same as CL paper) and 84 drug-related features.
-    # ------------------------------------------------------------------
-    drug_records: list[dict] = []          # one entry per (arm, drug-slot)
-    for row_i, (_, row) in enumerate(df.iterrows()):
-        for slot in range(1, 6):
-            name = row.get(f"D{slot}_Name")
-            if not (pd.notna(name) and str(name).strip()):
-                continue
-            dose  = _float(row.get(f"D{slot}_Dose"))
-            ndose = _float(row.get(f"D{slot}_NDose"))
-            cycle = _float(row.get(f"D{slot}_Cycle"))
-            if np.isnan(dose):
-                continue
-            drug_records.append(dict(
-                row_i=row_i,
-                drug=str(name).strip(),
-                dose=dose,
-                ndose=ndose if not np.isnan(ndose) else 1.0,
-                cycle=cycle  if (not np.isnan(cycle) and cycle > 0) else 21.0,
-            ))
+    df_cohort = build_gastric_cohort(df)
+    print(f'Step 2: v11 cohort after inner joins. Observations: {len(df_cohort)}')
 
-    MIN_DRUG_COUNT = 3
-    drug_counts = Counter(r["drug"] for r in drug_records)
-    common_drugs = sorted(d for d, c in drug_counts.items()
-                          if c >= MIN_DRUG_COUNT)
-    n_drugs = len(common_drugs)
-    drug_to_idx = {d: i for i, d in enumerate(common_drugs)}
-
-    # ------------------------------------------------------------------
-    # 3.  Build drug-feature matrix  (n_rows × 3·n_drugs)
-    #     Per drug:  [binary, instantaneous_dose, avg_daily_dose]
-    #
-    #     instantaneous_dose = dose per administration  (mg/m²)
-    #     avg_daily_dose    = dose × n_doses / cycle_days
-    #     following Bertsimas et al. §3.1
-    # ------------------------------------------------------------------
-    n_rows = len(df)
-    drug_feat = np.zeros((n_rows, 3 * n_drugs))
-
-    for rec in drug_records:
-        if rec["drug"] not in drug_to_idx:
-            continue
-        d  = drug_to_idx[rec["drug"]]
-        ri = rec["row_i"]
-        drug_feat[ri, 3 * d]     = 1.0                            # binary
-        drug_feat[ri, 3 * d + 1] = rec["dose"]                    # inst. dose
-        drug_feat[ri, 3 * d + 2] = rec["dose"] * rec["ndose"] / rec["cycle"]  # avg daily dose
-
-    n_drug_features = 3 * n_drugs
-
-    # ------------------------------------------------------------------
-    # 4.  Contextual features  (9 covariates from CL appendix)
-    #     Mean ECOG derived from raw performance-status columns (Bertsimas A.1)
-    #     before cohort-characteristic imputation in step 6b.
-    # ------------------------------------------------------------------
-    ecog01_frac0 = _fit_ecog01_frac0_predictor(df, _float)
-
-    ctx_data = np.full((n_rows, 9), np.nan)
-    for i, (_, row) in enumerate(df.iterrows()):
-        ctx_data[i, 0] = _float(row.get("FRAC_MALE"))
-        ctx_data[i, 1] = _float(row.get("AGE_MED"))
-        ctx_data[i, 2] = _mean_ecog_row(row, _float, ecog01_frac0)
-        ctx_data[i, 3] = _float(row.get("Primary_Stomach"))
-        ctx_data[i, 4] = _float(row.get("Primary_GEJ"))
-        ctx_data[i, 5] = _float(row.get("Prior_Palliative_Chemo"))
-        ctx_data[i, 6] = _float(row.get("Asia"))
-        ctx_data[i, 7] = _float(row.get("N_Patient"))
-        ctx_data[i, 8] = _float(row.get("Pub_Year"))
-
-    X_all = np.hstack([drug_feat, ctx_data])        # (n_rows, n_feat)
-
-    # ------------------------------------------------------------------
-    # 5. Extract Raw Outcomes & Features
-    # ------------------------------------------------------------------
-    # Extract OS
-    y_os_raw = np.array([_float(row.get("OS")) for _, row in df.iterrows()])
-
-    # Blood / G3-4 toxicity column sets (Appendix D.1)
-    BLOOD_G4_COLS = ["Neutro4", "Thrombo4", "Leuko4", "Anemia4", "Lympho4"]
-    BLOOD_AGG_COL = "BLOOD_34"
-    blood_cols_all = sorted([
-        c for c in df.columns
-        if any(k in c for k in ["Neutro", "Thrombo", "Leuko", "Anemia", "Lympho"])
-        and not c.startswith("Death")
-    ])
-    blood_impute_cols = list(blood_cols_all)
-    if BLOOD_AGG_COL in df.columns and BLOOD_AGG_COL not in blood_impute_cols:
-        blood_impute_cols.append(BLOOD_AGG_COL)
-    g34_cols_all = sorted(c for c in df.columns if "34" in c)
-    NONBLOOD_DLT_COLS = {
-        "constitutional": "CONSTITUTIONAL_34",
-        "gi":             "GINONV_34",
-        "infection":      "INFECTION_34",
-        "neurological":   "NEUROLOGICAL_34",
-    }
-
-    blood_all_raw = np.column_stack([
-        np.array([_float(row.get(c)) for _, row in df.iterrows()])
-        for c in blood_impute_cols
-    ])
-    g34_all_raw = np.column_stack([
-        np.array([_float(row.get(c)) for _, row in df.iterrows()])
-        for c in g34_cols_all
-    ])
-
-    # ------------------------------------------------------------------
-    # 6. Filter to usable rows (TARGET: 461)
-    # ------------------------------------------------------------------
-
-    # 1. Exclude rows with missing OS
-    valid_os = ~np.isnan(y_os_raw)
-
-    # Exclude rows with no drugs
-    valid_drug = df['D1_Name'].notna()
-
-    print(f"Step 6: Filtered has OS and drugs. Observations: {np.sum(valid_os & valid_drug)}")
-
-    # 2. Exclude rows with no reported blood toxicities (Appendix D.1).
-    #    Some arms only report the aggregate BLOOD_34 column.
-    valid_blood = np.array([
-        any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in blood_impute_cols)
-        for _, row in df.iterrows()
-    ])
-
-    # 3. Exclude rows with no reported Grade 3/4 toxicities
-    valid_nonblood = np.array([
-        any(not pd.isna(row.get(c)) and str(row.get(c)).strip() != "" for c in g34_cols_all)
-        for _, row in df.iterrows()
-    ])
-
-    # Require all three conditions to be met
-    valid_mask = valid_os & valid_drug & valid_blood & valid_nonblood
-
-    print(f"Step 6: Filtered to usable rows. Observations: {np.sum(valid_mask)}")
-
-    # Apply the mask to your arrays
-    X_valid = X_all[valid_mask].copy()
-    os_valid = y_os_raw[valid_mask].copy()
-    blood_all_masked = blood_all_raw[valid_mask].copy()
-    g34_all_masked = g34_all_raw[valid_mask].copy()
-
-    # ------------------------------------------------------------------
-    # 6b. Multiple imputation (Appendix D.1)
-    #   - cohort characteristics: from other contextual variables only
-    #   - blood toxicities: full blood column block, then take G4 subset
-    #   - G3/4 toxicities: full G3/4 column block, then take DLT subset
-    # ------------------------------------------------------------------
-    from sklearn.experimental import enable_iterative_imputer
-    from sklearn.impute import IterativeImputer
-
-    ctx_start = n_drug_features
-    # Appendix D.1: impute cohort characteristics from other contextual variables only.
-    # Pub_Year (last column) is used for the temporal split and is left unchanged.
-    ctx_imputable = X_valid[:, ctx_start:ctx_start + 8].copy()
-    n_missing_ctx = np.isnan(ctx_imputable).sum(axis=1)
-    if len(ctx_imputable) > 0:
-        frac_one = float(np.mean(n_missing_ctx == 1))
-        frac_multi = float(np.mean(n_missing_ctx > 1))
-        print(
-            f"Step 6a: Context missingness before imputation: "
-            f"one feature={frac_one:.0%}, multiple={frac_multi:.0%} "
-            f"(paper: 20%, 6%)"
-        )
-    if np.isnan(ctx_imputable).any():
-        ctx_imputer = IterativeImputer(random_state=seed, max_iter=25, tol=1e-3)
-        X_valid[:, ctx_start:ctx_start + 8] = ctx_imputer.fit_transform(ctx_imputable)
-
-    blood_imputer = IterativeImputer(random_state=seed, max_iter=25, tol=1e-3)
-    blood_all_imputed = np.clip(blood_imputer.fit_transform(blood_all_masked), 0, 1)
-
-    g34_imputer = IterativeImputer(random_state=seed, max_iter=25, tol=1e-3)
-    g34_all_imputed = np.clip(g34_imputer.fit_transform(g34_all_masked), 0, 1)
-
-    blood_g4_idx = [blood_impute_cols.index(c) for c in BLOOD_G4_COLS]
-    blood_g4_imputed = blood_all_imputed[:, blood_g4_idx]
-    blood_agg_imputed = (
-        blood_all_imputed[:, blood_impute_cols.index(BLOOD_AGG_COL)]
-        if BLOOD_AGG_COL in blood_impute_cols else None
-    )
-
-    dlt_col_names = list(NONBLOOD_DLT_COLS.values())
-    dlt_g34_idx = [g34_cols_all.index(c) for c in dlt_col_names]
-    nonblood_imputed = g34_all_imputed[:, dlt_g34_idx]
-
-    # ------------------------------------------------------------------
-    # 6c. Compute final derived outcomes from the IMPUTED data
-    # ------------------------------------------------------------------
-    blood_valid = np.max(blood_g4_imputed, axis=1)
-    if blood_agg_imputed is not None:
-        blood_valid = np.maximum(blood_valid, blood_agg_imputed)
-
-    # Maragno Appendix D.1: independent toxicity groups; blood = max(G4 cols, BLOOD_34).
-    dlt_valid = np.zeros(np.sum(valid_mask))
-    for i in range(np.sum(valid_mask)):
-        prob_no_dlt = (1.0 - blood_valid[i])
-        for j in range(len(dlt_col_names)):
-            prob_no_dlt *= (1.0 - nonblood_imputed[i, j])
-        dlt_valid[i] = 1.0 - prob_no_dlt
-
-    const_valid = nonblood_imputed[:, 0]
-    gi_valid    = nonblood_imputed[:, 1]
-    inf_valid   = nonblood_imputed[:, 2]
-
+    df_train, df_test, t_cols = split_gastric_v11(df_cohort)
     print(
-        f"Step 6b: Imputed partial missingness "
-        f"({len(blood_impute_cols)} blood cols, {len(g34_cols_all)} G3/4 cols). "
-        f"Observations: {X_valid.shape[0]}"
+        f'Step 3: Train/Test split complete. '
+        f'Train observations: {len(df_train)}, Test observations: {len(df_test)}'
     )
 
-    # ------------------------------------------------------------------
-    # 7. Train/Test Split.
-    #    Split temporally (training through 2008, testing 2009-2012).
-    #    Exclude test arms with drugs not seen in training.
-    #    Remove arms that include a drug seen exactly once in preliminary training.
-    #    Sparse-drug counts use every drug name in the spreadsheet, while the
-    #    feature space keeps only drugs appearing in >= MIN_DRUG_COUNT arms.
-    # ------------------------------------------------------------------
-    n_samples, n_feat = X_valid.shape
+    X_train, X_test, arrays = cohort_to_arrays(df_train, df_test, t_cols)
+    n_ctx = len(GASTRIC_CTX_COLS)
+    n_feat = X_train.shape[1]
+    n_drug_features = len(t_cols)
 
-    pub_year_idx = n_drug_features + 8
-    pub_years = X_valid[:, pub_year_idx]
+    dlt_train = arrays['train']['dlt']
+    os_train = arrays['train']['os']
+    blood_train = arrays['train']['blood']
+    const_train = arrays['train']['constitutional']
+    gi_train = arrays['train']['gi']
+    inf_train = arrays['train']['infection']
 
-    train_mask = pub_years <= 2008
-    test_mask = (pub_years >= 2009) & (pub_years <= 2012)
+    observed_test = arrays['test']
+    X_valid = arrays['full_X']
+    full_targets = arrays['full']
 
-    all_drug_names = sorted(drug_counts.keys())
-    all_drug_to_idx = {d: i for i, d in enumerate(all_drug_names)}
-    split_ind = np.zeros((n_samples, len(all_drug_names)))
-    valid_row_indices = np.where(valid_mask)[0]
-    row_to_local = {int(g): l for l, g in enumerate(valid_row_indices)}
-    for rec in drug_records:
-        local_i = row_to_local.get(rec["row_i"])
-        if local_i is None:
-            continue
-        split_ind[local_i, all_drug_to_idx[rec["drug"]]] = 1.0
+    dlt_valid = full_targets['dlt']
+    blood_valid = full_targets['blood']
+    const_valid = full_targets['constitutional']
+    gi_valid = full_targets['gi']
+    inf_valid = full_targets['infection']
+    os_valid = full_targets['os']
 
-    train_drug_counts = split_ind[train_mask].sum(axis=0)
-
-    # 1. Exclude test arms that use a drug never seen in preliminary training.
-    unseen_in_train = train_drug_counts == 0
-    has_unseen_drug = (split_ind[:, unseen_in_train]).any(axis=1)
-    test_mask = test_mask & ~has_unseen_drug
-    
-    # 2. Remove observations using drugs seen exactly once in preliminary training
-    sparse_in_train = train_drug_counts == 1
-    has_sparse_drug = (split_ind[:, sparse_in_train]).any(axis=1)
-    train_mask = train_mask & ~has_sparse_drug
-    test_mask = test_mask & ~has_sparse_drug
-
-    idx_train = np.where(train_mask)[0]
-    idx_test = np.where(test_mask)[0]
-
-    print(f"Step 7: Train/Test split complete. Train observations: {len(idx_train)}, Test observations: {len(idx_test)}")
-
-    observed_test = {
-        "dlt": dlt_valid[idx_test],
-        "blood": blood_valid[idx_test],
-        "constitutional": const_valid[idx_test],
-        "infection": inf_valid[idx_test],
-        "gi": gi_valid[idx_test],
-        "os": os_valid[idx_test],
-    }
-
-    X_train = X_valid[idx_train]
-    X_test  = X_valid[idx_test]
-    dlt_train = dlt_valid[idx_train]
-    os_train  = os_valid[idx_train]
-    blood_train = blood_valid[idx_train]
-    const_train = const_valid[idx_train]
-    gi_train = gi_valid[idx_train]
-    inf_train = inf_valid[idx_train]
-
-    # ------------------------------------------------------------------
-    # 9.  Variable bounds & variable indices
-    #     Drug features : [observed min, observed max] (decision)
-    #     Contextual features : unbounded as they'll be fixed per test row (context)
-    # ------------------------------------------------------------------
     variable_lb = np.zeros(n_feat)
     variable_ub = np.zeros(n_feat)
 
-    # Drug features (Decision variables): use overall observed ranges
-    for j in range(n_drug_features):
-        variable_lb[j] = X_valid[:, j].min()
-        variable_ub[j] = X_valid[:, j].max()
-        # Ensure non-degenerate bounds for binary indicators
-        if variable_ub[j] == 0:
-            variable_ub[j] = 1.0
+    for j, col in enumerate(t_cols):
+        offset = n_ctx + j
+        variable_lb[offset] = X_valid[:, offset].min()
+        variable_ub[offset] = X_valid[:, offset].max()
+        if col.endswith('_Ind') and variable_ub[offset] == 0:
+            variable_ub[offset] = 1.0
 
-    # Context variables limits initially just large bounds, will be fixed during prescriptive eval
-    # Making these finite based on X_full correctly bounds the Big-M in Gurobi models
-    X_full = np.concatenate([X_valid, X_test], axis=0) if len(X_test) > 0 else X_valid
-    variable_lb[n_drug_features:] = X_full[:, n_drug_features:].min(axis=0)
-    variable_ub[n_drug_features:] = X_full[:, n_drug_features:].max(axis=0)
+    X_full = np.vstack([X_train, X_test]) if len(X_test) > 0 else X_train
+    for j in range(n_ctx):
+        variable_lb[j] = X_full[:, j].min()
+        variable_ub[j] = X_full[:, j].max()
 
-    decision_var_indices = list(range(n_drug_features))
-    context_var_indices = list(range(n_drug_features, n_feat))
+    decision_var_indices = list(range(n_ctx, n_ctx + n_drug_features))
+    context_var_indices = list(range(n_ctx))
 
     # ------------------------------------------------------------------
     # 10.  Constraint RHS
@@ -889,18 +623,18 @@ def gastric_cancer(seed: int = 42,
     # ------------------------------------------------------------------
     # 11.  Ground Truth Models (fit on all 461 retained arms; Appendix D.3).
     # ------------------------------------------------------------------
-    full_targets = {
+    gt_target_arrays = {
         "dlt": dlt_valid,
         "blood": blood_valid,
         "constitutional": const_valid,
         "infection": inf_valid,
         "gi": gi_valid,
-        "os": os_valid
+        "os": os_valid,
     }
 
     gt_models = {}
     print("Training Ground Truth ensemble models...")
-    for t_name, y_t in full_targets.items():
+    for t_name, y_t in gt_target_arrays.items():
         gt_models[t_name] = train_fixed_ensemble(X_valid, y_t, _GT_SPECS[t_name])
 
     # Objective is to maximize OS (so c = -1 for OS). We create a callable that returns the predicted OS.
@@ -923,7 +657,9 @@ def gastric_cancer(seed: int = 42,
     cost_vector = np.zeros(n_feat)
 
     max_drugs_coeffs = np.zeros(n_feat)
-    max_drugs_coeffs[range(0, n_drug_features, 3)] = 1.0
+    for j, col in enumerate(t_cols):
+        if col.endswith("_Ind"):
+            max_drugs_coeffs[n_ctx + j] = 1.0
     domain_constraints = [DomainConstraint(coeffs=max_drugs_coeffs, rhs=3.0)]
 
     eval_outcomes = []
@@ -954,7 +690,7 @@ def gastric_cancer(seed: int = 42,
 
     gt_eval_data = {
         name: {"X": X_valid, "y": y_t}
-        for name, y_t in full_targets.items()
+        for name, y_t in gt_target_arrays.items()
     }
 
     return ProblemInstance(
@@ -987,7 +723,11 @@ if __name__ == "__main__":
     n_train = gastric_cancer_instance.X_train.shape[0] if gastric_cancer_instance.X_train is not None else 0
     n_test = gastric_cancer_instance.X_test.shape[0]
     n_total = n_train + n_test
-    n_drugs = len(gastric_cancer_instance.decision_var_indices) // 3
+    n_drugs = len([
+        j for j in gastric_cancer_instance.decision_var_indices
+        if gastric_cancer_instance.variable_ub[j] == 1.0
+        and gastric_cancer_instance.variable_lb[j] == 0.0
+    ])
 
     os.makedirs("results", exist_ok=True)
 

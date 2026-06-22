@@ -117,7 +117,7 @@ def evaluate_prescribed_table6(
             result.x[c_idx].ub = val
 
         result.opt.Params.DualReductions = 0
-        result.opt.Params.MIPGap = 0.01
+        result.opt.Params.MIPGap = 1e-4
         result.opt.update()
 
         print(f"  [{label}] test row {i + 1}/{n_eval_rows}: optimizing...", flush=True)
