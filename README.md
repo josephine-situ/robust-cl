@@ -15,27 +15,27 @@ via Cutting Planes.
 
 **Nominal Constraint Learning**
 
-Embeds a trained ML model $\hat{f}(x;\theta^*)$ as a constraint in an optimization problem:
+Embeds a trained ML model $\hat{f}(x;\theta^\ast)$ as a constraint in an optimization problem:
 
-$$
-\min_{x \in \mathcal{X}} \; c^{\top} x \quad \text{s.t.} \quad \hat{f}(x;\theta^{*}) \leq b
-$$
+```math
+\min_{x \in \mathcal{X}} \; c^\top x \quad \text{s.t.} \quad \hat{f}(x;\theta^{\ast}) \leq b
+```
 
-**The Vulnerability:** Labels $y$ are noisy ($y^* = y + \delta$). Different perturbations $\delta$ lead to different trained models $\theta^*(\delta)$ and vastly different "optimal" decisions. The optimizer frequently exploits the errors in the nominal model.
+**The Vulnerability:** Labels $y$ are noisy ($y^\ast = y + \delta$). Different perturbations $\delta$ lead to different trained models $\theta^\ast(\delta)$ and vastly different "optimal" decisions. The optimizer frequently exploits the errors in the nominal model.
 
 **Robust Constraint Learning (Trilevel Formulation):**
 
 We seek a decision $x$ that remains feasible for *every* model resulting from a plausible label perturbation $\delta \in \mathcal{D}$.
 
-$$
+```math
 \begin{aligned}
-\min_{x \in \mathcal{X}} \quad & c^{\top} x \\
-\text{s.t.} \quad & \max_{\delta \in \mathcal{D}} f(x;\theta^{*}(\delta)) \leq b \\
-\text{where} \quad & \theta^{*}(\delta) = \arg\min_{\theta \in \Theta_{\mathrm{feas}}} \mathcal{L}(\theta; X, y+\delta)
+\min_{x \in \mathcal{X}} \quad & c^\top x \\
+\text{s.t.} \quad & \max_{\delta \in \mathcal{D}} f(x;\theta^{\ast}(\delta)) \leq b \\
+\text{where} \quad & \theta^{\ast}(\delta) = \arg\min_{\theta \in \Theta_{\mathrm{feas}}} \mathcal{L}(\theta; X, y+\delta)
 \end{aligned}
-$$
+```
 
-We iteratively approximate the reachability set of models $\Theta^*$ through **Cutting Planes**. On each step, a separation oracle searches over the data perturbations (e.g., via targeted removal/addition of influential training points or adversarial continuous label shifts) to find the worst-case constraints for the current $x^k$.
+We iteratively approximate the reachability set of models $\Theta^\ast$ through **Cutting Planes**. On each step, a separation oracle searches over the data perturbations (e.g., via targeted removal/addition of influential training points or adversarial continuous label shifts) to find the worst-case constraints for the current $x^k$.
 
 ## Problem Settings
 
