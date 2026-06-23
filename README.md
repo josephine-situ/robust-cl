@@ -41,9 +41,9 @@ We iteratively approximate the reachability set of models $\Theta^\ast$ through 
 
 The scenarios differ only in the mapping between models, constraint terms, and LPs. Let $\hat{f}_m(\cdot;\theta_m)$ index trained models, $q \in \mathcal{Q}$ index the LPs solved at evaluation (with context $z_q$, decisions $x_q$), and each learned constraint take the form
 
-$$
+```math
 \sum_{(m,k) \in \mathcal{T}_c} w_{c,m,k}\,\hat{f}_m\bigl(a_{c,k}(x_q,z_q);\theta_m\bigr) \leq b_c
-$$
+```
 
 where $\mathcal{T}_c$ is the set of model *occurrences* in constraint $c$. The robust oracle separates $\max_{\theta_m \in \Theta_m^{*}}(\cdot)$ at the incumbent; its granularity is set by $Q_m$, the query points where model $m$ is evaluated, and whether they share $\theta_m$.
 
