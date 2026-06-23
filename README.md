@@ -18,7 +18,7 @@ via Cutting Planes.
 Embeds a trained ML model $\hat{f}(x;\theta^*)$ as a constraint in an optimization problem:
 
 $$
-\min_{x \in \mathcal{X}} \; c^\top x \quad \text{s.t.} \quad \hat{f}(x;\theta^*) \leq b
+\min_{x \in \mathcal{X}} \; c^{\top} x \quad \text{s.t.} \quad \hat{f}(x;\theta^{*}) \leq b
 $$
 
 **The Vulnerability:** Labels $y$ are noisy ($y^* = y + \delta$). Different perturbations $\delta$ lead to different trained models $\theta^*(\delta)$ and vastly different "optimal" decisions. The optimizer frequently exploits the errors in the nominal model.
@@ -29,9 +29,9 @@ We seek a decision $x$ that remains feasible for *every* model resulting from a 
 
 $$
 \begin{aligned}
-\min_{x \in \mathcal{X}} \quad & c^\top x \\
-\text{s.t.} \quad & \max_{\delta \in \mathcal{D}} f(x;\theta^*(\delta)) \leq b \\
-\text{where} \quad & \theta^*(\delta) = \arg\min_{\theta \in \Theta_{\mathrm{feas}}} \mathcal{L}(\theta; X, y+\delta)
+\min_{x \in \mathcal{X}} \quad & c^{\top} x \\
+\text{s.t.} \quad & \max_{\delta \in \mathcal{D}} f(x;\theta^{*}(\delta)) \leq b \\
+\text{where} \quad & \theta^{*}(\delta) = \arg\min_{\theta \in \Theta_{\mathrm{feas}}} \mathcal{L}(\theta; X, y+\delta)
 \end{aligned}
 $$
 
@@ -42,10 +42,10 @@ We iteratively approximate the reachability set of models $\Theta^*$ through **C
 The scenarios differ only in the mapping between models, constraint terms, and LPs. Let $\hat{f}_m(\cdot;\theta_m)$ index trained models, $q \in \mathcal{Q}$ index the LPs solved at evaluation (with context $z_q$, decisions $x_q$), and each learned constraint take the form
 
 $$
-\sum_{(m,k) \in \mathcal{T}_c} w_{c,m,k}\,\hat{f}_m\!\big(a_{c,k}(x_q,z_q);\theta_m\big) \leq b_c
+\sum_{(m,k) \in \mathcal{T}_c} w_{c,m,k}\,\hat{f}_m\bigl(a_{c,k}(x_q,z_q);\theta_m\bigr) \leq b_c
 $$
 
-where $\mathcal{T}_c$ is the set of model *occurrences* in constraint $c$. The robust oracle separates $\max_{\theta_m \in \Theta_m^*}(\cdot)$ at the incumbent; its granularity is set by $Q_m$, the query points where model $m$ is evaluated, and whether they share $\theta_m$.
+where $\mathcal{T}_c$ is the set of model *occurrences* in constraint $c$. The robust oracle separates $\max_{\theta_m \in \Theta_m^{*}}(\cdot)$ at the incumbent; its granularity is set by $Q_m$, the query points where model $m$ is evaluated, and whether they share $\theta_m$.
 
 | Axis | Synthetic | Gastric cancer | Marketing |
 |------|-----------|----------------|-----------|
@@ -53,11 +53,11 @@ where $\mathcal{T}_c$ is the set of model *occurrences* in constraint $c$. The r
 | Model occurrences per constraint | 1 | 1 | many (summed) |
 | Learned constraints per LP | 1 | many | 1 (+ model's own) |
 | Decision vars | per-LP | shared across models | shared; multiple input copies |
-| LPs at evaluation $\|\mathcal{Q}\|$ | 1 | many (one per cohort) | 1 |
+| LPs at evaluation $\lVert\mathcal{Q}\rVert$ | 1 | many (one per cohort) | 1 |
 | Query points $Q_m$ | one point | one per LP (independent) | many in one constraint (shared $\theta$) |
 | Separation | single point-localized cut | **replicated** per LP (parallel) | **coupled** over the point set |
 
-**Two roles of context.** *Parametric* context (gastric) indexes separate LPs: each $z_q$ yields its own solution $x_q^*(z_q)$ and an independent, point-localized oracle — granularity scales *out* (more solutions, parallel cuts). *In-LP* context (marketing) places several context points in one constraint sharing a single $\theta$: there is one solution, but the oracle must choose one worst-case model maximizing the *aggregate* over $Q_m$ — granularity *couples* (one harder cut over a point set, not term-by-term). Synthetic is the degenerate case of both ($\|Q_m\| = 1$).
+**Two roles of context.** *Parametric* context (gastric) indexes separate LPs: each $z_q$ yields its own solution ${x_q}^{*}(z_q)$ and an independent, point-localized oracle — granularity scales *out* (more solutions, parallel cuts). *In-LP* context (marketing) places several context points in one constraint sharing a single $\theta$: there is one solution, but the oracle must choose one worst-case model maximizing the *aggregate* over $Q_m$ — granularity *couples* (one harder cut over a point set, not term-by-term). Synthetic is the degenerate case of both ($\lVert Q_m \rVert = 1$).
 
 ## Experimental Setup & Methods Compared
 
