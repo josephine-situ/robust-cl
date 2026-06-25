@@ -73,6 +73,30 @@ Following our latest experimental design, we employ data-driven uncertainty cali
 **Separation Oracle:** 
 The separation oracle uses **localized bootstrap resampling**: at each iteration, training arms nearest to the current prescription $x^k$ are resampled to find worst-case constraint models. Wrapper and robust regression share a fixed set of $P$ bootstrap resamples; CP generates fresh localized candidates each iteration.
 
+### Unified driver with an auto-selected separation strategy
+
+A single driver, `solve_cp` (`src/methods/cp.py`), covers every setting. The loop is identical — *train nominal → build master → solve for the optimal solution(s) $x^\*$ → separate → add cuts → terminate* — over shared scaffolding (`_build_master_with_nominal`, `_setup_anchors`, `_solve_all_anchors`, `_resolve_distance`, `_finalize`); each strategy implements just one iteration via a small `step()` contract. The strategy is **chosen automatically from the problem shape** — no separation flag — based on the number of learned constraints and the number of optimal solutions $x^\*$ (one global $x^\*$ for non-contextual problems; one per context anchor for parametric-context problems like gastric):
+
+- **basic** — *single LP, single learned constraint* (synthetic). Plain **worst-case (max)** separation over the localized bootstrap ensemble at $x^\*$, ranked by the *actual* constraint model (not a CART proxy, so it is correct for non-tree constraints). Cut whatever violates; stop when nothing does.
+- **coherent** — *multiple constraints and/or multiple $x^\*$* (gastric). A *scenario* is one **shared** localized bootstrap relabeling used to train every constraint jointly, so the adversary is a single plausible relabeling rather than an independent worst case per constraint. Each iteration draws $B$ scenarios from a pool localized to the union of the current $x^\*$ neighborhoods, trains one model per constraint per scenario, and cuts the single worst scenario. The "worst" scenario and the stopping rule depend on how many $x^\*$ there are:
+  - **Multiple $x^\*$** (many patients): worst = highest **violation rate** across all $(x^\*,\text{constraint})$ cells. `cp_alpha` is a **coverage cap** — adding the worst scenario's cuts is rolled back if it pushes the fraction of infeasible $x^\*$ (`p_infeas`) above $\alpha$ — and we also stop once `p_infeas` stabilizes (`cp.infeas_tol`/`cp.patience`). This is the data-driven, population-level acceptance that matches the 60th-percentile framing without an explicit per-anchor budget.
+  - **Single $x^\*$** (non-contextual, multiple constraints): `p_infeas` is degenerate $(0/1)$, so worst = largest total **violation distance** across constraints at $x^\*$; we cut it each iteration and stop when the worst relabeling no longer violates (or the master goes infeasible).
+
+Two further knobs are shared:
+
+- **Anchor set (where we collect $x^\*$).** For the *parametric-context* gastric case the master is solved once per representative context anchor, giving $x^\*_1,\dots,x^\*_K$. Anchors are chosen by `select_anchor_contexts` (k-medoids over the context columns by default; `sample`/`all` available) from either the training or test contexts (`cp_anchor_source`). Training anchors give an **offline** robust region (no test labels, precomputable); each cut is a full embedded model valid at every context, so it remains sound when `evaluate_prescribed_table6` re-solves per test cohort.
+- **Localization distance (which pool).** `cp_distance` defaults to **`"full"`** for all scenarios (context + decision distance, so the pool follows $x^\*$). `"context"` localizes on the context columns only (models trained on arms for *similar patients*), and `"auto"` uses context-only when the problem is contextual, full otherwise. Training points are only the bootstrap *pool*, never feasibility targets.
+
+The *marketing* (in-LP context, **coupled**) setting — one constraint summing a shared $\theta$ over many in-LP context points, $\sum_q f(a(x,z_q)) \le b$ — would add a third strategy (worst-case model over the aggregate); it is not implemented pending a marketing data loader.
+
+### Distribution-free formalization
+
+The coverage cap (keep $\ge (1-\alpha)$ of patients feasible) is the lightweight, implemented version of a broader idea: a **distribution-free** constraint that assumes no parametric label-noise model and relies only on the data. The orthogonal *per-point* robustness (worst-case over the localized ensemble) can likewise be replaced by a distribution-free predictive bound. Theoretically grounded alternatives:
+
+- **Split-conformal upper bound.** With a held-out calibration split, $\hat f(x^k) + Q_{1-\alpha}(\text{residuals}) \le b$ gives finite-sample coverage with no distributional assumption; a localized (Mondrian) variant uses calibration residuals from context-neighbors of $x^k$.
+- **Jackknife+ / CV+.** Distribution-free predictive bands without a separate calibration split — useful for the scarce gastric training split ($n{=}320$).
+- **Wasserstein DRO.** Worst-case over a data-radius ball around the empirical distribution, radius calibrated by CV; principled but heavier to embed.
+
 ## Gastric Cancer Chemotherapy Experiment
 
 Compare all robust methods on the OptiCL gastric cancer case study (Table 6 metrics):
@@ -144,8 +168,8 @@ python experiments/run_sweep.py --sweep all --plot-only
 Edit `config.yaml` to change:
 - Data: number of training points, features, noise level
 - Model: type (cart/rf/xgb), hyperparameters
-- Uncertainty: bootstrap resamples (`n_bootstrap`, `cp_k_neighbors_frac`)
-- Method-specific: wrapper alpha/P, number of scenarios, Cutting Planes settings
+- Uncertainty: bootstrap resamples (`n_bootstrap`, `cp_k_neighbors_frac`, `cp_alpha`)
+- Method-specific: wrapper alpha/P, number of scenarios, Cutting Planes settings (`cp.anchor_source`, `cp.n_anchors`, `cp.anchor_method`, `cp.distance`, and `cp.infeas_tol`/`cp.patience` for the coherent multi-$x^\*$ strategy). `solve_cp` auto-selects basic vs coherent separation from the problem shape; there is no separation flag.
 - Evaluation: CV folds, Bootstrap resamples
 
 ## Project Structure

@@ -55,6 +55,8 @@ def _resolve_run_settings(config, args):
     quick_cfg = chemo_cfg.get("quick", {})
     unc = config["uncertainty"]
 
+    cp_cfg = config["methods"].get("cp", {})
+
     if args.quick:
         settings = {
             "max_test_rows": quick_cfg.get("max_test_rows", 5),
@@ -66,6 +68,8 @@ def _resolve_run_settings(config, args):
             "cp_max_iterations": quick_cfg.get("cp_max_iterations", 5),
             "cp_n_candidates": quick_cfg.get("cp_n_candidates", 5),
             "cp_k_neighbors_frac": quick_cfg.get("cp_k_neighbors_frac", 0.05),
+            "cp_alpha": quick_cfg.get("cp_alpha", unc.get("cp_alpha", 0.0)),
+            "cp_n_anchors": quick_cfg.get("cp_n_anchors", cp_cfg.get("n_anchors", 4)),
             "output_path": "results/chemo_robust_table6_quick.csv",
         }
     else:
@@ -76,11 +80,20 @@ def _resolve_run_settings(config, args):
                 "constraint_modes", ["all_constraints", "dlt_only"]
             ),
             "n_bootstrap": unc.get("n_bootstrap", 25),
-            "cp_max_iterations": config["methods"]["cp"].get("max_iterations", 20),
+            "cp_max_iterations": cp_cfg.get("max_iterations", 20),
             "cp_n_candidates": unc.get("cp_n_candidates", 20),
             "cp_k_neighbors_frac": unc.get("cp_k_neighbors_frac", 0.1),
+            "cp_alpha": unc.get("cp_alpha", 0.0),
+            "cp_n_anchors": cp_cfg.get("n_anchors", 15),
             "output_path": "results/chemo_robust_table6.csv",
         }
+
+    settings["cp_anchor_source"] = cp_cfg.get("anchor_source", "train")
+    settings["cp_anchor_method"] = cp_cfg.get("anchor_method", "kmedoids")
+    settings["cp_trace_path"] = "results/cp_trace.csv"
+    settings["cp_distance"] = cp_cfg.get("distance", "full")
+    settings["cp_infeas_tol"] = cp_cfg.get("infeas_tol", 1e-3)
+    settings["cp_patience"] = cp_cfg.get("patience", 2)
 
     if args.max_test_rows is not None:
         settings["max_test_rows"] = args.max_test_rows
@@ -154,6 +167,9 @@ def _build_solvers(config, settings, instance):
             rho=0.0,
             bootstrap_cache=bootstrap_cache,
         ),
+        # Single driver; gastric (multiple toxicity constraints over many
+        # patients) auto-selects coherent separation with cp_alpha as the
+        # feasibility coverage cap.
         "cp": partial(
             solve_cp,
             model_type=model_type,
@@ -163,8 +179,14 @@ def _build_solvers(config, settings, instance):
             cp_k_neighbors_frac=settings["cp_k_neighbors_frac"],
             cp_n_candidates=settings["cp_n_candidates"],
             seed=seed,
-            embedding_mode=embedding_mode,
-            rf_alpha=rf_alpha,
+            cp_alpha=settings["cp_alpha"],
+            cp_infeas_tol=settings["cp_infeas_tol"],
+            cp_patience=settings["cp_patience"],
+            cp_anchor_source=settings["cp_anchor_source"],
+            cp_n_anchors=settings["cp_n_anchors"],
+            cp_anchor_method=settings["cp_anchor_method"],
+            cp_distance=settings["cp_distance"],
+            cp_trace_path=settings["cp_trace_path"],
         ),
     }
     return solvers
@@ -225,6 +247,9 @@ def run_chemo_robust(config, args):
                 "full_outcomes": full_outcomes,
             }
 
+        # Paper Table 6 samestore: evaluate every cell over the patients feasible
+        # across the constraint modes being compared (intersection), with a single
+        # shared `given` baseline over that cohort (chemo_metrics.samestore_eval_mask).
         if "all_constraints" in mode_results and "dlt_only" in mode_results:
             eval_mask = samestore_eval_mask(
                 mode_results["all_constraints"]["mask"],

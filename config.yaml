@@ -23,6 +23,10 @@ uncertainty:
   bootstrap_seed: 42
   cp_k_neighbors_frac: 0.1  # fraction of n_train for CP localized pool
   cp_n_candidates: 20  # bootstrap candidates per CP separation call
+  cp_alpha: 0.0  # coverage cap for coherent separation with multiple x* (gastric):
+                 # at most this fraction of patients (optimal solves) may become
+                 # infeasible before the last scenario's cuts are rolled back.
+                 # Unused by basic separation and by coherent with a single x*.
 
 methods:
   embedding_mode: "hard"  # "hard" | "tree_violation"
@@ -38,7 +42,21 @@ methods:
     alpha: 0.25  # max fraction of embedded RF trees allowed to violate
 
   cp:
+    # One solve_cp driver; separation is auto-selected from the problem shape
+    # (basic for a single-LP/single-constraint case, coherent otherwise).
     max_iterations: 20
+    # Contextual (gastric): anchors are representative cohorts at which we collect
+    # an optimal solution x* (one per context).
+    anchor_source: "train"   # "train" (offline, no test labels) | "test" (online)
+    n_anchors: 15            # representatives over context space (null -> all rows)
+    anchor_method: "kmedoids"  # "kmedoids" | "sample" | "all"
+    distance: "full"         # neighbor localization (default for all scenarios):
+                             # "full" (context+decision, around x*) |
+                             # "context" (context columns only) | "auto" (context-only
+                             # when contextual, full otherwise)
+    # coherent separation with multiple x* only:
+    infeas_tol: 0.001        # p_infeas plateau tolerance for stabilization stop
+    patience: 2              # consecutive stable iterations before stopping
 
   chemo:
     methods_to_run:
@@ -54,3 +72,5 @@ methods:
       cp_max_iterations: 5
       cp_n_candidates: 5
       cp_k_neighbors_frac: 0.05
+      cp_n_anchors: 4
+      cp_alpha: 0.0

@@ -300,15 +300,28 @@ def localized_bootstrap_indices(X: np.ndarray,
                                 x_star: np.ndarray,
                                 k_neighbors_frac: float,
                                 n_candidates: int,
-                                seed: int = 42) -> list:
+                                seed: int = 42,
+                                distance_feature_indices: list = None) -> list:
     """
     Generate bootstrap candidates resampling only from training points
     nearest to x_star in feature space.
+
+    Parameters
+    ----------
+    distance_feature_indices : optional list of column indices used to compute
+        the nearest-neighbor distance. When provided, only these features
+        (e.g. context columns) drive localization; the remaining decision
+        features are ignored. Defaults to all columns (full-vector distance),
+        which preserves the synthetic / decision-only behavior.
     """
     n = X.shape[0]
     k = max(1, int(round(k_neighbors_frac * n)))
     x_star = np.asarray(x_star, dtype=float).ravel()
-    distances = np.linalg.norm(X - x_star, axis=1)
+    if distance_feature_indices:
+        cols = list(distance_feature_indices)
+        distances = np.linalg.norm(X[:, cols] - x_star[cols], axis=1)
+    else:
+        distances = np.linalg.norm(X - x_star, axis=1)
     pool = np.argsort(distances)[:k]
     rng = np.random.RandomState(seed)
     return [rng.choice(pool, size=n, replace=True) for _ in range(n_candidates)]
