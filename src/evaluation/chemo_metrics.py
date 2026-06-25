@@ -231,6 +231,48 @@ def build_table6_rows(
             mean_solve_time=mean_solve_time,
             solve_time_sd=solve_time_sd,
         ))
+
+    # Conjunction row: fraction of regimens feasible for *all* (toxicity)
+    # constraints simultaneously, i.e. the per-regimen AND of the binary GT
+    # satisfaction indicators above. Survival outcomes are continuous, not a
+    # feasibility indicator, so they are excluded.
+    binary_labels = [o.label for o in instance.eval_outcomes if not o.is_survival]
+    if binary_labels:
+        def _all_feasible(values: Dict[str, np.ndarray]) -> np.ndarray:
+            cols = [np.asarray(values[label], dtype=float) for label in binary_labels]
+            if not cols or len(cols[0]) == 0:
+                return np.array([])
+            # Rows are already restricted to the feasible samestore cohort, so
+            # every indicator is a finite 0/1.
+            return (np.vstack(cols) >= 0.5).all(axis=0).astype(float)
+
+        given_all = _all_feasible(given_values)
+        prescribed_all = _all_feasible(prescribed_values)
+
+        given_mean = float(np.mean(given_all)) if len(given_all) else np.nan
+        given_sd = float(np.std(given_all, ddof=1)) if len(given_all) > 1 else 0.0
+        prescribed_mean = float(np.mean(prescribed_all)) if len(prescribed_all) else np.nan
+        prescribed_sd = (
+            float(np.std(prescribed_all, ddof=1)) if len(prescribed_all) > 1 else 0.0
+        )
+        if np.isfinite(given_mean) and given_mean != 0 and np.isfinite(prescribed_mean):
+            pct_change = 100.0 * (prescribed_mean - given_mean) / given_mean
+        else:
+            pct_change = np.nan
+
+        rows.append(ChemoTable6Result(
+            outcome="all_constraints",
+            constraint_mode=constraint_mode,
+            given_mean=given_mean,
+            given_sd=given_sd,
+            prescribed_mean=prescribed_mean,
+            prescribed_sd=prescribed_sd,
+            pct_change=pct_change,
+            n_test=n_test,
+            n_prescribed_eval=n_prescribed,
+            mean_solve_time=mean_solve_time,
+            solve_time_sd=solve_time_sd,
+        ))
     return rows
 
 

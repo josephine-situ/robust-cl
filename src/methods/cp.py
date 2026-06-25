@@ -651,10 +651,12 @@ class _CoherentSeparation:
     there are:
 
     - **Multiple ``x*``** (contextual / many patients): the worst scenario is the
-      one with the highest **violation rate** across all ``(x*, constraint)``
-      cells. ``alpha`` is a coverage cap -- adding the worst scenario's cuts is
-      rolled back if it pushes the fraction of infeasible ``x*`` (``p_infeas``)
-      above ``alpha`` -- and we also stop once ``p_infeas`` stabilizes.
+      one that makes the most data points violate **any** constraint (fraction
+      ``viol_dp_frac``; total violation distance breaks ties). We stop when this
+      worst-case fraction is ``<= alpha`` (the ``(1-alpha)`` data-point chance
+      constraint is met), when ``p_infeas`` stabilizes, or when adding the worst
+      scenario's cuts would push ``p_infeas`` above ``alpha`` (coverage cap ->
+      rollback).
     - **Single ``x*``** (non-contextual, multiple constraints): ``p_infeas`` is
       degenerate (0/1), so we rank the worst scenario by total **violation
       distance** across constraints at ``x*`` and simply cut it each iteration,
@@ -740,14 +742,15 @@ class _CoherentSeparation:
             ref_md.X_train, x_stars, self.k_neighbors_frac,
             env.distance_feature_indices,
         )
+        pool_frac = len(pool) / n_train
         rng = np.random.RandomState(env.seed + iteration)
         scenarios = [
             rng.choice(pool, size=n_train, replace=True) for _ in range(self.n_scenarios)
         ]
 
-        n_cells = len(x_stars) * max(1, n_constraints)
-        best_metric = -np.inf
-        best_rate = 0.0
+        n_points = len(x_stars)
+        have_best = False
+        best_viol_dp_frac = 0.0
         best_dist = 0.0
         best_max_exceed = 0.0
         best_scenario_cuts = None
@@ -767,26 +770,40 @@ class _CoherentSeparation:
                     models.append((model_data.weight, theta))
                 per_constraint_models[c_idx] = (models, constraint.rhs)
 
-            viol_count = 0
             total_dist = 0.0
             max_exceed = 0.0
+            n_dp_violating = 0   # data points violating *any* constraint
             violated_constraints = set()
             for x_star in x_stars:
                 xs2d = np.atleast_2d(x_star)
+                dp_violates = False
                 for c_idx, (models, rhs) in per_constraint_models.items():
                     exceed = sum(w * th.predict(xs2d)[0] for w, th in models) - rhs
                     if exceed > 1e-6:
-                        viol_count += 1
                         total_dist += exceed
                         max_exceed = max(max_exceed, exceed)
                         violated_constraints.add(c_idx)
+                        dp_violates = True
+                if dp_violates:
+                    n_dp_violating += 1
 
-            # Single x*: rank by total violation distance across constraints (rate
-            # is too coarse with one point); multiple x*: rank by violation rate.
-            metric = total_dist if self.single_point else viol_count / n_cells
-            if metric > best_metric:
-                best_metric = metric
-                best_rate = viol_count / n_cells
+            viol_dp_frac = n_dp_violating / n_points
+            # Worst scenario = the relabeling that makes the most data points
+            # violate *any* constraint (multiple x*), or the largest total
+            # violation distance (single x*, where the fraction is just 0/1).
+            # When the violation rate ties, prefer the larger total violation
+            # distance so the strongest cut wins.
+            if not have_best:
+                better = True
+            elif self.single_point:
+                better = total_dist > best_dist + 1e-12
+            elif abs(viol_dp_frac - best_viol_dp_frac) > 1e-12:
+                better = viol_dp_frac > best_viol_dp_frac
+            else:
+                better = total_dist > best_dist + 1e-12
+            if better:
+                have_best = True
+                best_viol_dp_frac = viol_dp_frac
                 best_dist = total_dist
                 best_max_exceed = max_exceed
                 best_scenario_cuts = [
@@ -800,23 +817,36 @@ class _CoherentSeparation:
         if self.single_point:
             print(
                 f"Iter {iteration}: Obj={last_obj:.4f} "
-                f"WorstScenarioViolDist={best_dist:.4f} "
+                f"WorstScenarioViolDist={best_dist:.4f} PoolFrac={pool_frac:.3f} "
                 f"Time={time.time()-iter_start:.2f}s",
                 flush=True,
             )
         else:
             print(
                 f"Iter {iteration}: AvgObj={last_obj:.4f} "
-                f"WorstScenarioViol%={best_rate*100:.1f} p_infeas={p_infeas*100:.1f}% "
+                f"WorstScenario%DPViol={best_viol_dp_frac*100:.1f}% "
+                f"p_infeas={p_infeas*100:.1f}% PoolFrac={pool_frac:.3f} "
                 f"Time={time.time()-iter_start:.2f}s",
                 flush=True,
             )
 
-        history_viol = best_dist if self.single_point else best_rate
+        history_viol = best_dist if self.single_point else best_viol_dp_frac
 
-        # Converged: even the worst coherent relabeling no longer violates.
-        if best_metric <= 1e-12 or not best_scenario_cuts:
+        # Converged: even the worst coherent relabeling no longer violates anywhere.
+        if not best_scenario_cuts:
             return _StepResult(stop=True, status="optimal", obj=last_obj, violation=history_viol)
+
+        # Data-point chance constraint (multiple x*): stop once even the worst
+        # relabeling leaves <= alpha of data points violating any constraint, i.e.
+        # >= (1-alpha) of patients are robustly satisfied. alpha=0 -> stop only
+        # when no data point violates.
+        if not self.single_point and best_viol_dp_frac <= self.alpha + 1e-12:
+            print(
+                f"Iter {iteration}: worst-scenario data-point violation "
+                f"{best_viol_dp_frac*100:.1f}% <= alpha {self.alpha*100:.1f}%; stopping."
+            )
+            return _StepResult(stop=True, status="chance_satisfied", obj=last_obj,
+                               violation=history_viol)
 
         # Add the worst scenario's coherent cuts.
         added_ids = []
