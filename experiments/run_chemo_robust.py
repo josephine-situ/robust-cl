@@ -92,8 +92,7 @@ def _resolve_run_settings(config, args):
     settings["cp_anchor_method"] = cp_cfg.get("anchor_method", "kmedoids")
     settings["cp_trace_path"] = "results/cp_trace.csv"
     settings["cp_distance"] = cp_cfg.get("distance", "full")
-    settings["cp_infeas_tol"] = cp_cfg.get("infeas_tol", 1e-3)
-    settings["cp_patience"] = cp_cfg.get("patience", 2)
+    settings["cp_dist_tol"] = cp_cfg.get("dist_tol", 1e-3)
 
     if args.max_test_rows is not None:
         settings["max_test_rows"] = args.max_test_rows
@@ -180,8 +179,7 @@ def _build_solvers(config, settings, instance):
             cp_n_candidates=settings["cp_n_candidates"],
             seed=seed,
             cp_alpha=settings["cp_alpha"],
-            cp_infeas_tol=settings["cp_infeas_tol"],
-            cp_patience=settings["cp_patience"],
+            cp_dist_tol=settings["cp_dist_tol"],
             cp_anchor_source=settings["cp_anchor_source"],
             cp_n_anchors=settings["cp_n_anchors"],
             cp_anchor_method=settings["cp_anchor_method"],

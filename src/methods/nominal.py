@@ -176,10 +176,25 @@ def embed_constraints(opt: gp.Model,
     return models_embedded, embedded_cache, obj_terms
 
 
-def build_and_set_objective(opt: gp.Model, x, instance: ProblemInstance, obj_terms: list) -> None:
+def build_and_set_objective(opt: gp.Model, x, instance: ProblemInstance, obj_terms: list):
+    """Set the objective in epigraph form: ``min c'x + t`` s.t. ``t >= sum(obj_terms)``.
+
+    The epigraph variable ``t`` upper-bounds the learned objective contribution,
+    so it can be robustified by adding worst-case cuts ``sum(obj_terms^s) <= t``
+    (each raises ``t`` and makes the objective more conservative). When there is
+    no learned objective term the objective stays the plain linear ``c'x``.
+
+    Returns the epigraph variable ``t`` (or ``None`` for a purely linear objective).
+    """
     d = instance.n_features
     base_cost = gp.quicksum(instance.cost_vector[j] * x[j] for j in range(d))
-    opt.setObjective(base_cost + gp.quicksum(obj_terms), GRB.MINIMIZE)
+    if not obj_terms:
+        opt.setObjective(base_cost, GRB.MINIMIZE)
+        return None
+    t = opt.addVar(lb=-GRB.INFINITY, name="t_obj")
+    opt.addConstr(t >= gp.quicksum(obj_terms), name="epigraph_obj")
+    opt.setObjective(base_cost + t, GRB.MINIMIZE)
+    return t
 
 
 def solve_nominal(instance: ProblemInstance,

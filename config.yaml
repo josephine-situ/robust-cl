@@ -54,9 +54,10 @@ methods:
                              # "full" (context+decision, around x*) |
                              # "context" (context columns only) | "auto" (context-only
                              # when contextual, full otherwise)
-    # coherent separation with multiple x* only:
-    infeas_tol: 0.001        # p_infeas plateau tolerance for stabilization stop
-    patience: 20              # consecutive stable iterations before stopping - not used now.
+    # coherent separation: stop once the worst sampled scenario's normalized
+    # average distance (mean relative exceedance over all x* x outcomes) is at
+    # or below this. Range 0-1; 0 = stop only when nothing violates.
+    dist_tol: 0.05
 
   chemo:
     methods_to_run:
@@ -64,7 +65,7 @@ methods:
       - tree_violation # like paper
     constraint_modes:
       - all_constraints
-      # - dlt_only
+      - dlt_only
     quick:
       max_test_rows: 5
       methods_to_run: [nominal, cp, wrapper]

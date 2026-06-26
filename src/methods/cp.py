@@ -6,12 +6,19 @@ separation strategy from the problem shape:
 
 - **basic** -- a single global LP with a single learned constraint (synthetic):
   plain worst-case localized-bootstrap separation at ``x*``; no chance budget.
-- **coherent** -- multiple constraints and/or multiple optimal solutions ``x*``
-  (e.g. gastric): one *shared* bootstrap relabeling drives every constraint
-  jointly and the single worst scenario is cut (simultaneous worst-case across
-  constraints). With multiple ``x*`` a coverage cap ``cp_alpha`` bounds the
-  fraction allowed to go infeasible; with a single ``x*`` the worst scenario is
-  ranked by total violation distance instead.
+- **coherent** -- multiple constraints, multiple optimal solutions ``x*``, or a
+  learned objective (e.g. gastric): one *shared* bootstrap relabeling drives
+  every constraint (and the objective) jointly and the single worst scenario --
+  ranked by **normalized average distance** (mean relative exceedance over all
+  ``(x*, outcome)`` cells, range 0–1) -- is cut. We stop when that distance
+  falls within ``cp_dist_tol`` or no scenario can be added without pushing more
+  than ``cp_alpha`` of the ``x*`` infeasible. With multiple ``x*`` the coverage
+  cap ``cp_alpha`` bounds the fraction allowed to go infeasible (feasibility
+  only); with a single ``x*`` there is no cap.
+
+The objective uses an **epigraph** reformulation ``min c'x + t``, ``t >= sum of
+learned objective terms``, so a learned objective is robustified by the same
+worst-case cuts (each raises ``t``). Only the coherent strategy robustifies it.
 
 Both reuse the same scaffolding: train nominal -> build master -> solve for the
 optimal solution(s) ``x*`` -> separate -> add cuts -> terminate.
@@ -71,8 +78,13 @@ class IncrementalMaster:
             for j in range(self.d)
         ]
 
-        base_cost = gp.quicksum(instance.cost_vector[j] * self.x[j] for j in range(self.d))
-        self.obj_expr = base_cost + gp.quicksum(obj_terms) if obj_terms else base_cost
+        self.base_cost = gp.quicksum(
+            instance.cost_vector[j] * self.x[j] for j in range(self.d)
+        )
+        # Epigraph variable for the learned objective (None until set up); the
+        # objective is ``min base_cost + t_obj`` with ``t_obj >= sum(obj terms)``.
+        self.t_obj = None
+        self.obj_expr = self.base_cost
         self.opt.setObjective(self.obj_expr, GRB.MINIMIZE)
 
         add_domain_constraints(self.opt, self.x, instance)
@@ -82,15 +94,42 @@ class IncrementalMaster:
         self.scenario_constrs = []
         self.scenario_vars_map = {}
         self.scenario_constrs_map = {}
+        self.scenario_model_ids_map = {}   # s -> cache keys this scenario created
         self.embedded_models_cache = {}
+
+        if obj_terms:
+            self.set_epigraph_objective(obj_terms)
+
+    def set_epigraph_objective(self, nominal_obj_terms: list):
+        """Reformulate the objective as ``min base_cost + t_obj`` with the nominal
+        epigraph cut ``t_obj >= sum(nominal_obj_terms)``.
+
+        Worst-case objective cuts ``sum(obj_weight_i f_i^s(x)) <= t_obj`` (added
+        as scenarios with ``rhs=self.t_obj``) then robustify the objective: each
+        raises the epigraph floor, so the optimum reflects the worst plausible
+        relabeling of the objective outcome.
+        """
+        self.t_obj = self.opt.addVar(lb=-GRB.INFINITY, name="t_obj")
+        self.opt.addConstr(
+            self.t_obj >= gp.quicksum(nominal_obj_terms), name="epigraph_obj_nominal"
+        )
+        self.obj_expr = self.base_cost + self.t_obj
+        self.opt.setObjective(self.obj_expr, GRB.MINIMIZE)
+        self.opt.update()
 
     def remove_scenario(self, s: int):
         for c in self.scenario_constrs_map.get(s, []):
             self.opt.remove(c)
         for v in self.scenario_vars_map.get(s, []):
             self.opt.remove(v)
+        # Evict the embedded-model vars this scenario created: their Gurobi vars
+        # are now gone, so a future id() collision must re-embed rather than reuse
+        # a stale (removed) variable.
+        for m_id in self.scenario_model_ids_map.get(s, []):
+            self.embedded_models_cache.pop(m_id, None)
         self.scenario_constrs_map[s] = []
         self.scenario_vars_map[s] = []
+        self.scenario_model_ids_map[s] = []
         if s < len(self.scenario_constrs):
             self.scenario_constrs[s] = None
 
@@ -102,6 +141,7 @@ class IncrementalMaster:
         old_vars = set(self.opt.getVars())
 
         f_pred_vars = []
+        created_ids = []
         for m_idx, (weight, ml_model) in enumerate(constraint_models):
             m_prefix = f"{prefix}_m{m_idx}"
             m_id = id(ml_model)
@@ -112,6 +152,7 @@ class IncrementalMaster:
                     name_prefix=m_prefix, rho=rho,
                 )
                 self.embedded_models_cache[m_id] = f_s
+                created_ids.append(m_id)
             f_pred_vars.append(weight * self.embedded_models_cache[m_id])
 
         main_constr = None
@@ -127,6 +168,7 @@ class IncrementalMaster:
 
         self.scenario_constrs_map[self.n_models] = new_constrs
         self.scenario_vars_map[self.n_models] = new_vars
+        self.scenario_model_ids_map[self.n_models] = created_ids
         self.scenario_constrs.append(main_constr)
         self.n_models += 1
 
@@ -211,19 +253,27 @@ def _union_neighbor_pool(X_train, query_points, k_neighbors_frac,
     """Union of the k-nearest training indices across a set of query points.
 
     Localizes a single shared pool to the region spanned by the current query
-    points. With ``distance_feature_indices=None`` the distance uses the full
-    feature vector (context + decision), so the pool follows the incumbent
-    solutions and shifts as cuts change them.
+    points. Distances are computed in the **standardized** feature space
+    (z-scored by the training-set column mean/std) so features on different
+    scales contribute equally. With ``distance_feature_indices=None`` the
+    distance uses the full feature vector (context + decision).
     """
     n = X_train.shape[0]
     k = max(1, int(round(k_neighbors_frac * n)))
     cols = list(distance_feature_indices) if distance_feature_indices else None
-    Xq = X_train[:, cols] if cols is not None else X_train
+    Xc = X_train[:, cols] if cols is not None else X_train
+    # Standardize the training matrix once; query points are standardized with
+    # the same training statistics so the distance space is consistent.
+    mu = Xc.mean(axis=0)
+    sigma = Xc.std(axis=0)
+    sigma[sigma == 0] = 1.0
+    Xc_std = (Xc - mu) / sigma
     pool = set()
     for x in query_points:
         x = np.asarray(x, dtype=float).ravel()
         xc = x[cols] if cols is not None else x
-        dist = np.linalg.norm(Xq - xc, axis=1)
+        xc_std = (xc - mu) / sigma
+        dist = np.linalg.norm(Xc_std - xc_std, axis=1)
         pool.update(np.argsort(dist)[:k].tolist())
     return np.array(sorted(pool), dtype=int)
 
@@ -335,11 +385,10 @@ def _build_master_with_nominal(instance, model_type, model_params, rho):
     ``model_data`` id to its resolved ``(model_type, model_params)`` for later
     bootstrap retraining during separation.
     """
-    d = instance.n_features
     trained_constraints = _train_nominal_with_configs(instance, model_type, model_params)
     master = IncrementalMaster(instance, [], rho=rho)
 
-    obj_terms = []
+    nominal_obj_terms = []
     for c_idx, constraint_models in enumerate(trained_constraints):
         for m_idx, (weight, ml_model, obj_weight) in enumerate(constraint_models):
             if obj_weight == 0.0:
@@ -351,12 +400,11 @@ def _build_master_with_nominal(instance, model_type, model_params, rho):
                     instance.variable_lb, instance.variable_ub,
                     name_prefix=f"cp_obj_c{c_idx}_m{m_idx}", rho=rho,
                 )
-            obj_terms.append(obj_weight * master.embedded_models_cache[m_id])
+            nominal_obj_terms.append(obj_weight * master.embedded_models_cache[m_id])
 
-    base_cost = gp.quicksum(instance.cost_vector[j] * master.x[j] for j in range(d))
-    master.obj_expr = base_cost + gp.quicksum(obj_terms)
-    master.opt.setObjective(master.obj_expr, GRB.MINIMIZE)
-    master.opt.update()
+    # Epigraph reformulation so the learned objective can be robustified by cuts.
+    if nominal_obj_terms:
+        master.set_epigraph_objective(nominal_obj_terms)
 
     for c_idx, constraint in enumerate(instance.constraints):
         if not _is_constraint_constraint(constraint):
@@ -476,6 +524,35 @@ def _solve_all_anchors(master, instance, anchors, obj_bounds=None,
     if collect_slack:
         return feasible, p_infeas, min_slack
     return feasible, p_infeas
+
+
+def _p_infeas_after_cuts(master, instance, anchors, feasible, n_infeas_base, alpha):
+    """Check whether p_infeas stays within alpha after recently-added cuts.
+
+    Anchors that were already infeasible before this call remain infeasible
+    (cuts only tighten), so ``n_infeas_base`` is a free lower bound on the
+    result. We solve only the currently-feasible subset, sorted by **descending
+    obj_q**: anchors that achieved a higher objective under the current cuts
+    were closer to the feasibility boundary and are the most likely to flip
+    infeasible first, maximising the chance of an early exit.
+
+    Returns ``(p_infeas_after, fits)`` where ``fits = p_infeas_after <= alpha``.
+    The ``p_infeas_after`` value may be a lower bound (not the true fraction)
+    when we exit early -- callers should only use it for rejection (fits=False).
+    """
+    n_total = len(anchors)
+    n_infeas = n_infeas_base
+    # Pre-check: already over budget before solving anything.
+    if n_infeas > (alpha + 1e-12) * n_total:
+        return n_infeas / n_total, False
+    for a_idx, _, _ in sorted(feasible, key=lambda t: t[2], reverse=True):
+        _fix_anchor_context(master, instance, anchors[a_idx])
+        x_q, _ = master.solve()
+        if x_q is None:
+            n_infeas += 1
+            if n_infeas > (alpha + 1e-12) * n_total:
+                return n_infeas / n_total, False
+    return n_infeas / n_total, True
 
 
 def _resolve_distance(cp_distance, instance):
@@ -647,21 +724,36 @@ class _CoherentSeparation:
     of their neighborhoods, draws ``n_scenarios`` resamples, and trains one model
     per constraint per scenario.
 
-    How the worst scenario is scored and when we stop depends on how many ``x*``
-    there are:
+    When the problem has a **learned objective** (epigraph ``min base_cost +
+    t_obj`` with ``t_obj >= sum(obj_weight_i f_i)``), the same shared relabeling
+    also retrains the objective model(s). The epigraph is treated as one extra
+    "constraint" ``sum(obj_weight_i f_i^s(x)) <= t_obj`` evaluated against each
+    ``x*``'s epigraph value (``t_val = obj - c'x``); when the worst scenario
+    worsens the objective there, its cut is added and ``t_obj`` rises, so the
+    objective is robustified by the same worst-case mechanism as the constraints.
 
-    - **Multiple ``x*``** (contextual / many patients): the worst scenario is the
-      one that makes the most data points violate **any** constraint (fraction
-      ``viol_dp_frac``; total violation distance breaks ties). We stop when this
-      worst-case fraction is ``<= alpha`` (the ``(1-alpha)`` data-point chance
-      constraint is met), when ``p_infeas`` stabilizes, or when adding the worst
-      scenario's cuts would push ``p_infeas`` above ``alpha`` (coverage cap ->
-      rollback).
-    - **Single ``x*``** (non-contextual, multiple constraints): ``p_infeas`` is
-      degenerate (0/1), so we rank the worst scenario by total **violation
-      distance** across constraints at ``x*`` and simply cut it each iteration,
-      stopping when the worst relabeling no longer violates (or the master
-      becomes infeasible). No ``alpha``.
+    **Worst-case selection (all cases).** Every sampled scenario is scored by its
+    **normalized average distance**: each constraint exceedance ``sum w_i f_i^s(x*)
+    - rhs`` is divided by ``max(1, |rhs|)`` and each objective exceedance
+    ``sum obj_weight_i f_i^s(x*) - t_val`` by ``max(1, |t_val|)``, then the
+    normalized exceedances are averaged over all ``(x*, outcome)`` cells.
+    Averaging (rather than summing) keeps the metric on a 0–1 scale regardless of
+    the number of constraints or patients, so ``dist_tol`` has a consistent
+    meaning. The scenario with the largest average distance is the adversary.
+
+    **Termination.** We stop when either (1) the worst scenario's normalized average
+    distance is ``<= dist_tol`` (robust enough -- some residual violation is
+    allowed), or (2) no sampled scenario can be cut without pushing more than
+    ``alpha`` of the optimal solves infeasible (``coverage_cap``).
+
+    **Coverage cap (multiple ``x*`` only).** ``alpha`` bounds the fraction of
+    optimal solves (patients) allowed to become infeasible. We add the *most
+    adversarial scenario we can afford* (worst-first by total distance, keeping
+    ``p_infeas <= alpha``), falling back to the next-worst if the worst
+    over-tightens. ``alpha`` only gates feasibility -- never the objective, and
+    never scenario ranking. With a **single ``x*``** there is no coverage cap
+    (``p_infeas`` is degenerate 0/1); we just cut the worst scenario each
+    iteration until the total distance falls within ``dist_tol``.
 
     Two solver-acceleration tricks are applied (sound because cuts are global
     embedded models that only shrink each fixed context's region):
@@ -673,18 +765,14 @@ class _CoherentSeparation:
       ``x*`` (so removing them changes no current solution and not ``p_infeas``).
     """
 
-    def __init__(self, k_neighbors_frac, n_scenarios, alpha, infeas_tol, patience,
-                 single_point):
+    def __init__(self, k_neighbors_frac, n_scenarios, alpha, single_point, dist_tol):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_scenarios = n_scenarios
-        self.alpha = alpha
-        self.infeas_tol = infeas_tol
-        self.patience = patience
+        self.alpha = alpha               # coverage cap: max fraction of x* infeasible
         self.single_point = single_point
-        self.prev_p_infeas = None
-        self.stable_count = 0
+        self.dist_tol = dist_tol         # stop once worst normalized distance <= this
         self.obj_bound = {}          # a_idx -> best (max) objective seen so far
-        self.prev_max_exceed = 0.0   # scale for the dynamic pruning threshold
+        self.prev_max_exceed = 0.0   # scale for the dynamic pruning threshold (raw)
 
     def step(self, env: _SepEnv, iteration: int) -> _StepResult:
         iter_start = time.time()
@@ -714,28 +802,42 @@ class _CoherentSeparation:
                 master.remove_scenario(s)
             if to_remove:
                 master.opt.update()
-                print(f"Iter {iteration}: Pruned {len(to_remove)} globally-inactive cut(s)")
-
-        # Stabilization on patient feasibility only applies with multiple x*.
-        if not self.single_point:
-            if (self.prev_p_infeas is not None
-                    and abs(p_infeas - self.prev_p_infeas) <= self.infeas_tol):
-                self.stable_count += 1
-            else:
-                self.stable_count = 0
-            self.prev_p_infeas = p_infeas
-            if self.stable_count >= self.patience:
-                print(f"Iter {iteration}: p_infeas stabilized at {p_infeas*100:.1f}%; stopping.")
-                return _StepResult(stop=True, status="stabilized")
+                n_active = sum(1 for c in master.scenario_constrs if c is not None)
+                print(
+                    f"Iter {iteration}: Pruned {len(to_remove)} globally-inactive "
+                    f"scenario(s) (ids {sorted(to_remove)}); {n_active} active remaining."
+                )
 
         x_stars = [x_q for (_, x_q, _) in feasible]
         last_obj = float(np.mean([obj_q for (_, _, obj_q) in feasible]))
 
         ref_md = inst.constraints[0].models_data[0]
         n_train = len(ref_md.y_train)
-        n_constraints = sum(
-            1 for cst in inst.constraints if _is_constraint_constraint(cst)
-        )
+
+        # Learned objective (epigraph): the same shared relabeling that stresses
+        # the constraints also relabels the objective outcome, so we treat the
+        # epigraph as one more "constraint" sum(obj_weight_i f_i^s(x)) <= t_obj
+        # and rank/cut it jointly. Each x* carries its epigraph value
+        # t_val = obj - c'x; the objective's (normalized) exceedance over t_val
+        # feeds the worst-case distance, so it influences scenario selection but
+        # is never gated by the coverage cap alpha (it is the objective, not a
+        # feasibility requirement).
+        has_obj = master.t_obj is not None
+        obj_specs = []
+        obj_c_idx = None
+        if has_obj:
+            for c_idx, constraint in enumerate(inst.constraints):
+                for md in constraint.models_data:
+                    if md.obj_weight != 0.0:
+                        obj_specs.append((md.obj_weight, md))
+                        if obj_c_idx is None:
+                            obj_c_idx = c_idx
+
+        points = []
+        for (_, x_q, obj_q) in feasible:
+            t_val = obj_q - float(np.dot(inst.cost_vector, x_q)) if has_obj else None
+            points.append((x_q, t_val))
+        n_points = len(points)
 
         # Shared, decision-dependent localized pool -> B coherent scenarios.
         pool = _union_neighbor_pool(
@@ -748,12 +850,13 @@ class _CoherentSeparation:
             rng.choice(pool, size=n_train, replace=True) for _ in range(self.n_scenarios)
         ]
 
-        n_points = len(x_stars)
-        have_best = False
-        best_viol_dp_frac = 0.0
-        best_dist = 0.0
-        best_max_exceed = 0.0
-        best_scenario_cuts = None
+        # Evaluate every sampled scenario; keep *all* that produce a cut so we can
+        # fall back to a less aggressive adversary if the worst one over-tightens.
+        # The worst case is ranked by **normalized average distance**: each
+        # exceedance is divided by its own scale (so no single large-scale outcome
+        # dominates) then averaged over all (x*, outcome) cells (so the metric is
+        # 0-1 regardless of the number of constraints or patients).
+        candidates = []   # (total_dist, raw_max_exceed, cuts)
         for idx in scenarios:
             per_constraint_models = {}
             for c_idx, constraint in enumerate(inst.constraints):
@@ -770,108 +873,127 @@ class _CoherentSeparation:
                     models.append((model_data.weight, theta))
                 per_constraint_models[c_idx] = (models, constraint.rhs)
 
-            total_dist = 0.0
-            max_exceed = 0.0
-            n_dp_violating = 0   # data points violating *any* constraint
+            obj_models = []
+            for obj_weight, md in obj_specs:
+                m_type, m_params = env.model_config_map[id(md)]
+                theta = retrain_on_bootstrap(
+                    md.X_train, md.y_train, idx, m_type, m_params
+                )
+                obj_models.append((obj_weight, theta))
+
+            sum_norm_exceed = 0.0   # sum of normalized exceedances (for averaging)
+            raw_max_exceed = 0.0    # largest raw exceedance (pruning-threshold scale)
+            n_outcomes = len(per_constraint_models) + (1 if has_obj else 0)
             violated_constraints = set()
-            for x_star in x_stars:
+            obj_violated = False
+            for (x_star, t_val) in points:
                 xs2d = np.atleast_2d(x_star)
-                dp_violates = False
                 for c_idx, (models, rhs) in per_constraint_models.items():
                     exceed = sum(w * th.predict(xs2d)[0] for w, th in models) - rhs
                     if exceed > 1e-6:
-                        total_dist += exceed
-                        max_exceed = max(max_exceed, exceed)
+                        sum_norm_exceed += exceed / max(1.0, abs(rhs))
+                        raw_max_exceed = max(raw_max_exceed, exceed)
                         violated_constraints.add(c_idx)
-                        dp_violates = True
-                if dp_violates:
-                    n_dp_violating += 1
+                if has_obj:
+                    obj_pred = sum(ow * th.predict(xs2d)[0] for ow, th in obj_models)
+                    exceed = obj_pred - t_val
+                    if exceed > 1e-6:
+                        sum_norm_exceed += exceed / max(1.0, abs(t_val))
+                        raw_max_exceed = max(raw_max_exceed, exceed)
+                        obj_violated = True
 
-            viol_dp_frac = n_dp_violating / n_points
-            # Worst scenario = the relabeling that makes the most data points
-            # violate *any* constraint (multiple x*), or the largest total
-            # violation distance (single x*, where the fraction is just 0/1).
-            # When the violation rate ties, prefer the larger total violation
-            # distance so the strongest cut wins.
-            if not have_best:
-                better = True
-            elif self.single_point:
-                better = total_dist > best_dist + 1e-12
-            elif abs(viol_dp_frac - best_viol_dp_frac) > 1e-12:
-                better = viol_dp_frac > best_viol_dp_frac
-            else:
-                better = total_dist > best_dist + 1e-12
-            if better:
-                have_best = True
-                best_viol_dp_frac = viol_dp_frac
-                best_dist = total_dist
-                best_max_exceed = max_exceed
-                best_scenario_cuts = [
-                    (c_idx, per_constraint_models[c_idx][0], per_constraint_models[c_idx][1])
-                    for c_idx in sorted(violated_constraints)
-                ]
+            # Average over all (x*, outcome) pairs so dist_tol is on a 0-1 scale.
+            n_cells = max(1, n_points * n_outcomes)
+            total_dist = sum_norm_exceed / n_cells
 
-        # Remember the worst cut's magnitude to scale next iteration's pruning.
-        self.prev_max_exceed = best_max_exceed
+            cuts = [
+                (c_idx, per_constraint_models[c_idx][0], per_constraint_models[c_idx][1])
+                for c_idx in sorted(violated_constraints)
+            ]
+            # Robustify the objective with the same relabeling: raise the epigraph
+            # floor t_obj to this scenario's (worse) objective.
+            if obj_violated:
+                cuts.append((obj_c_idx, obj_models, master.t_obj))
+            if cuts:
+                candidates.append((total_dist, raw_max_exceed, cuts))
 
-        if self.single_point:
-            print(
-                f"Iter {iteration}: Obj={last_obj:.4f} "
-                f"WorstScenarioViolDist={best_dist:.4f} PoolFrac={pool_frac:.3f} "
-                f"Time={time.time()-iter_start:.2f}s",
-                flush=True,
-            )
-        else:
-            print(
-                f"Iter {iteration}: AvgObj={last_obj:.4f} "
-                f"WorstScenario%DPViol={best_viol_dp_frac*100:.1f}% "
-                f"p_infeas={p_infeas*100:.1f}% PoolFrac={pool_frac:.3f} "
-                f"Time={time.time()-iter_start:.2f}s",
-                flush=True,
-            )
+        # Rank adversaries worst-first by normalized average distance.
+        candidates.sort(key=lambda c: c[0], reverse=True)
+        best_dist = candidates[0][0] if candidates else 0.0
+        # Scale next iteration's pruning threshold by the worst raw cut.
+        self.prev_max_exceed = candidates[0][1] if candidates else 0.0
 
-        history_viol = best_dist if self.single_point else best_viol_dp_frac
+        print(
+            f"Iter {iteration}: {'Obj' if self.single_point else 'AvgObj'}={last_obj:.4f} "
+            f"WorstScenarioNormDist={best_dist:.4f} "
+            f"p_infeas={p_infeas*100:.1f}% PoolFrac={pool_frac:.3f} "
+            f"Time={time.time()-iter_start:.2f}s",
+            flush=True,
+        )
 
-        # Converged: even the worst coherent relabeling no longer violates anywhere.
-        if not best_scenario_cuts:
+        history_viol = best_dist
+
+        # Terminate (1): even the worst sampled relabeling leaves the normalized
+        # total distance within the allowance -- robust enough.
+        if best_dist <= self.dist_tol:
             return _StepResult(stop=True, status="optimal", obj=last_obj, violation=history_viol)
 
-        # Data-point chance constraint (multiple x*): stop once even the worst
-        # relabeling leaves <= alpha of data points violating any constraint, i.e.
-        # >= (1-alpha) of patients are robustly satisfied. alpha=0 -> stop only
-        # when no data point violates.
-        if not self.single_point and best_viol_dp_frac <= self.alpha + 1e-12:
-            print(
-                f"Iter {iteration}: worst-scenario data-point violation "
-                f"{best_viol_dp_frac*100:.1f}% <= alpha {self.alpha*100:.1f}%; stopping."
-            )
-            return _StepResult(stop=True, status="chance_satisfied", obj=last_obj,
+        # Single x*: no coverage cap (degenerate); just cut the worst scenario.
+        if self.single_point:
+            for c_idx, models, rhs in candidates[0][2]:
+                master.add_scenario(c_idx, models, rhs, rho=env.rho)
+            return _StepResult(stop=False, status="running", obj=last_obj,
                                violation=history_viol)
 
-        # Add the worst scenario's coherent cuts.
-        added_ids = []
-        for c_idx, models, rhs in best_scenario_cuts:
-            master.add_scenario(c_idx, models, rhs, rho=env.rho)
-            added_ids.append(master.n_models - 1)
+        # Coverage cap (multiple x*): add the *most adversarial scenario we can
+        # afford* -- one that keeps >= (1-alpha) of optimal solves feasible. If
+        # the worst over-tightens, fall back to the next-worst.
+        # Fast pre-check: already-infeasible anchors stay infeasible under more
+        # cuts, so if we are already over the budget we can skip all candidates.
+        n_infeas_base = len(env.anchors) - len(feasible)
+        if n_infeas_base > (self.alpha + 1e-12) * len(env.anchors):
+            print(
+                f"Iter {iteration}: coverage cap hit before adding any cuts "
+                f"(p_infeas={p_infeas*100:.1f}% > alpha {self.alpha*100:.1f}%); stopping."
+            )
+            return _StepResult(stop=True, status="coverage_cap", obj=last_obj,
+                               violation=history_viol)
 
-        # Coverage cap (multiple x* only): keep >= (1-alpha) of optimal solves
-        # feasible. With a single x* this is degenerate, so we skip it and let the
-        # next solve's infeasibility (if any) terminate the loop.
-        if not self.single_point:
-            _, p_infeas_after = _solve_all_anchors(master, inst, env.anchors)
-            if p_infeas_after > self.alpha + 1e-12:
-                for s in reversed(added_ids):
-                    master.remove_scenario(s)
-                master.opt.update()
+        for cand_rank, (_dist, _mx, cuts) in enumerate(candidates):
+            added_ids = []
+            for c_idx, models, rhs in cuts:
+                master.add_scenario(c_idx, models, rhs, rho=env.rho)
+                added_ids.append(master.n_models - 1)
+            p_infeas_after, fits = _p_infeas_after_cuts(
+                master, inst, env.anchors, feasible, n_infeas_base, self.alpha
+            )
+            if fits:
                 print(
-                    f"Iter {iteration}: coverage cap hit "
-                    f"(p_infeas {p_infeas_after*100:.1f}% > alpha {self.alpha*100:.1f}%); "
-                    f"rolled back last scenario."
+                    f"Iter {iteration}: Added scenario(s) {added_ids} "
+                    f"(candidate rank {cand_rank + 1}/{len(candidates)}, "
+                    f"norm_dist={_dist:.4f}); "
+                    f"p_infeas={p_infeas_after*100:.1f}%"
                 )
-                return _StepResult(stop=True, status="coverage_cap", obj=last_obj,
+                return _StepResult(stop=False, status="running", obj=last_obj,
                                    violation=history_viol)
+            for s in reversed(added_ids):
+                master.remove_scenario(s)
+            master.opt.update()
+            print(
+                f"Iter {iteration}: Rolled back scenario(s) {added_ids} "
+                f"(candidate rank {cand_rank + 1}/{len(candidates)}, "
+                f"norm_dist={_dist:.4f}); "
+                f"p_infeas_after={p_infeas_after*100:.1f}% > alpha {self.alpha*100:.1f}%"
+            )
 
-        return _StepResult(stop=False, status="running", obj=last_obj, violation=history_viol)
+        # Terminate (2): no sampled adversary can be added without pushing more
+        # than alpha of the optimal solves infeasible -- feasibility frontier.
+        print(
+            f"Iter {iteration}: coverage cap hit (no sampled scenario keeps "
+            f"p_infeas <= alpha {self.alpha*100:.1f}%); stopping."
+        )
+        return _StepResult(stop=True, status="coverage_cap", obj=last_obj,
+                           violation=history_viol)
 
 
 def solve_cp(instance: ProblemInstance,
@@ -888,8 +1010,7 @@ def solve_cp(instance: ProblemInstance,
              cp_anchor_method: str = "kmedoids",
              cp_anchors: Optional[np.ndarray] = None,
              cp_distance: str = "full",
-             cp_infeas_tol: float = 1e-3,
-             cp_patience: int = 2,
+             cp_dist_tol: float = 1e-3,
              cp_trace_path: Optional[str] = None
              ) -> tuple[SolutionResult, CPHistory]:
     """Cutting Planes for robust constraint learning (one driver, auto-selected oracle).
@@ -901,13 +1022,15 @@ def solve_cp(instance: ProblemInstance,
     - **basic** -- a single global LP with a single learned constraint
       (synthetic): plain worst-case localized-bootstrap separation at ``x*``,
       cut whatever violates, stop when nothing does. No ``cp_alpha``.
-    - **coherent** -- multiple constraints and/or multiple ``x*`` (e.g. gastric):
-      one *shared* bootstrap relabeling drives all constraints, and the single
-      worst scenario is cut. With multiple ``x*`` the worst scenario is the
-      highest **violation rate** across ``(x*, constraint)`` cells and ``cp_alpha``
-      caps the fraction of ``x*`` allowed to go infeasible; with a single ``x*``
-      the worst scenario is ranked by total **violation distance** and ``cp_alpha``
-      is unused. See :class:`_CoherentSeparation`.
+    - **coherent** -- multiple constraints, multiple ``x*``, and/or a learned
+      objective (e.g. gastric): one *shared* bootstrap relabeling drives all
+      constraints (and the epigraph objective), and the worst scenario -- ranked
+      by **normalized average distance** (mean relative exceedance over all
+      ``(x*, outcome)`` cells, range 0–1) -- is cut. We stop when that distance
+      is ``<= cp_dist_tol`` or no scenario can be added without pushing more than
+      ``cp_alpha`` of the ``x*`` infeasible. ``cp_alpha`` only caps feasibility
+      (multiple ``x*``); it never affects ranking or the objective. See
+      :class:`_CoherentSeparation`.
 
     Anchors (the contexts at which we collect ``x*``) come from
     ``select_anchor_contexts`` over ``cp_anchor_source`` rows when
@@ -937,11 +1060,15 @@ def solve_cp(instance: ProblemInstance,
     )
 
     # Auto-select: the trivial single-LP / single-constraint case uses plain
-    # worst-case separation; anything with multiple constraints or multiple
-    # optimal solutions uses coherent (simultaneous) separation.
+    # worst-case separation; anything with multiple constraints, multiple
+    # optimal solutions, or a learned (robustifiable) objective uses coherent
+    # (simultaneous) separation -- only coherent robustifies the epigraph.
     n_constraints = sum(1 for c in instance.constraints if _is_constraint_constraint(c))
+    has_obj_models = any(
+        md.obj_weight != 0.0 for c in instance.constraints for md in c.models_data
+    )
     single_point = len(anchors) == 1
-    use_basic = (n_constraints <= 1) and single_point
+    use_basic = (n_constraints <= 1) and single_point and not has_obj_models
 
     if use_basic:
         strategy = _BasicSeparation(cp_k_neighbors_frac, cp_n_candidates)
@@ -949,7 +1076,7 @@ def solve_cp(instance: ProblemInstance,
     else:
         strategy = _CoherentSeparation(
             cp_k_neighbors_frac, cp_n_candidates, cp_alpha,
-            cp_infeas_tol, cp_patience, single_point,
+            single_point, cp_dist_tol,
         )
         mode = "coherent (single x*)" if single_point else "coherent (multi x*)"
 

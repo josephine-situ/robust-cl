@@ -45,6 +45,7 @@ notebooks/
 
 # LaTeX presentation build artifacts
 presentations/build/
+presentations/*.ps1
 presentations/*.aux
 presentations/*.log
 presentations/*.nav
@@ -54,3 +55,7 @@ presentations/*.toc
 presentations/*.fls
 presentations/*.fdb_latexmk
 presentations/*.synctex.gz
+
+logs
+*.log
+*.txt

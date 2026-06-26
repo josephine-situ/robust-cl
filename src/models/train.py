@@ -296,32 +296,46 @@ def oob_worst_case_error(models: list,
     return best_idx, per_model_worst[best_idx], per_model_worst
 
 
+def _standardize(X_ref: np.ndarray, X_query: np.ndarray):
+    """Z-score X_query using column-wise mean/std of X_ref.
+
+    Columns with zero variance are left unchanged (avoid divide-by-zero).
+    Returns the standardized versions of both X_ref and X_query.
+    """
+    mu = X_ref.mean(axis=0)
+    sigma = X_ref.std(axis=0)
+    sigma[sigma == 0] = 1.0
+    return (X_ref - mu) / sigma, (X_query - mu) / sigma
+
+
 def localized_bootstrap_indices(X: np.ndarray,
                                 x_star: np.ndarray,
                                 k_neighbors_frac: float,
                                 n_candidates: int,
                                 seed: int = 42,
                                 distance_feature_indices: list = None) -> list:
-    """
-    Generate bootstrap candidates resampling only from training points
+    """Generate bootstrap candidates resampling only from training points
     nearest to x_star in feature space.
+
+    Distances are computed in the **standardized** feature space (z-scored by
+    the training-set column mean/std) so that features on different scales
+    contribute equally to the neighbour search.
 
     Parameters
     ----------
     distance_feature_indices : optional list of column indices used to compute
         the nearest-neighbor distance. When provided, only these features
         (e.g. context columns) drive localization; the remaining decision
-        features are ignored. Defaults to all columns (full-vector distance),
-        which preserves the synthetic / decision-only behavior.
+        features are ignored. Defaults to all columns (full-vector distance).
     """
     n = X.shape[0]
     k = max(1, int(round(k_neighbors_frac * n)))
     x_star = np.asarray(x_star, dtype=float).ravel()
-    if distance_feature_indices:
-        cols = list(distance_feature_indices)
-        distances = np.linalg.norm(X[:, cols] - x_star[cols], axis=1)
-    else:
-        distances = np.linalg.norm(X - x_star, axis=1)
+    cols = list(distance_feature_indices) if distance_feature_indices else None
+    Xc = X[:, cols] if cols is not None else X
+    xc = x_star[cols] if cols is not None else x_star
+    Xc_std, xc_std = _standardize(Xc, xc.reshape(1, -1))
+    distances = np.linalg.norm(Xc_std - xc_std, axis=1)
     pool = np.argsort(distances)[:k]
     rng = np.random.RandomState(seed)
     return [rng.choice(pool, size=n, replace=True) for _ in range(n_candidates)]
