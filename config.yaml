@@ -19,7 +19,7 @@ optimization:
   variable_bounds: [0.0, 1.0]
 
 uncertainty:
-  n_bootstrap: 25  # P — shared fixed resamples for wrapper + robust_reg
+  n_bootstrap: 20  # P — shared fixed resamples for wrapper + robust_reg
   bootstrap_seed: 42
   cp_k_neighbors_frac: 0.1  # fraction of n_train for CP localized pool
   cp_n_candidates: 20  # bootstrap candidates per CP separation call
@@ -32,11 +32,14 @@ calibration:
   # Tune each baseline's single robustness knob to the strongest setting whose
   # fraction of infeasible training contexts is <= uncertainty.alpha. CP and
   # nominal are exempt (CP self-regulates; nominal has no knob).
+  # Weakest bounds: wrapper_alpha_max, tree_alpha_max, rho_min.
+  # Strongest bounds: alpha=0 (wrapper/tree), rho_max (robust_param).
   enabled: true
   n_grid: 5            # strength points scanned (strongest -> weakest)
   wrapper_alpha_max: 0.5  # weakest wrapper joint-chance budget (strongest = 0.0)
   tree_alpha_max: 0.5     # weakest tree-violation budget (strongest = 0.0)
-  rho_max: 0.3            # strongest robust_param dual-norm penalty (weakest = 0.0)
+  rho_min: 0.001           # weakest robust_param rho (never nominal)
+  rho_max: 0.005           # strongest robust_param rho scanned
 
 methods:
   embedding_mode: "hard"  # "hard" | "tree_violation"
@@ -71,9 +74,9 @@ methods:
 
   chemo:
     methods_to_run:
+      - robust_param # Often infeasible, need very small rho
       - nominal
       - tree_violation # like paper
-      - robust_param
       - robust_reg
       - wrapper
       - cp

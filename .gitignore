@@ -55,7 +55,10 @@ presentations/*.toc
 presentations/*.fls
 presentations/*.fdb_latexmk
 presentations/*.synctex.gz
+presentations
 
 logs
 *.log
 *.txt
+
+docs

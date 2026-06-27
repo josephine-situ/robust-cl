@@ -118,7 +118,8 @@ def _resolve_run_settings(config, args):
     settings["calib_n_grid"] = calib_cfg.get("n_grid", 5)
     settings["calib_wrapper_alpha_max"] = calib_cfg.get("wrapper_alpha_max", 0.5)
     settings["calib_tree_alpha_max"] = calib_cfg.get("tree_alpha_max", 0.5)
-    settings["calib_rho_max"] = calib_cfg.get("rho_max", 0.3)
+    settings["calib_rho_min"] = calib_cfg.get("rho_min", 0.01)
+    settings["calib_rho_max"] = calib_cfg.get("rho_max", 0.05)
     return settings
 
 
@@ -234,8 +235,13 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
             model_params=model_params, alpha=knob, rho=0.0,
         )
     elif method == "robust_param":
-        rmax = settings["calib_rho_max"]
-        strength_to_knob = lambda s: rmax * s          # s=1 strongest -> rho=rho_max
+        rho_min = settings["calib_rho_min"]
+        rho_max = settings["calib_rho_max"]
+        if rho_min >= rho_max:
+            raise ValueError(
+                f"calibration.rho_min ({rho_min}) must be < rho_max ({rho_max})"
+            )
+        strength_to_knob = lambda s: rho_min + (rho_max - rho_min) * s
         build = lambda knob: partial(
             solve_nominal, model_type=model_type, model_params=model_params,
             rho=knob, embedding_mode=em, rf_alpha=rf_alpha,
