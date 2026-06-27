@@ -17,6 +17,7 @@ from src.methods.nominal import (
     build_decision_vars,
     add_problem_constraints,
     build_and_set_objective,
+    build_and_set_robust_objective,
     embed_constraints,
 )
 from src.models.train import generate_bootstrap_samples, train_bootstrap_models
@@ -39,17 +40,43 @@ def _get_shared_bootstrap_indices(instance, model_type, model_params, n_bootstra
     return cache
 
 
+def _coherent_bootstrap_indices(instance, n_bootstrap, seed):
+    """One shared set of P bootstrap index vectors assigned to EVERY MLModelData.
+
+    Because all gastric outcomes share the same patients (rows of X_train),
+    resampling rows once and applying it to every outcome makes replicate ``p`` a
+    single coherent trial relabeling across all constraints and the objective -
+    the bootstrap analogue of CP's shared scenario. Assumes every MLModelData has
+    the same number of training rows.
+    """
+    n = len(instance.constraints[0].models_data[0].y_train)
+    shared = generate_bootstrap_samples(n, n_bootstrap, seed)
+    cache = {}
+    for constraint in instance.constraints:
+        for model_data in constraint.models_data:
+            cache[id(model_data)] = shared
+    return cache
+
+
 def train_bootstrap_ensembles_for_instance(instance,
                                            model_type,
                                            model_params,
                                            n_bootstrap,
                                            seed,
-                                           bootstrap_cache=None):
-    """Train P bootstrap models per MLModelData; optionally reuse index cache."""
+                                           bootstrap_cache=None,
+                                           ensembles_cache=None):
+    """Train P bootstrap models per MLModelData; optionally reuse index cache.
+
+    If ``ensembles_cache`` (md_id -> trained models) is provided, it is reused
+    directly without retraining - handy when calibration evaluates several
+    robustness settings that do not change the underlying models.
+    """
     if bootstrap_cache is None:
         bootstrap_cache = _get_shared_bootstrap_indices(
             instance, model_type, model_params, n_bootstrap, seed
         )
+    if ensembles_cache is not None:
+        return ensembles_cache, bootstrap_cache
     trained_ensembles_cache = {}
     config_idx = 0
     for constraint in instance.constraints:
@@ -87,13 +114,20 @@ def solve_wrapper(instance: ProblemInstance,
                   alpha: float = 0.1,
                   seed: int = 42,
                   rho: float = 0.0,
-                  bootstrap_cache=None) -> SolutionResult:
-    """Solve using the Maragno et al. wrapper approach."""
+                  bootstrap_cache=None,
+                  ensembles_cache=None) -> SolutionResult:
+    """Solve using the Maragno et al. wrapper approach, made coherent across
+    constraints: a single shared bootstrap replicate ``p`` must satisfy ALL
+    toxicity constraints jointly (one indicator ``z[p]`` shared across
+    constraints), and at least ``(1 - alpha)`` of replicates must do so. The
+    learned objective (OS) is robustified with a worst-case epigraph over the
+    same replicates."""
     start = time.time()
     n_bootstrap = n_estimators
 
     trained_ensembles_cache, _ = train_bootstrap_ensembles_for_instance(
-        instance, model_type, model_params, n_bootstrap, seed, bootstrap_cache
+        instance, model_type, model_params, n_bootstrap, seed,
+        bootstrap_cache, ensembles_cache,
     )
 
     trained_constraints = []
@@ -119,57 +153,58 @@ def solve_wrapper(instance: ProblemInstance,
     P = n_bootstrap
     M_val = 1e4
     embedded_models_cache = {}
-    obj_terms = []
+    obj_scenarios = [[] for _ in range(P)]   # per replicate: objective terms
     models_embedded = 0
+
+    def _embed(ml_model, prefix):
+        nonlocal models_embedded
+        m_id = id(ml_model)
+        if m_id not in embedded_models_cache:
+            embedded_models_cache[m_id] = embed_model(
+                opt, ml_model, x,
+                instance.variable_lb, instance.variable_ub,
+                name_prefix=prefix, rho=rho,
+            )
+            models_embedded += 1
+        return embedded_models_cache[m_id]
+
+    # Coherent indicator: z[p] = 1 iff replicate p satisfies *every* toxicity
+    # constraint at x. Shared across constraints so the chance constraint is over
+    # one joint relabeling, not independent per-constraint relabelings.
+    has_constraints = any(
+        not any(md.obj_weight != 0 for md in instance.constraints[c_idx].models_data)
+        for c_idx in range(len(trained_constraints))
+    )
+    z = opt.addVars(P, vtype=GRB.BINARY, name="z_wrapper_joint") if has_constraints else None
 
     for c_idx, constraint_ensembles in enumerate(trained_constraints):
         constraint = instance.constraints[c_idx]
         is_obj = any(md.obj_weight != 0 for md in constraint.models_data)
 
         if is_obj:
-            for m_idx, (weight, obj_weight, ensemble) in enumerate(constraint_ensembles):
-                preds = []
-                for p in range(P):
-                    ml_model = ensemble[p]
-                    m_id = id(ml_model)
-                    if m_id not in embedded_models_cache:
-                        f_p = embed_model(
-                            opt, ml_model, x,
-                            instance.variable_lb, instance.variable_ub,
-                            name_prefix=f"wrapper_c{c_idx}_m{m_idx}_p{p}", rho=rho,
-                        )
-                        embedded_models_cache[m_id] = f_p
-                        models_embedded += 1
-                    preds.append(weight * embedded_models_cache[m_id])
-                avg_pred = (1.0 / P) * gp.quicksum(preds)
-                obj_terms.append(obj_weight * avg_pred)
+            for p in range(P):
+                for m_idx, (weight, obj_weight, ensemble) in enumerate(constraint_ensembles):
+                    f_p = _embed(ensemble[p], f"wrapper_c{c_idx}_m{m_idx}_p{p}")
+                    obj_scenarios[p].append(obj_weight * weight * f_p)
         else:
-            z = opt.addVars(P, vtype=GRB.BINARY, name=f"z_wrapper_c{c_idx}")
             for p in range(P):
                 f_pred_vars = []
                 for m_idx, (weight, _, ensemble) in enumerate(constraint_ensembles):
-                    ml_model = ensemble[p]
-                    m_id = id(ml_model)
-                    if m_id not in embedded_models_cache:
-                        f_p = embed_model(
-                            opt, ml_model, x,
-                            instance.variable_lb, instance.variable_ub,
-                            name_prefix=f"wrapper_c{c_idx}_m{m_idx}_p{p}", rho=rho,
-                        )
-                        embedded_models_cache[m_id] = f_p
-                        models_embedded += 1
-                    f_pred_vars.append(weight * embedded_models_cache[m_id])
+                    f_p = _embed(ensemble[p], f"wrapper_c{c_idx}_m{m_idx}_p{p}")
+                    f_pred_vars.append(weight * f_p)
                 opt.addConstr(
                     gp.quicksum(f_pred_vars) <= constraint.rhs + M_val * (1 - z[p]),
                     name=f"wrapper_indicator_c{c_idx}_p{p}",
                 )
-            opt.addConstr(
-                (1.0 / P) * gp.quicksum(z[p] for p in range(P)) >= 1 - alpha,
-                name=f"wrapper_chance_c{c_idx}",
-            )
+
+    if z is not None:
+        opt.addConstr(
+            (1.0 / P) * gp.quicksum(z[p] for p in range(P)) >= 1 - alpha,
+            name="wrapper_chance_joint",
+        )
 
     add_problem_constraints(opt, x, instance)
-    build_and_set_objective(opt, x, instance, obj_terms)
+    build_and_set_robust_objective(opt, x, instance, obj_scenarios)
     print(
         f"    [wrapper] MIP built ({models_embedded} models embedded); solving...",
         flush=True,

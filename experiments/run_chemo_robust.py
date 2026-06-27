@@ -23,9 +23,11 @@ from src.methods.robust_regression import solve_robust_regression
 from src.methods.wrapper import (
     solve_wrapper,
     solve_tree_violation_wrapper,
-    _get_shared_bootstrap_indices,
+    _coherent_bootstrap_indices,
+    train_bootstrap_ensembles_for_instance,
 )
-from src.methods.cp import solve_cp
+from src.methods.cp import solve_cp, select_anchor_contexts
+from src.methods.calibrate import calibrate_strength
 from src.evaluation.chemo_metrics import (
     evaluate_given_table6,
     evaluate_prescribed_table6,
@@ -33,6 +35,10 @@ from src.evaluation.chemo_metrics import (
     samestore_eval_mask,
     subset_table6_outcomes,
 )
+
+# Baselines whose single robustness knob is calibrated to the shared alpha.
+# cp self-regulates via its p_infeas cap; nominal has no robustness knob.
+CALIBRATED_METHODS = ["wrapper", "tree_violation", "robust_param", "robust_reg"]
 
 ALL_CONSTRAINTS = [
     "dlt_constraint", "blood_constraint", "constitutional_constraint",
@@ -68,7 +74,7 @@ def _resolve_run_settings(config, args):
             "cp_max_iterations": quick_cfg.get("cp_max_iterations", 5),
             "cp_n_candidates": quick_cfg.get("cp_n_candidates", 5),
             "cp_k_neighbors_frac": quick_cfg.get("cp_k_neighbors_frac", 0.05),
-            "cp_alpha": quick_cfg.get("cp_alpha", unc.get("cp_alpha", 0.0)),
+            "alpha": quick_cfg.get("alpha", unc.get("alpha", 0.0)),
             "cp_n_anchors": quick_cfg.get("cp_n_anchors", cp_cfg.get("n_anchors", 4)),
             "output_path": "results/chemo_robust_table6_quick.csv",
         }
@@ -83,7 +89,7 @@ def _resolve_run_settings(config, args):
             "cp_max_iterations": cp_cfg.get("max_iterations", 20),
             "cp_n_candidates": unc.get("cp_n_candidates", 20),
             "cp_k_neighbors_frac": unc.get("cp_k_neighbors_frac", 0.1),
-            "cp_alpha": unc.get("cp_alpha", 0.0),
+            "alpha": unc.get("alpha", 0.0),
             "cp_n_anchors": cp_cfg.get("n_anchors", 15),
             "output_path": "results/chemo_robust_table6.csv",
         }
@@ -106,20 +112,23 @@ def _resolve_run_settings(config, args):
     settings["rf_alpha"] = config["methods"].get("chemo_wrapper", {}).get("alpha", 0.25)
     settings["wrapper_alpha"] = config["methods"]["wrapper"].get("alpha", 0.1)
     settings["robust_rho"] = config["methods"].get("robust_param", {}).get("rho", 0.05)
+
+    calib_cfg = config.get("calibration", {})
+    settings["calibrate_to_alpha"] = calib_cfg.get("enabled", False)
+    settings["calib_n_grid"] = calib_cfg.get("n_grid", 5)
+    settings["calib_wrapper_alpha_max"] = calib_cfg.get("wrapper_alpha_max", 0.5)
+    settings["calib_tree_alpha_max"] = calib_cfg.get("tree_alpha_max", 0.5)
+    settings["calib_rho_max"] = calib_cfg.get("rho_max", 0.3)
     return settings
 
 
-def _build_solvers(config, settings, instance):
+def _build_solvers(config, settings, instance, bootstrap_cache):
     model_type = config["model"]["type"]
     model_params = config["model"]["params"]
     n_bootstrap = settings["n_bootstrap"]
     seed = settings["bootstrap_seed"]
     embedding_mode = settings["embedding_mode"]
     rf_alpha = settings["rf_alpha"]
-
-    bootstrap_cache = _get_shared_bootstrap_indices(
-        instance, model_type, model_params, n_bootstrap, seed
-    )
 
     solvers = {
         "nominal": partial(
@@ -154,6 +163,7 @@ def _build_solvers(config, settings, instance):
             rho=0.0,
             embedding_mode=embedding_mode,
             rf_alpha=rf_alpha,
+            conservativeness=1.0,
             bootstrap_cache=bootstrap_cache,
         ),
         "wrapper": partial(
@@ -167,7 +177,7 @@ def _build_solvers(config, settings, instance):
             bootstrap_cache=bootstrap_cache,
         ),
         # Single driver; gastric (multiple toxicity constraints over many
-        # patients) auto-selects coherent separation with cp_alpha as the
+        # patients) auto-selects coherent separation with the shared alpha as the
         # feasibility coverage cap.
         "cp": partial(
             solve_cp,
@@ -178,7 +188,7 @@ def _build_solvers(config, settings, instance):
             cp_k_neighbors_frac=settings["cp_k_neighbors_frac"],
             cp_n_candidates=settings["cp_n_candidates"],
             seed=seed,
-            cp_alpha=settings["cp_alpha"],
+            cp_alpha=settings["alpha"],
             cp_dist_tol=settings["cp_dist_tol"],
             cp_anchor_source=settings["cp_anchor_source"],
             cp_n_anchors=settings["cp_n_anchors"],
@@ -190,11 +200,78 @@ def _build_solvers(config, settings, instance):
     return solvers
 
 
+def _constraint_names(constraint_mode):
+    if constraint_mode == "all_constraints":
+        return ALL_CONSTRAINTS
+    if constraint_mode == "dlt_only":
+        return DLT_ONLY
+    raise ValueError(f"Unknown constraint mode: {constraint_mode}")
+
+
+def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
+                            model_params, bootstrap_cache, ensembles_cache):
+    """Calibrate a baseline's robustness knob on ``sub`` training contexts and
+    return a solver_fn with that knob baked in."""
+    nb = settings["n_bootstrap"]
+    seed = settings["bootstrap_seed"]
+    em = settings["embedding_mode"]
+    rf_alpha = settings["rf_alpha"]
+    target = settings["alpha"]
+
+    if method == "wrapper":
+        amax = settings["calib_wrapper_alpha_max"]
+        strength_to_knob = lambda s: amax * (1.0 - s)  # s=1 strongest -> alpha_w=0
+        build = lambda knob: partial(
+            solve_wrapper, model_type=model_type, model_params=model_params,
+            n_estimators=nb, alpha=knob, seed=seed, rho=0.0,
+            bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
+        )
+    elif method == "tree_violation":
+        amax = settings["calib_tree_alpha_max"]
+        strength_to_knob = lambda s: amax * (1.0 - s)  # s=1 strongest -> alpha_t=0
+        build = lambda knob: partial(
+            solve_tree_violation_wrapper, model_type=model_type,
+            model_params=model_params, alpha=knob, rho=0.0,
+        )
+    elif method == "robust_param":
+        rmax = settings["calib_rho_max"]
+        strength_to_knob = lambda s: rmax * s          # s=1 strongest -> rho=rho_max
+        build = lambda knob: partial(
+            solve_nominal, model_type=model_type, model_params=model_params,
+            rho=knob, embedding_mode=em, rf_alpha=rf_alpha,
+        )
+    elif method == "robust_reg":
+        strength_to_knob = lambda s: s                 # conservativeness quantile
+        build = lambda knob: partial(
+            solve_robust_regression, model_type=model_type, model_params=model_params,
+            n_bootstrap=nb, seed=seed, rho=0.0, embedding_mode=em, rf_alpha=rf_alpha,
+            conservativeness=knob, bootstrap_cache=bootstrap_cache,
+            ensembles_cache=ensembles_cache,
+        )
+    else:
+        raise ValueError(f"Method {method} is not calibratable")
+
+    knob, frac = calibrate_strength(
+        build, strength_to_knob, sub, calib_contexts, target,
+        n_grid=settings["calib_n_grid"], label=method,
+    )
+    print(
+        f"    [calib] {method}: chosen knob={knob:.4f} "
+        f"(train_infeasible={frac * 100:.1f}%, target<={target * 100:.1f}%)",
+        flush=True,
+    )
+    return build(knob)
+
+
 def run_chemo_robust(config, args):
     settings = _resolve_run_settings(config, args)
     instance = gastric_cancer()
     n_test = instance.X_test.shape[0]
     n_train = instance.X_train.shape[0]
+
+    model_type = config["model"]["type"]
+    model_params = config["model"]["params"]
+    calibrate = settings["calibrate_to_alpha"]
 
     print("=" * 60)
     print("CHEMO ROBUST METHOD COMPARISON (Table 6 metrics)")
@@ -202,33 +279,59 @@ def run_chemo_robust(config, args):
     print(f"Train: {n_train}, Test: {n_test}")
     print(f"Methods: {settings['methods_to_run']}")
     print(f"Constraint modes: {settings['constraint_modes']}")
+    print(f"Shared alpha: {settings['alpha']}  calibrate_to_alpha: {calibrate}")
     if settings["max_test_rows"]:
         print(f"Max test rows: {settings['max_test_rows']}")
 
-    solvers = _build_solvers(config, settings, instance)
+    # Shared coherent bootstrap relabelings (one set of resamples applied to every
+    # outcome) drive the coherent wrapper and robust_reg.
+    coherent_cache = _coherent_bootstrap_indices(
+        instance, settings["n_bootstrap"], settings["bootstrap_seed"]
+    )
+    solvers = _build_solvers(config, settings, instance, coherent_cache)
 
-    all_rows = []
+    calib_contexts = None
+    ensembles_cache = None
+    needs_calib = calibrate and any(
+        m in CALIBRATED_METHODS for m in settings["methods_to_run"]
+    )
+    if needs_calib:
+        calib_contexts = select_anchor_contexts(
+            instance.X_train, instance.context_var_indices,
+            settings["cp_n_anchors"], settings["cp_anchor_method"],
+            settings["bootstrap_seed"],
+        )
+        print(f"Calibration contexts: {len(calib_contexts)} training anchors")
+        if any(m in ("wrapper", "robust_reg") for m in settings["methods_to_run"]):
+            # Pre-train the shared bootstrap ensembles once so calibration grid
+            # evaluations (which change only the knob, not the models) reuse them.
+            ensembles_cache, _ = train_bootstrap_ensembles_for_instance(
+                instance, model_type, model_params,
+                settings["n_bootstrap"], settings["bootstrap_seed"], coherent_cache,
+            )
 
+    def _resolve_solver(method, sub):
+        if method in ("cp", "nominal") or not calibrate:
+            return solvers[method]
+        if method in CALIBRATED_METHODS:
+            return _make_calibrated_solver(
+                method, sub, settings, calib_contexts, model_type, model_params,
+                coherent_cache, ensembles_cache,
+            )
+        return solvers[method]
+
+    # Pass 1: optimize every (method, mode); store masks/outcomes/times.
+    collected = {}
+    all_masks = []
     for method in settings["methods_to_run"]:
         if method not in solvers:
             print(f"Skipping unknown method: {method}")
             continue
-
-        solver_fn = solvers[method]
         print(f"\n{'=' * 40}\nMethod: {method}\n{'=' * 40}")
-
-        mode_results = {}
         for constraint_mode in settings["constraint_modes"]:
-            if constraint_mode == "all_constraints":
-                names = ALL_CONSTRAINTS
-            elif constraint_mode == "dlt_only":
-                names = DLT_ONLY
-            else:
-                raise ValueError(f"Unknown constraint mode: {constraint_mode}")
-
-            sub = filter_constraints(instance, names)
+            sub = filter_constraints(instance, _constraint_names(constraint_mode))
             print(f"\n  constraint_mode={constraint_mode}")
-
+            solver_fn = _resolve_solver(method, sub)
             _, feasible_mask, mean_time, sd_time, full_outcomes = evaluate_prescribed_table6(
                 solver_fn,
                 sub,
@@ -238,33 +341,30 @@ def run_chemo_robust(config, args):
             )
             n_feasible = int(feasible_mask.sum())
             print(f"  Feasible prescriptions: {n_feasible}/{n_test}")
-            mode_results[constraint_mode] = {
-                "mask": feasible_mask,
+            collected[(method, constraint_mode)] = {
                 "mean_time": mean_time,
                 "sd_time": sd_time,
                 "full_outcomes": full_outcomes,
+                "n_method_feasible": n_feasible,
             }
+            all_masks.append(feasible_mask)
 
-        # Paper Table 6 samestore: evaluate every cell over the patients feasible
-        # across the constraint modes being compared (intersection), with a single
-        # shared `given` baseline over that cohort (chemo_metrics.samestore_eval_mask).
-        if "all_constraints" in mode_results and "dlt_only" in mode_results:
-            eval_mask = samestore_eval_mask(
-                mode_results["all_constraints"]["mask"],
-                mode_results["dlt_only"]["mask"],
-            )
-        elif "all_constraints" in mode_results:
-            eval_mask = mode_results["all_constraints"]["mask"]
-        else:
-            eval_mask = mode_results["dlt_only"]["mask"]
+    # Global cohort: patients feasible under EVERY method x mode, so all cells are
+    # compared on one identical apples-to-apples set of regimens.
+    global_mask = samestore_eval_mask(*all_masks)
+    n_eval = int(global_mask.sum())
+    print(f"\nGlobal cross-method evaluation cohort: {n_eval}/{n_test} test rows")
+    given_values = evaluate_given_table6(instance, global_mask)
 
-        n_eval = int(eval_mask.sum())
-        print(f"  Samestore evaluation cohort: {n_eval} test rows")
-        given_values = evaluate_given_table6(instance, eval_mask)
-
+    # Pass 2: build Table 6 rows on the shared global cohort.
+    all_rows = []
+    for method in settings["methods_to_run"]:
         for constraint_mode in settings["constraint_modes"]:
-            res = mode_results[constraint_mode]
-            prescribed = subset_table6_outcomes(res["full_outcomes"], eval_mask)
+            key = (method, constraint_mode)
+            if key not in collected:
+                continue
+            res = collected[key]
+            prescribed = subset_table6_outcomes(res["full_outcomes"], global_mask)
             rows = build_table6_rows(
                 instance,
                 constraint_mode=constraint_mode,
@@ -278,6 +378,7 @@ def run_chemo_robust(config, args):
             for row in rows:
                 row_dict = row.__dict__.copy()
                 row_dict["method"] = method
+                row_dict["n_method_feasible"] = res["n_method_feasible"]
                 all_rows.append(row_dict)
 
     import pandas as pd

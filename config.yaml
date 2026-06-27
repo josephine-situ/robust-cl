@@ -23,10 +23,20 @@ uncertainty:
   bootstrap_seed: 42
   cp_k_neighbors_frac: 0.1  # fraction of n_train for CP localized pool
   cp_n_candidates: 20  # bootstrap candidates per CP separation call
-  cp_alpha: 0.1  # coverage cap for coherent separation with multiple x* (gastric):
-                 # at most this fraction of patients (optimal solves) may become
-                 # infeasible before the last scenario's cuts are rolled back.
-                 # Unused by basic separation and by coherent with a single x*.
+  alpha: 0.1     # shared coverage cap (used by CP and to calibrate the baselines):
+                 # at most this fraction of training contexts (patients) may be
+                 # infeasible. CP enforces it directly as its p_infeas cap; the
+                 # baselines are tuned to it on the training set (see `calibration`).
+
+calibration:
+  # Tune each baseline's single robustness knob to the strongest setting whose
+  # fraction of infeasible training contexts is <= uncertainty.alpha. CP and
+  # nominal are exempt (CP self-regulates; nominal has no knob).
+  enabled: true
+  n_grid: 5            # strength points scanned (strongest -> weakest)
+  wrapper_alpha_max: 0.5  # weakest wrapper joint-chance budget (strongest = 0.0)
+  tree_alpha_max: 0.5     # weakest tree-violation budget (strongest = 0.0)
+  rho_max: 0.3            # strongest robust_param dual-norm penalty (weakest = 0.0)
 
 methods:
   embedding_mode: "hard"  # "hard" | "tree_violation"
@@ -61,18 +71,22 @@ methods:
 
   chemo:
     methods_to_run:
-      - cp
+      - nominal
       - tree_violation # like paper
+      - robust_param
+      - robust_reg
+      - wrapper
+      - cp
     constraint_modes:
       - all_constraints
       - dlt_only
     quick:
       max_test_rows: 5
-      methods_to_run: [nominal, cp, wrapper]
+      methods_to_run: [nominal, wrapper, robust_reg, cp]
       constraint_modes: [all_constraints]
       n_bootstrap: 5
       cp_max_iterations: 5
       cp_n_candidates: 5
       cp_k_neighbors_frac: 0.05
       cp_n_anchors: 4
-      cp_alpha: 0.1
+      alpha: 0.1

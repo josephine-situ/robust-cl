@@ -197,6 +197,32 @@ def build_and_set_objective(opt: gp.Model, x, instance: ProblemInstance, obj_ter
     return t
 
 
+def build_and_set_robust_objective(opt: gp.Model, x, instance: ProblemInstance,
+                                   obj_term_scenarios: list):
+    """Worst-case epigraph objective ``min c'x + t`` with ``t >= sum(terms)`` for
+    **each** scenario in ``obj_term_scenarios``.
+
+    Each entry of ``obj_term_scenarios`` is a list of objective terms for one
+    plausible relabeling (e.g. one bootstrap replicate). Minimizing ``t`` then
+    drives it to the most pessimistic scenario, robustifying the learned
+    objective the same way CP raises its epigraph floor. With no scenarios the
+    objective stays the plain linear ``c'x``.
+
+    Returns the epigraph variable ``t`` (or ``None``).
+    """
+    d = instance.n_features
+    base_cost = gp.quicksum(instance.cost_vector[j] * x[j] for j in range(d))
+    scenarios = [terms for terms in obj_term_scenarios if terms]
+    if not scenarios:
+        opt.setObjective(base_cost, GRB.MINIMIZE)
+        return None
+    t = opt.addVar(lb=-GRB.INFINITY, name="t_obj")
+    for k, terms in enumerate(scenarios):
+        opt.addConstr(t >= gp.quicksum(terms), name=f"epigraph_obj_s{k}")
+    opt.setObjective(base_cost + t, GRB.MINIMIZE)
+    return t
+
+
 def solve_nominal(instance: ProblemInstance,
                   model_type: str = "rf",
                   model_params: dict = None,

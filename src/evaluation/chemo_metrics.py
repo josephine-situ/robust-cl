@@ -67,6 +67,28 @@ def _outcome_values(x_rows: np.ndarray, outcome, instance: ProblemInstance) -> n
     return (values <= outcome.rhs).astype(float)
 
 
+def solve_for_context(result, instance: ProblemInstance, context_row: np.ndarray):
+    """Pin a built MIP's context columns to ``context_row`` and re-solve.
+
+    Returns ``(status, x_opt)`` with ``x_opt`` the optimized decision vector when
+    the solve is optimal (Gurobi status 2), else ``None``. Shared by the
+    prescription evaluation and the baseline calibration so both measure
+    feasibility the same way.
+    """
+    for c_idx in instance.context_var_indices:
+        val = float(context_row[c_idx])
+        result.x[c_idx].lb = val
+        result.x[c_idx].ub = val
+    result.opt.Params.DualReductions = 0
+    result.opt.Params.MIPGap = 1e-4
+    result.opt.update()
+    result.opt.optimize()
+    status = result.opt.Status
+    if status == 2:
+        return status, np.array([v.X for v in result.x])
+    return status, None
+
+
 def evaluate_given_table6(
     instance: ProblemInstance,
     feasible_mask: np.ndarray,
@@ -129,25 +151,12 @@ def evaluate_prescribed_table6(
     print(f"  [{label}] Prescribing per test cohort ({n_eval_rows} rows)...", flush=True)
 
     for i in range(n_eval_rows):
-        for c_idx in instance.context_var_indices:
-            result.x[c_idx].lb = instance.variable_lb[c_idx]
-            result.x[c_idx].ub = instance.variable_ub[c_idx]
-        for c_idx in instance.context_var_indices:
-            val = float(instance.X_test[i, c_idx])
-            result.x[c_idx].lb = val
-            result.x[c_idx].ub = val
-
-        result.opt.Params.DualReductions = 0
-        result.opt.Params.MIPGap = 1e-4
-        result.opt.update()
-
         print(f"  [{label}] test row {i + 1}/{n_eval_rows}: optimizing...", flush=True)
         t0 = time.time()
-        result.opt.optimize()
+        status, x_opt = solve_for_context(result, instance, instance.X_test[i])
         row_elapsed = time.time() - t0
         row_times.append(row_elapsed)
 
-        status = result.opt.Status
         if status == 2:
             status_str = "optimal"
         elif status == 3:
@@ -162,11 +171,10 @@ def evaluate_prescribed_table6(
             flush=True,
         )
 
-        if status != 2:
+        if x_opt is None:
             continue
 
         feasible_mask[i] = True
-        x_opt = np.array([v.X for v in result.x])
         for outcome in instance.eval_outcomes:
             if outcome.is_survival:
                 outcome_buffers[outcome.label][i] = _predict_outcome(outcome.gt_fn, x_opt)
