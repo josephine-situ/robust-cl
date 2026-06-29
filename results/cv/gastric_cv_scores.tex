@@ -1,0 +1,16 @@
+\begin{table}[ht]
+\centering
+\caption{Gastric Cancer: 5-Fold CV R\textsuperscript{2} by Model Type (Embedded Constraint Models, Table EC.6 Style)}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Outcome & LINEAR & SVM & CART & RF & GBM & XGB & MLP \\
+\midrule
+Any DLT & 0.149 & 0.032 & 0.140 & 0.133 & \textbf{0.184} & 0.182 & -668.518 \\
+Blood & 0.131 & -0.041 & 0.065 & 0.129 & \textbf{0.150} & 0.148 & -762.661 \\
+Constitutional & -0.006 & -0.176 & \textbf{0.097} & 0.090 & 0.091 & 0.085 & -775.748 \\
+Infection & 0.117 & -0.079 & 0.027 & 0.098 & 0.107 & \textbf{0.121} & -727.951 \\
+Gastrointestinal & 0.116 & -0.028 & 0.098 & \textbf{0.127} & 0.125 & 0.116 & -820.739 \\
+Overall Survival & 0.281 & -0.312 & 0.254 & 0.311 & 0.325 & \textbf{0.351} & -7.714 \\
+\bottomrule
+\end{tabular}
+\end{table}

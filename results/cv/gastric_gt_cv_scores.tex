@@ -1,0 +1,16 @@
+\begin{table}[ht]
+\centering
+\caption{Gastric Cancer: GT Ensemble CV R\textsuperscript{2} by Model Type (Deep Grid, Table EC.11 Style)}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Outcome & LINEAR & SVM & CART & RF & GBM & XGB & MLP \\
+\midrule
+Any DLT & 0.149 & 0.032 & 0.140 & 0.168 & 0.147 & \textbf{0.171} & -124.559 \\
+Blood & 0.131 & -0.041 & 0.065 & \textbf{0.170} & 0.138 & 0.166 & -110.871 \\
+Constitutional & -0.006 & -0.176 & 0.097 & 0.119 & 0.079 & \textbf{0.122} & -109.050 \\
+Infection & 0.117 & -0.079 & 0.027 & 0.105 & 0.088 & \textbf{0.122} & -126.307 \\
+Gastrointestinal & 0.116 & -0.028 & 0.098 & 0.123 & 0.056 & \textbf{0.123} & -401.764 \\
+Overall Survival & 0.281 & -0.312 & 0.254 & 0.315 & 0.267 & \textbf{0.354} & -3.343 \\
+\bottomrule
+\end{tabular}
+\end{table}

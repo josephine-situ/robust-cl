@@ -1,0 +1,8 @@
+Method,Joint Toxicity Mean (%),Joint Toxicity SD (%),Joint Toxicity % Improv,OS Mean (mo.),OS SD (mo.),OS % Improv,Solve Time (s),N Eval
+Given,63.4,48.5,,10.86,1.98,,,82
+Nominal,81.7,38.9,28.8,12.14,1.35,11.7,0.062,82
+Robust (Param.),84.1,36.7,32.7,11.92,1.43,9.8,0.051,82
+Robust (Reg.),93.9,24.1,48.1,10.83,1.67,-0.3,0.038,82
+Tree Violation,78.0,41.6,23.1,12.15,1.26,11.9,0.062,82
+Wrapper,87.8,32.9,38.5,11.38,1.67,4.7,6.581,82
+CP,98.8,11.0,55.8,12.09,1.49,11.3,0.086,82

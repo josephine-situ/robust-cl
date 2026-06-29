@@ -2,13 +2,15 @@
 Compare robust CL methods on gastric cancer chemotherapy (Table 6 metrics).
 
 Usage:
-  python experiments/run_chemo_robust.py --quick   # local smoke run
-  python experiments/run_chemo_robust.py             # full comparison
+  python experiments/run_chemo_robust.py --quick                                  # smoke run
+  python experiments/run_chemo_robust.py                                           # full run
+  python experiments/run_chemo_robust.py --cv-configs results/cv/gastric_selected_configs.json
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from functools import partial
@@ -76,7 +78,7 @@ def _resolve_run_settings(config, args):
             "cp_k_neighbors_frac": quick_cfg.get("cp_k_neighbors_frac", 0.05),
             "alpha": quick_cfg.get("alpha", unc.get("alpha", 0.0)),
             "cp_n_anchors": quick_cfg.get("cp_n_anchors", cp_cfg.get("n_anchors", 4)),
-            "output_path": "results/chemo_robust_table6_quick.csv",
+            "output_path": "results/gastric/chemo_robust_table6_quick.csv",
         }
     else:
         settings = {
@@ -91,12 +93,12 @@ def _resolve_run_settings(config, args):
             "cp_k_neighbors_frac": unc.get("cp_k_neighbors_frac", 0.1),
             "alpha": unc.get("alpha", 0.0),
             "cp_n_anchors": cp_cfg.get("n_anchors", 15),
-            "output_path": "results/chemo_robust_table6.csv",
+            "output_path": "results/gastric/chemo_robust_table6.csv",
         }
 
     settings["cp_anchor_source"] = cp_cfg.get("anchor_source", "train")
     settings["cp_anchor_method"] = cp_cfg.get("anchor_method", "kmedoids")
-    settings["cp_trace_path"] = "results/cp_trace.csv"
+    settings["cp_trace_path"] = "results/gastric/cp_trace.csv"
     settings["cp_distance"] = cp_cfg.get("distance", "full")
     settings["cp_dist_tol"] = cp_cfg.get("dist_tol", 1e-3)
 
@@ -269,9 +271,12 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
     return build(knob)
 
 
-def run_chemo_robust(config, args):
+def run_chemo_robust(config, args, cv_configs=None, gt_configs=None):
     settings = _resolve_run_settings(config, args)
-    instance = gastric_cancer()
+    instance = gastric_cancer(
+        fixed_constraint_configs=cv_configs if cv_configs else None,
+        fixed_gt_ensemble_configs=gt_configs if gt_configs else None,
+    )
     n_test = instance.X_test.shape[0]
     n_train = instance.X_train.shape[0]
 
@@ -404,7 +409,7 @@ def run_chemo_robust(config, args):
 
     import pandas as pd
     df = pd.DataFrame(all_rows)
-    os.makedirs("results", exist_ok=True)
+    os.makedirs("results/gastric", exist_ok=True)
     df.to_csv(settings["output_path"], index=False)
 
     print("\n" + "=" * 60)
@@ -415,6 +420,10 @@ def run_chemo_robust(config, args):
     return df
 
 
+_DEFAULT_CV_CONFIGS = "results/cv/gastric_selected_configs.json"
+_DEFAULT_GT_CONFIGS = "results/cv/gastric_gt_ensemble_configs.json"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Chemo robust method comparison")
     parser.add_argument("--quick", action="store_true", help="Small local smoke run")
@@ -422,10 +431,76 @@ def main():
     parser.add_argument("--methods", nargs="+", default=None)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--config", type=str, default="config.yaml")
+    parser.add_argument(
+        "--cv-configs",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            f"Path to gastric_selected_configs.json from run_cv.py. "
+            f"Defaults to {_DEFAULT_CV_CONFIGS} if that file exists."
+        ),
+    )
+    parser.add_argument(
+        "--gt-cv-configs",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            f"Path to gastric_gt_ensemble_configs.json from run_cv.py --ensemble. "
+            f"Defaults to {_DEFAULT_GT_CONFIGS} if that file exists."
+        ),
+    )
+    parser.add_argument(
+        "--no-cv-configs",
+        action="store_true",
+        help=(
+            "Disable auto-loading of CV configs. Uses fixed paper constraint models "
+            "(GASTRIC_EMBED_CONFIGS) and GT ensemble specs (GT_ENSEMBLE_SPECS) instead."
+        ),
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
-    run_chemo_robust(config, args)
+
+    # --- Resolve constraint CV configs ---
+    cv_configs = None
+    if args.no_cv_configs:
+        print("CV configs disabled (--no-cv-configs); using fixed paper models.")
+    elif args.cv_configs:
+        with open(args.cv_configs, "r") as f:
+            cv_configs = json.load(f)
+        print(f"Loaded constraint CV configs from {args.cv_configs}")
+    elif os.path.exists(_DEFAULT_CV_CONFIGS):
+        with open(_DEFAULT_CV_CONFIGS, "r") as f:
+            cv_configs = json.load(f)
+        print(f"Auto-loaded constraint CV configs from {_DEFAULT_CV_CONFIGS}")
+    else:
+        print(
+            f"No CV configs found at {_DEFAULT_CV_CONFIGS}; "
+            "using fixed paper constraint models. Run experiments/run_cv.py first."
+        )
+
+    # --- Resolve GT ensemble configs ---
+    gt_configs = None
+    if not args.no_cv_configs:
+        gt_path = args.gt_cv_configs or _DEFAULT_GT_CONFIGS
+        if args.gt_cv_configs and os.path.exists(args.gt_cv_configs):
+            with open(args.gt_cv_configs, "r") as f:
+                gt_configs = json.load(f)
+            print(f"Loaded GT ensemble configs from {args.gt_cv_configs}")
+        elif not args.gt_cv_configs and os.path.exists(_DEFAULT_GT_CONFIGS):
+            with open(_DEFAULT_GT_CONFIGS, "r") as f:
+                gt_configs = json.load(f)
+            print(f"Auto-loaded GT ensemble configs from {_DEFAULT_GT_CONFIGS}")
+        else:
+            print(
+                f"No GT ensemble configs at {gt_path}; "
+                "using fixed paper GT ensemble (GT_ENSEMBLE_SPECS). "
+                "Run experiments/run_cv.py --ensemble to generate them."
+            )
+
+    run_chemo_robust(config, args, cv_configs=cv_configs, gt_configs=gt_configs)
 
 
 if __name__ == "__main__":

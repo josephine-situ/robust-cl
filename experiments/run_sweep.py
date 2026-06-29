@@ -35,9 +35,9 @@ def run_gamma_sweep(gamma_values=None):
         all_rows.append(df)
 
     combined = pd.concat(all_rows, ignore_index=True)
-    os.makedirs("results", exist_ok=True)
-    combined.to_csv("results/sweep_results.csv", index=False)
-    print(f"\nSaved sweep results to results/sweep_results.csv")
+    os.makedirs("results/synthetic", exist_ok=True)
+    combined.to_csv("results/synthetic/sweep_results.csv", index=False)
+    print(f"\nSaved sweep results to results/synthetic/sweep_results.csv")
 
     return combined
 
@@ -64,15 +64,15 @@ def run_noise_sweep(noise_values=None):
         all_rows.append(df)
 
     combined = pd.concat(all_rows, ignore_index=True)
-    os.makedirs("results", exist_ok=True)
-    combined.to_csv("results/noise_sweep_results.csv", index=False)
-    print(f"\nSaved noise sweep to results/noise_sweep_results.csv")
+    os.makedirs("results/synthetic", exist_ok=True)
+    combined.to_csv("results/synthetic/noise_sweep_results.csv", index=False)
+    print(f"\nSaved noise sweep to results/synthetic/noise_sweep_results.csv")
 
     return combined
 
 
-def plot_gamma_sweep(csv_path="results/sweep_results.csv",
-                     save_dir="results"):
+def plot_gamma_sweep(csv_path="results/synthetic/sweep_results.csv",
+                     save_dir="results/synthetic"):
     """Plot price of robustness from Gamma sweep."""
     import matplotlib.pyplot as plt
     import seaborn as sns
@@ -139,8 +139,8 @@ def plot_gamma_sweep(csv_path="results/sweep_results.csv",
     print(f"Saved gamma sweep plot to {save_dir}/gamma_sweep.png")
 
 
-def plot_noise_sweep(csv_path="results/noise_sweep_results.csv",
-                     save_dir="results"):
+def plot_noise_sweep(csv_path="results/synthetic/noise_sweep_results.csv",
+                     save_dir="results/synthetic"):
     """Plot degradation under increasing label noise."""
     import matplotlib.pyplot as plt
     import seaborn as sns
@@ -211,7 +211,7 @@ if __name__ == "__main__":
                         help="Only plot from existing CSVs")
     args = parser.parse_args()
 
-    os.makedirs("results", exist_ok=True)
+    os.makedirs("results/synthetic", exist_ok=True)
 
     if args.plot_only:
         if args.sweep in ["gamma", "all"]:

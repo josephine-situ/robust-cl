@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 
-def plot_comparison_bar(df: pd.DataFrame, save_dir: str = "results"):
+def plot_comparison_bar(df: pd.DataFrame, save_dir: str = "results/synthetic"):
     """Bar chart comparing methods on key metrics."""
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 
@@ -46,8 +46,8 @@ def plot_comparison_bar(df: pd.DataFrame, save_dir: str = "results"):
     print(f"Saved comparison plot to {save_dir}/comparison.png")
 
 
-def plot_ccg_convergence(trace_path: str = "results/ccg_trace.csv",
-                         save_dir: str = "results"):
+def plot_ccg_convergence(trace_path: str = "results/gastric/cp_trace.csv",
+                         save_dir: str = "results/gastric"):
     """Plot C&CG convergence: violation and objective per iteration."""
     trace = pd.read_csv(trace_path)
 
@@ -74,7 +74,7 @@ def plot_ccg_convergence(trace_path: str = "results/ccg_trace.csv",
     print(f"Saved convergence plot to {save_dir}/ccg_convergence.png")
 
 
-def plot_price_of_robustness(save_dir: str = "results"):
+def plot_price_of_robustness(save_dir: str = "results/synthetic"):
     """
     Placeholder for price-of-robustness sweep.
     Run experiments with varying Gamma, collect results,
@@ -85,7 +85,7 @@ def plot_price_of_robustness(save_dir: str = "results"):
     pass
 
 
-def plot_efficiency(save_dir: str = "results"):
+def plot_efficiency(save_dir: str = "results/synthetic"):
     """
     Placeholder for efficiency comparison.
     At equal number of models k, compare feasibility
@@ -95,10 +95,10 @@ def plot_efficiency(save_dir: str = "results"):
 
 
 if __name__ == "__main__":
-    os.makedirs("results", exist_ok=True)
+    os.makedirs("results/synthetic", exist_ok=True)
 
-    df = pd.read_csv("results/results.csv")
+    df = pd.read_csv("results/synthetic/results.csv")
     plot_comparison_bar(df)
 
-    if os.path.exists("results/ccg_trace.csv"):
+    if os.path.exists("results/gastric/cp_trace.csv"):
         plot_ccg_convergence()

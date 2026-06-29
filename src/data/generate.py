@@ -369,7 +369,8 @@ def synthetic_nonlinear(n_train: int = 200,
 def gastric_cancer(seed: int = 42,
                    cv_tune_gt: bool = False,
                    constraint_cv: bool = False,
-                   fixed_constraint_configs: dict = None) -> ProblemInstance:
+                   fixed_constraint_configs: dict = None,
+                   fixed_gt_ensemble_configs: dict = None) -> ProblemInstance:
     """
     Chemotherapy regimen design for advanced gastric cancer.
 
@@ -519,12 +520,13 @@ def gastric_cancer(seed: int = 42,
         from src.models.train import train_best_model_cv, train_fixed_ensemble
     
     cv_param_grids = {
-        "linear": {"alpha": [0.1, 1, 10, 100, 1000], "l1_ratio": np.arange(0.1, 1.0, 0.2)},
+        "linear": {"alpha": [0.1, 1, 10, 100, 1000], "l1_ratio": list(np.arange(0.1, 1.0, 0.2))},
         "svm": {"C": [0.1, 1, 10, 100]},
         "cart": {"max_depth": [3, 4, 5, 6, 7, 8, 9, 10], "min_samples_leaf": [0.02, 0.04, 0.06], "max_features": [0.4, 0.6, 0.8, 1.0]},
         "rf": {"n_estimators": [10, 25], "max_features": [1.0], "max_depth": [2, 3, 4]},
         "gbm": {"learning_rate": [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2], "max_depth": [2, 3, 4, 5], "n_estimators": [20]},
-        "mlp": {"hidden_layer_sizes": [(10,), (20,), (50,), (100,)]}
+        "xgb": {"learning_rate": [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2], "max_depth": [2, 3, 4, 5], "n_estimators": [20]},
+        "mlp": {"hidden_layer_sizes": [(10,), (20,), (50,), (100,)]},
     }
 
     constraint_model_configs = []
@@ -533,12 +535,29 @@ def gastric_cancer(seed: int = 42,
         print("Running CV for constraint models...")
         for c in constraints:
             for md in c.models_data:
-                _, best_type, best_params = train_best_model_cv(md.X_train, md.y_train, cv_param_grids, random_state=seed, return_params=True)
+                _, best_type, best_params = train_best_model_cv(
+                    md.X_train, md.y_train, cv_param_grids,
+                    random_state=seed, return_params=True, scoring="r2",
+                )
                 constraint_model_configs.append({"model_type": best_type, "model_params": best_params})
     elif fixed_constraint_configs:
-        for c in constraints:
-            for md in c.models_data:
-                constraint_model_configs.append(fixed_constraint_configs)
+        if isinstance(fixed_constraint_configs, dict) and any(
+            isinstance(v, dict) for v in fixed_constraint_configs.values()
+        ):
+            # Dict keyed by constraint name -> per-constraint config
+            for c in constraints:
+                cfg = fixed_constraint_configs.get(c.name)
+                if cfg is None:
+                    raise ValueError(
+                        f"fixed_constraint_configs missing key '{c.name}'. "
+                        f"Available keys: {list(fixed_constraint_configs.keys())}"
+                    )
+                constraint_model_configs.append(cfg)
+        else:
+            # Legacy: single config applied to all constraints
+            for c in constraints:
+                for md in c.models_data:
+                    constraint_model_configs.append(fixed_constraint_configs)
     else:
         constraint_model_configs = list(GASTRIC_EMBED_CONFIGS)
 
@@ -563,10 +582,18 @@ def gastric_cancer(seed: int = 42,
         "os": os_valid,
     }
 
+    # Use CV-selected GT ensemble configs when provided, otherwise fall back to
+    # fixed paper specs (Table EC.12 / GT_ENSEMBLE_SPECS).
+    if fixed_gt_ensemble_configs:
+        _gt_specs = fixed_gt_ensemble_configs
+        print("Using CV-selected GT ensemble configs (fixed_gt_ensemble_configs).")
+    else:
+        _gt_specs = GT_ENSEMBLE_SPECS
+
     gt_models = {}
     print("Training Ground Truth ensemble models...")
     for t_name, y_t in gt_fit_targets.items():
-        gt_models[t_name] = train_fixed_ensemble(X_valid, y_t, GT_ENSEMBLE_SPECS[t_name])
+        gt_models[t_name] = train_fixed_ensemble(X_valid, y_t, _gt_specs[t_name])
 
     # Objective is to maximize OS (so c = -1 for OS). We create a callable that returns the predicted OS.
     # We want to minimize -OS -> maximize OS
@@ -668,7 +695,7 @@ if __name__ == "__main__":
         and gastric_cancer_instance.variable_lb[j] == 0.0
     ])
 
-    os.makedirs("results", exist_ok=True)
+    os.makedirs("results/diagnostics", exist_ok=True)
 
     summary_rows = [
         {"field": "n_total_rows", "value": n_total},
@@ -712,15 +739,16 @@ if __name__ == "__main__":
     print("\nGT ensemble R² vs Table EC.11 (trained on full 461 cohort):")
     gt_r2_df = compute_gt_r2_table(gastric_cancer_instance)
     print(gt_r2_df.to_string(index=False, float_format=lambda x: f"{x:.3f}"))
-    gt_r2_path = "results/gt_r2_ec11.csv"
+    gt_r2_path = "results/diagnostics/gt_r2_ec11.csv"
     gt_r2_df.to_csv(gt_r2_path, index=False)
     print(f"Saved GT R² diagnostics to {gt_r2_path}")
 
     from src.models.embed import verify_embedded_predictions
+    from src.data.gastric_model_specs import GASTRIC_EMBED_CONFIGS as _EMBED_CONFIGS
     print("\nEmbedding exactness check (embedded Gurobi vs sklearn predict):")
     embed_report = verify_embedded_predictions(
         gastric_cancer_instance,
-        configs=GASTRIC_EMBED_CONFIGS,
+        configs=_EMBED_CONFIGS,
         n_points=5,
     )
     for line in embed_report:
@@ -729,8 +757,8 @@ if __name__ == "__main__":
     print("\nConstraint details:")
     print(constraint_df.to_string(index=False))
 
-    summary_path = "results/gastric_cancer_debug_summary.csv"
-    constraints_path = "results/gastric_cancer_debug_constraints.csv"
+    summary_path = "results/diagnostics/gastric_cancer_debug_summary.csv"
+    constraints_path = "results/diagnostics/gastric_cancer_debug_constraints.csv"
     summary_df.to_csv(summary_path, index=False)
     constraint_df.to_csv(constraints_path, index=False)
 

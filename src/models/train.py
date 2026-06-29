@@ -124,16 +124,28 @@ def train_best_model_cv(X: np.ndarray,
                         y: np.ndarray,
                         param_grids: Dict[str, Dict[str, Any]],
                         random_state: int = 42,
-                        return_params: bool = False) -> Union[ModelType, tuple]:
+                        return_params: bool = False,
+                        scoring: str = "r2",
+                        cv_folds: int = 5,
+                        return_all_scores: bool = False) -> Union[ModelType, tuple]:
     """
-    Train multiple models using 5-fold CV and return the best one across all types.
+    Train multiple models using k-fold CV and return the best one across all types.
+
+    Parameters
+    ----------
+    scoring : sklearn scoring string, e.g. ``'r2'`` or ``'neg_mean_squared_error'``.
+        Defaults to ``'r2'`` (matching the paper's ``run_MLmodels.py`` which uses
+        ``metric='r2'`` for continuous gastric outcomes).
+    return_all_scores : if True, also return a dict mapping model_type -> best CV score
+        for that type. Useful for producing EC.6-style comparison tables.
     """
     best_model = None
     best_score = -np.inf
     best_model_type = None
     best_params = None
+    all_type_scores: Dict[str, float] = {}
 
-    kf = KFold(n_splits=5, shuffle=True, random_state=random_state)
+    kf = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
 
     for model_type, grid in param_grids.items():
         if model_type == "linear":
@@ -144,21 +156,35 @@ def train_best_model_cv(X: np.ndarray,
             base_model = DecisionTreeRegressor(random_state=random_state)
         elif model_type == "rf":
             base_model = RandomForestRegressor(random_state=random_state)
-        elif model_type in ["xgb", "gbm"]:
+        elif model_type == "gbm":
             base_model = GradientBoostingRegressor(random_state=random_state)
+        elif model_type == "xgb":
+            base_model = XGBRegressor(
+                objective="reg:squarederror",
+                random_state=random_state,
+                verbosity=0,
+            )
         elif model_type == "mlp":
             base_model = MLPRegressor(random_state=random_state, max_iter=500)
         else:
             continue
-            
-        search = GridSearchCV(base_model, grid, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1)
+
+        search = GridSearchCV(base_model, grid, cv=kf, scoring=scoring, n_jobs=-1)
         search.fit(X, y)
-        
-        if search.best_score_ > best_score:
-            best_score = search.best_score_
+
+        cv_score = float(search.best_score_)
+        all_type_scores[model_type] = cv_score
+
+        if cv_score > best_score:
+            best_score = cv_score
             best_model = search.best_estimator_
             best_model_type = model_type
             best_params = search.best_params_
+
+    if return_all_scores:
+        if return_params:
+            return best_model, best_model_type, best_params, all_type_scores
+        return best_model, all_type_scores
 
     if return_params:
         return best_model, best_model_type, best_params
@@ -184,13 +210,15 @@ def train_fixed_ensemble(X: np.ndarray, y: np.ndarray, specs: list) -> EnsembleM
 def train_ensemble_model_cv(X: np.ndarray,
                             y: np.ndarray,
                             param_grids: Dict[str, Dict[str, Any]],
-                            random_state: int = 42) -> EnsembleModel:
+                            random_state: int = 42,
+                            scoring: str = "r2",
+                            cv_folds: int = 5) -> EnsembleModel:
     """
     Train an ensemble model by finding the best parameter combination for each model class,
     and averaging their predictions.
     """
     best_models = []
-    kf = KFold(n_splits=5, shuffle=True, random_state=random_state)
+    kf = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
 
     for model_type, grid in param_grids.items():
         if model_type == "linear":
@@ -201,14 +229,20 @@ def train_ensemble_model_cv(X: np.ndarray,
             base_model = DecisionTreeRegressor(random_state=random_state)
         elif model_type == "rf":
             base_model = RandomForestRegressor(random_state=random_state)
-        elif model_type in ["xgb", "gbm"]:
+        elif model_type == "gbm":
             base_model = GradientBoostingRegressor(random_state=random_state)
+        elif model_type == "xgb":
+            base_model = XGBRegressor(
+                objective="reg:squarederror",
+                random_state=random_state,
+                verbosity=0,
+            )
         elif model_type == "mlp":
             base_model = MLPRegressor(random_state=random_state, max_iter=500)
         else:
             continue
-            
-        search = GridSearchCV(base_model, grid, cv=kf, scoring='neg_mean_squared_error', n_jobs=-1)
+
+        search = GridSearchCV(base_model, grid, cv=kf, scoring=scoring, n_jobs=-1)
         search.fit(X, y)
         best_models.append(search.best_estimator_)
 

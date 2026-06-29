@@ -111,8 +111,8 @@ def run_chemo_replication(config):
     ))
 
     df = table6_results_to_dataframe(rows)
-    os.makedirs("results", exist_ok=True)
-    out_path = "results/chemo_table6.csv"
+    os.makedirs("results/gastric", exist_ok=True)
+    out_path = "results/gastric/chemo_table6.csv"
     df.to_csv(out_path, index=False)
 
     print("\n" + "=" * 60)

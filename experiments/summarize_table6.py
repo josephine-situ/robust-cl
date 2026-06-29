@@ -5,7 +5,7 @@ presentation-ready tables (.csv and .tex).
 
 Usage:
     uv run python experiments/summarize_table6.py
-    uv run python experiments/summarize_table6.py --input results/chemo_robust_table6.csv
+    uv run python experiments/summarize_table6.py --input results/gastric/chemo_robust_table6.csv
 
 Outputs (in results/):
     summary_all_constraints.csv / .tex
@@ -46,8 +46,8 @@ import pandas as pd
 # Configuration
 # ---------------------------------------------------------------------------
 
-DEFAULT_INPUT = Path("results/chemo_robust_table6.csv")
-OUT_DIR = Path("results")
+DEFAULT_INPUT = Path("results/gastric/chemo_robust_table6.csv")
+OUT_DIR = Path("results/gastric")
 
 # Display order for methods (nominal listed first among methods as a baseline)
 METHOD_ORDER = ["nominal", "robust_param", "robust_reg", "tree_violation", "wrapper", "cp"]

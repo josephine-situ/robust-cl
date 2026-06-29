@@ -1,0 +1,56 @@
+{
+  "dlt_constraint": {
+    "model_type": "gbm",
+    "model_params": {
+      "learning_rate": 0.2,
+      "max_depth": 3,
+      "n_estimators": 20,
+      "random_state": 1
+    }
+  },
+  "blood_constraint": {
+    "model_type": "gbm",
+    "model_params": {
+      "learning_rate": 0.2,
+      "max_depth": 2,
+      "n_estimators": 20,
+      "random_state": 1
+    }
+  },
+  "constitutional_constraint": {
+    "model_type": "cart",
+    "model_params": {
+      "max_depth": 4,
+      "max_features": 0.4,
+      "min_samples_leaf": 0.06,
+      "random_state": 1
+    }
+  },
+  "infection_constraint": {
+    "model_type": "xgb",
+    "model_params": {
+      "learning_rate": 0.1,
+      "max_depth": 4,
+      "n_estimators": 20,
+      "random_state": 1
+    }
+  },
+  "gi_constraint": {
+    "model_type": "rf",
+    "model_params": {
+      "max_depth": 4,
+      "max_features": 1.0,
+      "n_estimators": 25,
+      "random_state": 1
+    }
+  },
+  "os_constraint": {
+    "model_type": "xgb",
+    "model_params": {
+      "learning_rate": 0.2,
+      "max_depth": 2,
+      "n_estimators": 20,
+      "random_state": 1
+    }
+  }
+}

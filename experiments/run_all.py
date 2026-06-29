@@ -3,8 +3,14 @@ Main experiment runner.
 
 Runs all five methods on a problem instance, evaluates, and
 saves results.
+
+Usage:
+    python experiments/run_all.py
+    python experiments/run_all.py --cv-configs results/cv/synthetic_selected_configs.json
 """
 
+import argparse
+import json
 import yaml
 import pandas as pd
 import os
@@ -25,8 +31,17 @@ def load_config(path="config.yaml"):
         return yaml.safe_load(f)
 
 
-def run_experiment(config):
-    """Run all methods and evaluate."""
+def run_experiment(config, cv_configs=None):
+    """Run all methods and evaluate.
+
+    Parameters
+    ----------
+    cv_configs : optional dict loaded from a ``*_selected_configs.json`` produced
+        by ``run_cv.py``.  For the synthetic problem the entry
+        ``"synthetic_constraint"`` overrides the global model type/params from
+        config.  For gastric the dict is passed directly to
+        ``gastric_cancer(fixed_constraint_configs=...)``.
+    """
 
     print("=" * 60)
     print("ROBUST CONSTRAINT LEARNING EXPERIMENT")
@@ -34,7 +49,9 @@ def run_experiment(config):
 
     print(f"\n[1] Generating problem instance ({config['data']['type']})...")
     if config["data"]["type"] == "gastric_cancer":
-        instance = gastric_cancer()
+        instance = gastric_cancer(
+            fixed_constraint_configs=cv_configs if cv_configs else None
+        )
     else:
         instance = synthetic_nonlinear(
             n_train=config["data"]["n_train"],
@@ -45,8 +62,16 @@ def run_experiment(config):
           f"d={instance.n_features}, "
           f"noise_std={config['data'].get('noise_std', 'n/a')}")
 
+    # Resolve model type/params: CV-selected override > config default
     model_type = config["model"]["type"]
     model_params = config["model"]["params"]
+    if cv_configs and config["data"]["type"] != "gastric_cancer":
+        # For synthetic, override global model from the single constraint entry
+        synth_cfg = cv_configs.get("synthetic_constraint")
+        if synth_cfg:
+            model_type = synth_cfg["model_type"]
+            model_params = synth_cfg.get("model_params", {})
+            print(f"    CV-selected model: {model_type}  params={model_params}")
     unc = config["uncertainty"]
     n_bootstrap = unc.get("n_bootstrap", 25)
     bootstrap_seed = unc.get("bootstrap_seed", 42)
@@ -132,12 +157,34 @@ def run_experiment(config):
     print("=" * 60)
     print(df.to_string(index=False))
 
-    os.makedirs("results", exist_ok=True)
-    df.to_csv("results/results.csv", index=False)
+    os.makedirs("results/synthetic", exist_ok=True)
+    out_path = "results/synthetic/results.csv"
+    df.to_csv(out_path, index=False)
+    print(f"\nSaved to {out_path}")
 
     return df, None
 
 
 if __name__ == "__main__":
-    config = load_config()
-    run_experiment(config)
+    parser = argparse.ArgumentParser(description="Run robust CL experiment")
+    parser.add_argument(
+        "--cv-configs",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path to a *_selected_configs.json from run_cv.py. "
+            "Overrides the model type/params from config.yaml with CV-selected models."
+        ),
+    )
+    parser.add_argument("--config", type=str, default="config.yaml")
+    args = parser.parse_args()
+
+    cfg = load_config(args.config)
+    cv_configs = None
+    if args.cv_configs:
+        with open(args.cv_configs, "r") as f:
+            cv_configs = json.load(f)
+        print(f"Loaded CV configs from {args.cv_configs}")
+
+    run_experiment(cfg, cv_configs=cv_configs)

@@ -1,0 +1,21 @@
+\begin{table}[ht]
+\centering
+\caption{Comparison of robust prescriptive methods under all constraints. Joint toxicity: fraction of regimens satisfying all toxicity constraints simultaneously (ground-truth ensemble). Evaluated on $n=82$ samestore patients.}
+\label{tab:chemo_all_constraints}
+\begin{tabular}{lcccccc}
+\toprule
+& \multicolumn{2}{c}{Joint Toxicity (\%)} & \multicolumn{2}{c}{OS (mo.)} & \\
+\cmidrule(lr){2-3} \cmidrule(lr){4-5}
+Method & mean (SD) & \% Improv & mean (SD) & \% Improv & Solve Time (s) \\
+\midrule
+Given & 63.4 (48.5) & --- & 10.86 (1.98) & --- & --- \\
+\midrule
+Nominal & 81.7 (38.9) & +28.8\% & 12.14 (1.35) & +11.7\% & 0.062 \\
+Robust (Param.) & 84.1 (36.7) & +32.7\% & 11.92 (1.43) & +9.8\% & 0.051 \\
+Robust (Reg.) & 93.9 (24.1) & +48.1\% & 10.83 (1.67) & -0.3\% & \textbf{0.038} \\
+Tree Violation & 78.0 (41.6) & +23.1\% & \textbf{12.15 (1.26)} & \textbf{+11.9\%} & 0.062 \\
+Wrapper & 87.8 (32.9) & +38.5\% & 11.38 (1.67) & +4.7\% & 6.581 \\
+CP & \textbf{98.8 (11.0)} & \textbf{+55.8\%} & 12.09 (1.49) & +11.3\% & 0.086 \\
+\bottomrule
+\end{tabular}
+\end{table}
