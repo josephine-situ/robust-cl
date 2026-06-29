@@ -328,7 +328,10 @@ def run_chemo_robust(config, args):
 
     # Pass 1: optimize every (method, mode); store masks/outcomes/times.
     collected = {}
-    all_masks = []
+    # Collect per-mode feasibility masks so each mode's samestore only requires
+    # patients to be feasible across methods within that mode (not globally
+    # across both modes simultaneously).
+    mode_masks: dict[str, list] = {m: [] for m in settings["constraint_modes"]}
     for method in settings["methods_to_run"]:
         if method not in solvers:
             print(f"Skipping unknown method: {method}")
@@ -353,28 +356,40 @@ def run_chemo_robust(config, args):
                 "full_outcomes": full_outcomes,
                 "n_method_feasible": n_feasible,
             }
-            all_masks.append(feasible_mask)
+            mode_masks[constraint_mode].append(feasible_mask)
 
-    # Global cohort: patients feasible under EVERY method x mode, so all cells are
-    # compared on one identical apples-to-apples set of regimens.
-    global_mask = samestore_eval_mask(*all_masks)
-    n_eval = int(global_mask.sum())
-    print(f"\nGlobal cross-method evaluation cohort: {n_eval}/{n_test} test rows")
-    given_values = evaluate_given_table6(instance, global_mask)
+    # Per-mode samestore: patients feasible across all methods for that mode only.
+    # This allows each table to use a larger, mode-appropriate evaluation cohort.
+    per_mode_mask: dict[str, object] = {}
+    per_mode_given: dict[str, dict] = {}
+    for constraint_mode, masks in mode_masks.items():
+        if not masks:
+            continue
+        mask = samestore_eval_mask(*masks)
+        n_eval = int(mask.sum())
+        print(
+            f"\nSamestore cohort ({constraint_mode}): {n_eval}/{n_test} test rows"
+        )
+        per_mode_mask[constraint_mode] = mask
+        per_mode_given[constraint_mode] = evaluate_given_table6(instance, mask)
 
-    # Pass 2: build Table 6 rows on the shared global cohort.
+    # Pass 2: build Table 6 rows on the per-mode samestore cohort.
     all_rows = []
     for method in settings["methods_to_run"]:
         for constraint_mode in settings["constraint_modes"]:
             key = (method, constraint_mode)
             if key not in collected:
                 continue
+            if constraint_mode not in per_mode_mask:
+                continue
             res = collected[key]
-            prescribed = subset_table6_outcomes(res["full_outcomes"], global_mask)
+            mode_mask = per_mode_mask[constraint_mode]
+            n_eval = int(mode_mask.sum())
+            prescribed = subset_table6_outcomes(res["full_outcomes"], mode_mask)
             rows = build_table6_rows(
                 instance,
                 constraint_mode=constraint_mode,
-                given_values=given_values,
+                given_values=per_mode_given[constraint_mode],
                 prescribed_values=prescribed,
                 n_test=n_test,
                 n_prescribed=n_eval,
