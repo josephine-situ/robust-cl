@@ -1,7 +1,7 @@
 name,outcome_label,best_model,cv_r2,test_r2,best_params_str
-dlt_constraint,Any DLT,gbm,0.1836102618495346,0.14798050068258584,"learning_rate=0.2, max_depth=3, n_estimators=20"
-blood_constraint,Blood,gbm,0.14956597261607188,0.1509257374061631,"learning_rate=0.2, max_depth=2, n_estimators=20"
-constitutional_constraint,Constitutional,cart,0.09691371168318345,0.13284286096379394,"max_depth=4, max_features=0.4, min_samples_leaf=0.06"
-infection_constraint,Infection,xgb,0.12134569933983971,-0.04288263082313537,"learning_rate=0.1, max_depth=4, n_estimators=20"
-gi_constraint,Gastrointestinal,rf,0.12701735640929088,0.05710237224143866,"max_depth=4, max_features=1.0, n_estimators=25"
-os_constraint,Overall Survival,xgb,0.35118099533092,0.19862603121510036,"learning_rate=0.2, max_depth=2, n_estimators=20"
+dlt_constraint,Any DLT,xgb,0.20112629609930882,0.18050821077944634,"colsample_bytree=0.3, learning_rate=0.2, max_depth=3, n_estimators=20, subsample=0.9"
+blood_constraint,Blood,xgb,0.1746577004354672,0.09392106969279468,"colsample_bytree=0.3, learning_rate=0.2, max_depth=4, n_estimators=20, subsample=0.9"
+constitutional_constraint,Constitutional,xgb,0.11591558022246655,0.004950890686924225,"colsample_bytree=0.5, learning_rate=0.2, max_depth=4, n_estimators=20, subsample=0.9"
+infection_constraint,Infection,xgb,0.12954400159856913,0.01912456226574155,"colsample_bytree=0.3, learning_rate=0.1, max_depth=4, n_estimators=20, subsample=0.7"
+gi_constraint,Gastrointestinal,linear,0.151458098080975,0.19715530140576742,"alpha=0.01, l1_ratio=1.0"
+os_constraint,Overall Survival,linear,0.3909465539221348,0.27605539846223404,"alpha=0.1, l1_ratio=1.0"

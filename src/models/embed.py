@@ -1,18 +1,28 @@
 """
-Embed trained tree-based models into Gurobi MIO.
+Embed trained ML models into Gurobi MIO.
 
-For a single decision tree with leaves L:
+Supported model types
+---------------------
+- ElasticNet (linear)  : f(x) = intercept + coef'x
+- LinearSVR  (svm)     : f(x) = intercept + coef'x
+- DecisionTreeRegressor: leaf selection via binary z variables (big-M)
+- RandomForestRegressor: average of embedded trees
+- GradientBoostingRegressor: sum of embedded trees
+- XGBRegressor         : sum of embedded trees (parsed from JSON dump)
+- MLPRegressor         : ReLU network via binary activation variables (big-M)
+- Pipeline             : normalization constraints for the inner StandardScaler
+                         followed by recursive embedding of the wrapped estimator
+
+For decision trees and ensembles:
+    z_l = 1  =>  x in leaf region R_l   (big-M constraints)
+    sum_l z_l = 1                        (exactly one leaf)
     f(x) = sum_l mu_l * z_l
-    sum_l z_l = 1
-    z_l = 1 => x in R_l  (leaf region)
-    z_l in {0,1}
 
-For ensembles (RF, XGB):
-    f(x) = (1/T) sum_t f_t(x)   [RF]
-    f(x) = sum_t f_t(x)          [XGB]
-    Each f_t embedded separately, predictions aggregated.
+For MLP (relu):
+    h_j^l = ReLU(W^l h^{l-1} + b^l)   (modelled with binary indicator per neuron)
 """
 
+import json
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
@@ -22,14 +32,34 @@ from sklearn.ensemble import (
     GradientBoostingRegressor,
 )
 from sklearn.linear_model import ElasticNet
+from sklearn.svm import LinearSVR
+from sklearn.neural_network import MLPRegressor
 from typing import Union, List, Dict
+
+try:
+    from xgboost import XGBRegressor as _XGBRegressor
+except ImportError:
+    _XGBRegressor = None
 
 ModelType = Union[
     ElasticNet,
+    LinearSVR,
+    MLPRegressor,
     DecisionTreeRegressor,
     RandomForestRegressor,
     GradientBoostingRegressor,
 ]
+
+
+def _get_inner_model(ml_model):
+    """Return the underlying estimator, unwrapping a sklearn Pipeline if needed."""
+    try:
+        from sklearn.pipeline import Pipeline
+        if isinstance(ml_model, Pipeline):
+            return ml_model[-1]
+    except ImportError:
+        pass
+    return ml_model
 
 
 def _extract_tree_structure(tree):
@@ -284,6 +314,95 @@ def embed_cut_bad_leaf(model: gp.Model, ml_model: ModelType, x_vars: list, var_l
 
 # --- Full Embedding (Phase 3) ---
 
+def _embed_leaves(model: gp.Model,
+                  leaves: list,
+                  x_vars: list,
+                  var_lb: np.ndarray,
+                  var_ub: np.ndarray,
+                  name_prefix: str = "tree",
+                  rho: float = 0.0) -> gp.Var:
+    """
+    Embed a pre-extracted list of leaf dicts into Gurobi.
+
+    Each leaf dict must have keys: 'value', 'bounds_lower', 'bounds_upper'.
+    This is the core embedding shared by embed_single_tree and embed_xgb.
+    """
+    d = len(x_vars)
+
+    z = {}
+    valid_leaves = []
+
+    for l, leaf in enumerate(leaves):
+        feasible_leaf = True
+        for j in range(d):
+            lb_orig = leaf["bounds_lower"][j]
+            ub_orig = leaf["bounds_upper"][j]
+
+            if rho > 0:
+                lb_tight = (lb_orig / (1 - rho) if lb_orig >= 0 else lb_orig / (1 + rho)) if lb_orig > -np.inf else -np.inf
+                ub_tight = (ub_orig / (1 + rho) if ub_orig >= 0 else ub_orig / (1 - rho)) if ub_orig < np.inf else np.inf
+            else:
+                lb_tight = lb_orig
+                ub_tight = ub_orig
+
+            if var_lb[j] > ub_tight + 1e-6 or var_ub[j] < lb_tight - 1e-6:
+                feasible_leaf = False
+                break
+
+        if feasible_leaf:
+            valid_leaves.append(l)
+
+    if len(valid_leaves) == 0:
+        f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
+        model.addConstr(f_var == 0, name=f"{name_prefix}_pred_inf")
+        return f_var
+
+    for l in valid_leaves:
+        z[l] = model.addVar(vtype=GRB.BINARY, name=f"{name_prefix}_z{l}")
+
+    model.addConstr(
+        gp.quicksum(z[l] for l in valid_leaves) == 1,
+        name=f"{name_prefix}_one_leaf",
+    )
+
+    for l in valid_leaves:
+        leaf = leaves[l]
+        for j in range(d):
+            if var_lb[j] == var_ub[j]:
+                continue
+
+            lb_orig = leaf["bounds_lower"][j]
+            ub_orig = leaf["bounds_upper"][j]
+
+            if rho > 0:
+                lb_leaf_tight = (lb_orig / (1 - rho) if lb_orig >= 0 else lb_orig / (1 + rho)) if lb_orig > -np.inf else -np.inf
+                ub_leaf_tight = (ub_orig / (1 + rho) if ub_orig >= 0 else ub_orig / (1 - rho)) if ub_orig < np.inf else np.inf
+            else:
+                lb_leaf_tight = lb_orig
+                ub_leaf_tight = ub_orig
+
+            lb_leaf = max(lb_leaf_tight, var_lb[j])
+            ub_leaf = min(ub_leaf_tight, var_ub[j])
+
+            if lb_leaf > var_lb[j]:
+                model.addConstr(
+                    x_vars[j] >= lb_leaf - (lb_leaf - var_lb[j]) * (1 - z[l]),
+                    name=f"{name_prefix}_lb{l}_{j}",
+                )
+            if ub_leaf < var_ub[j]:
+                model.addConstr(
+                    x_vars[j] <= ub_leaf + (var_ub[j] - ub_leaf) * (1 - z[l]),
+                    name=f"{name_prefix}_ub{l}_{j}",
+                )
+
+    f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
+    model.addConstr(
+        f_var == gp.quicksum(leaves[l]["value"] * z[l] for l in valid_leaves),
+        name=f"{name_prefix}_pred_def",
+    )
+    return f_var
+
+
 def embed_single_tree(model: gp.Model,
                       tree: DecisionTreeRegressor,
                       x_vars: list,
@@ -292,154 +411,226 @@ def embed_single_tree(model: gp.Model,
                       name_prefix: str = "tree",
                       rho: float = 0.0) -> gp.Var:
     """
-    Embed a single decision tree into a Gurobi model.
+    Embed a single sklearn DecisionTreeRegressor into a Gurobi model.
 
-    Parameters
-    ----------
-    model : Gurobi model
-    tree : trained DecisionTreeRegressor (or a single
-        tree from an ensemble)
-    x_vars : list of Gurobi variables for x
-    var_lb, var_ub : variable bounds
-    name_prefix : prefix for variable/constraint names
-
-    Returns
-    -------
-    f_var : Gurobi variable representing f(x; tree)
+    Returns a Gurobi variable representing f(x; tree).
     """
     leaves = _extract_tree_structure(tree)
-    n_leaves = len(leaves)
-    d = len(x_vars)
-
-    # Binary variables: which leaf is x in?
-    z = {}
-    valid_leaves = []
-
-    for l, leaf in enumerate(leaves):
-        # 1. Pre-check if leaf is strictly infeasible due to contextual / fixed variables
-        feasible_leaf = True
-        for j in range(d):
-            lb_orig = leaf["bounds_lower"][j]
-            ub_orig = leaf["bounds_upper"][j]
-
-            # Shrink bounds for parameter robustness according to rho ||a_j x||_q
-            if rho > 0:
-                if lb_orig > -np.inf:
-                    lb_tight = lb_orig / (1 - rho) if lb_orig >= 0 else lb_orig / (1 + rho)
-                else:
-                    lb_tight = -np.inf
-
-                if ub_orig < np.inf:
-                    ub_tight = ub_orig / (1 + rho) if ub_orig >= 0 else ub_orig / (1 - rho)
-                else:
-                    ub_tight = np.inf
-            else:
-                lb_tight = lb_orig
-                ub_tight = ub_orig
-            
-            # If the fixed bounds don't overlap the leaf tight bounds, it's infeasible
-            if var_lb[j] > ub_tight + 1e-6 or var_ub[j] < lb_tight - 1e-6:
-                feasible_leaf = False
-                break
-                
-        if feasible_leaf:
-            valid_leaves.append(l)
-
-    # Return immediately if out of distribution / no feasible leaves
-    if len(valid_leaves) == 0:
-        f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
-        model.addConstr(f_var == 0, name=f"{name_prefix}_pred_inf")
-        return f_var
-
-    # Add z variables only for valid leaves
-    for l in valid_leaves:
-        z[l] = model.addVar(
-            vtype=GRB.BINARY, name=f"{name_prefix}_z_{l}"
-        )
-
-    # Exactly one leaf
-    model.addConstr(
-        gp.quicksum(z[l] for l in valid_leaves) == 1,
-        name=f"{name_prefix}_one_leaf",
-    )
-
-    # Leaf region constraints (big-M)
-    for l in valid_leaves:
-        leaf = leaves[l]
-        for j in range(d):
-            # If the variable is fixed, we already filtered infeasible leaves above.
-            # No need for constraints if var_lb[j] == var_ub[j]
-            if var_lb[j] == var_ub[j]:
-                continue
-                
-            lb_orig = leaf["bounds_lower"][j]
-            ub_orig = leaf["bounds_upper"][j]
-
-            # Shrink bounds for parameter robustness according to rho ||a_j x||_q
-            if rho > 0:
-                if lb_orig > -np.inf:
-                    lb_leaf_tight = lb_orig / (1 - rho) if lb_orig >= 0 else lb_orig / (1 + rho)
-                else:
-                    lb_leaf_tight = -np.inf
-
-                if ub_orig < np.inf:
-                    ub_leaf_tight = ub_orig / (1 + rho) if ub_orig >= 0 else ub_orig / (1 - rho)
-                else:
-                    ub_leaf_tight = np.inf
-            else:
-                lb_leaf_tight = lb_orig
-                ub_leaf_tight = ub_orig
-
-            lb_leaf = max(lb_leaf_tight, var_lb[j])
-            ub_leaf = min(ub_leaf_tight, var_ub[j])
-
-            M_lower = var_lb[j] - lb_leaf
-            M_upper = ub_leaf - var_ub[j]
-
-            # x[j] >= lb_leaf - M * (1 - z[l])
-            if lb_leaf > var_lb[j]:
-                model.addConstr(
-                    x_vars[j] >= lb_leaf - (lb_leaf - var_lb[j]) * (1 - z[l]),
-                    name=f"{name_prefix}_lb_{l}_{j}",
-                )
-
-            # x[j] <= ub_leaf + M * (1 - z[l])
-            if ub_leaf < var_ub[j]:
-                model.addConstr(
-                    x_vars[j] <= ub_leaf + (var_ub[j] - ub_leaf) * (1 - z[l]),
-                    name=f"{name_prefix}_ub_{l}_{j}",
-                )
-
-    # Prediction variable
-    f_var = model.addVar(
-        lb=-GRB.INFINITY, name=f"{name_prefix}_pred"
-    )
-    model.addConstr(
-        f_var == gp.quicksum(
-            leaves[l]["value"] * z[l] for l in valid_leaves
-        ),
-        name=f"{name_prefix}_pred_def",
-    )
-
-    return f_var
+    return _embed_leaves(model, leaves, x_vars, var_lb, var_ub, name_prefix, rho)
 
 
 def embed_linear(model: gp.Model,
                  ml_model: ElasticNet,
                  x_vars: list,
                  name_prefix: str = "linear") -> gp.Var:
-    """Embed a fitted linear (ElasticNet) model: f(x) = intercept + coef'x."""
+    """Embed a fitted ElasticNet: f(x) = intercept + coef'x."""
+    coef = np.asarray(ml_model.coef_).ravel()
+    intercept = float(np.asarray(ml_model.intercept_).ravel()[0])
     f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
     model.addConstr(
-        f_var == float(ml_model.intercept_)
-        + gp.quicksum(ml_model.coef_[j] * x_vars[j] for j in range(len(ml_model.coef_))),
+        f_var == intercept + gp.quicksum(float(coef[j]) * x_vars[j] for j in range(len(coef))),
         name=f"{name_prefix}_pred_def",
     )
     return f_var
 
 
+def embed_svm(model: gp.Model,
+              ml_model: LinearSVR,
+              x_vars: list,
+              name_prefix: str = "svm") -> gp.Var:
+    """Embed a fitted LinearSVR: f(x) = intercept + coef'x."""
+    coef = np.asarray(ml_model.coef_).ravel()
+    intercept = float(np.asarray(ml_model.intercept_).ravel()[0])
+    f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
+    model.addConstr(
+        f_var == intercept + gp.quicksum(float(coef[j]) * x_vars[j] for j in range(len(coef))),
+        name=f"{name_prefix}_pred_def",
+    )
+    return f_var
+
+
+def _compute_mlp_big_m(ml_model: MLPRegressor,
+                       var_lb: np.ndarray,
+                       var_ub: np.ndarray) -> list:
+    """
+    Compute per-hidden-layer big-M bounds for MLP embedding.
+
+    Uses L1 weight-norm propagation: given an element-wise upper bound on
+    |h| at each layer, the maximum absolute pre-activation at the next layer
+    is bounded by |W|' * h_bound + |b|.  After ReLU, h_bound is updated to
+    the new pre-activation bound (ReLU clips negatives, so max(0, pre) <= pre).
+    """
+    coefs = ml_model.coefs_       # list of (n_prev, n_curr) weight matrices
+    biases = ml_model.intercepts_ # list of (n_curr,) bias vectors
+
+    h_bound = np.maximum(np.abs(var_lb), np.abs(var_ub))  # element-wise input bound
+
+    M_vals = []
+    for l in range(len(coefs) - 1):  # hidden layers only, not the output layer
+        W = coefs[l]   # (n_prev, n_curr)
+        b = biases[l]  # (n_curr,)
+        pre_bound = np.abs(W).T @ h_bound + np.abs(b)  # (n_curr,)
+        M_vals.append(float(pre_bound.max()) + 1.0)
+        h_bound = pre_bound  # post-ReLU bound (h <= pre for active neurons)
+    return M_vals
+
+
+def embed_mlp(model: gp.Model,
+              ml_model: MLPRegressor,
+              x_vars: list,
+              var_lb: np.ndarray,
+              var_ub: np.ndarray,
+              name_prefix: str = "mlp") -> gp.Var:
+    """
+    Embed a fitted MLPRegressor (relu activation) as MIP constraints.
+
+    Each hidden neuron j in layer l is encoded with a binary indicator s_j^l:
+        s_j = 1  =>  h_j = pre_j  (neuron active)
+        s_j = 0  =>  h_j = 0      (neuron inactive / clipped by ReLU)
+    The big-M value per layer is computed from L1 weight-norm propagation.
+    """
+    if ml_model.activation != "relu":
+        raise ValueError(
+            f"MLP embedding only supports 'relu' activation, got '{ml_model.activation}'"
+        )
+
+    coefs = ml_model.coefs_
+    biases = ml_model.intercepts_
+    n_hidden = len(coefs) - 1
+
+    M_vals = _compute_mlp_big_m(ml_model, var_lb, var_ub)
+
+    h = list(x_vars)  # current-layer outputs (Gurobi vars)
+
+    for l in range(n_hidden):
+        W = coefs[l]    # (n_prev, n_curr)
+        b = biases[l]   # (n_curr,)
+        n_curr = W.shape[1]
+        M = M_vals[l]
+
+        h_next = []
+        for j in range(n_curr):
+            # Pre-activation
+            pre_j = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_l{l}_pre{j}")
+            model.addConstr(
+                pre_j == float(b[j])
+                + gp.quicksum(float(W[i, j]) * h[i] for i in range(len(h))),
+                name=f"{name_prefix}_l{l}_predef{j}",
+            )
+            # ReLU: h_j = max(0, pre_j) via binary s_j
+            s_j = model.addVar(vtype=GRB.BINARY, name=f"{name_prefix}_l{l}_s{j}")
+            h_j = model.addVar(lb=0.0, name=f"{name_prefix}_l{l}_h{j}")
+            model.addConstr(h_j >= pre_j,              name=f"{name_prefix}_l{l}_relu_lo{j}")
+            model.addConstr(h_j <= M * s_j,            name=f"{name_prefix}_l{l}_relu_M1{j}")
+            model.addConstr(h_j <= pre_j + M*(1-s_j),  name=f"{name_prefix}_l{l}_relu_M2{j}")
+            h_next.append(h_j)
+
+        h = h_next
+
+    # Output layer (linear, no activation)
+    W_out = coefs[-1]   # (n_last, n_out)
+    b_out = biases[-1]  # (n_out,)
+    f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
+    model.addConstr(
+        f_var == float(b_out[0])
+        + gp.quicksum(float(W_out[i, 0]) * h[i] for i in range(len(h))),
+        name=f"{name_prefix}_pred_def",
+    )
+    return f_var
+
+
+# ---------------------------------------------------------------------------
+# XGBoost embedding helpers
+# ---------------------------------------------------------------------------
+
+def _parse_xgb_json_tree(node: dict,
+                          lb: np.ndarray,
+                          ub: np.ndarray,
+                          n_features: int,
+                          leaves: list) -> None:
+    """
+    Recursively parse one XGBoost JSON tree node, collecting leaves with
+    their tight feature-space bounds.
+
+    XGBoost convention: "yes" branch satisfies  x[feat] < split_condition,
+                        "no"  branch satisfies  x[feat] >= split_condition.
+    """
+    if "leaf" in node:
+        leaves.append({
+            "value": float(node["leaf"]),
+            "bounds_lower": lb.copy(),
+            "bounds_upper": ub.copy(),
+        })
+        return
+
+    feat_str = str(node["split"])
+    try:
+        feat_idx = int(feat_str[1:]) if feat_str.startswith("f") else int(feat_str)
+    except (ValueError, IndexError):
+        raise ValueError(f"Cannot parse XGBoost feature name '{feat_str}'")
+
+    threshold = float(node["split_condition"])
+    yes_id = int(node["yes"])
+    no_id = int(node["no"])
+
+    children_by_id = {int(c["nodeid"]): c for c in node.get("children", [])}
+
+    ub_yes = ub.copy()
+    ub_yes[feat_idx] = min(ub_yes[feat_idx], threshold)
+    _parse_xgb_json_tree(children_by_id[yes_id], lb.copy(), ub_yes, n_features, leaves)
+
+    lb_no = lb.copy()
+    lb_no[feat_idx] = max(lb_no[feat_idx], threshold)
+    _parse_xgb_json_tree(children_by_id[no_id], lb_no, ub.copy(), n_features, leaves)
+
+
+def embed_xgb(model: gp.Model,
+              ml_model,
+              x_vars: list,
+              var_lb: np.ndarray,
+              var_ub: np.ndarray,
+              name_prefix: str = "xgb",
+              rho: float = 0.0) -> gp.Var:
+    """
+    Embed a fitted XGBRegressor as a sum of embedded decision trees.
+
+    Prediction: f(x) = base_score + sum_t leaf_t(x)
+
+    Each tree is parsed from XGBoost's JSON dump and embedded with the same
+    big-M leaf-region constraints as sklearn trees.
+    """
+    booster = ml_model.get_booster()
+    dump = booster.get_dump(dump_format="json")
+    n_features = len(x_vars)
+
+    # Calibrate base_score empirically to be robust across XGBoost versions
+    base_score = getattr(ml_model, "base_score", None) or 0.5
+
+    tree_pred_vars = []
+    for t_idx, tree_str in enumerate(dump):
+        tree_dict = json.loads(tree_str)
+        leaves = []
+        _parse_xgb_json_tree(
+            tree_dict,
+            var_lb.copy(), var_ub.copy(),
+            n_features, leaves,
+        )
+        f_t = _embed_leaves(
+            model, leaves, x_vars, var_lb, var_ub,
+            name_prefix=f"{name_prefix}_t{t_idx}", rho=rho,
+        )
+        tree_pred_vars.append(f_t)
+
+    f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
+    model.addConstr(
+        f_var == float(base_score) + gp.quicksum(tree_pred_vars),
+        name=f"{name_prefix}_sum",
+    )
+    return f_var
+
+
 def embed_model(model: gp.Model,
-                ml_model: ModelType,
+                ml_model,
                 x_vars: list,
                 var_lb: np.ndarray,
                 var_ub: np.ndarray,
@@ -448,30 +639,70 @@ def embed_model(model: gp.Model,
     """
     Embed any supported model into Gurobi.
 
+    Supported types: Pipeline (with StandardScaler), ElasticNet, LinearSVR,
+    DecisionTreeRegressor, RandomForestRegressor, GradientBoostingRegressor,
+    XGBRegressor, MLPRegressor.
+
     Returns a Gurobi variable representing f(x; ml_model).
     """
+    # --- Pipeline: add normalisation constraints then embed inner model ---
+    try:
+        from sklearn.pipeline import Pipeline as _Pipeline
+        if isinstance(ml_model, _Pipeline):
+            scaler = ml_model.named_steps.get("scaler")
+            inner = ml_model.named_steps.get("model", ml_model[-1])
+            if scaler is not None and hasattr(scaler, "mean_"):
+                mu = scaler.mean_
+                sigma = scaler.scale_
+                d = len(x_vars)
+                z_vars = [
+                    model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_scl{j}")
+                    for j in range(d)
+                ]
+                for j in range(d):
+                    model.addConstr(
+                        z_vars[j] == (x_vars[j] - float(mu[j])) / float(sigma[j]),
+                        name=f"{name_prefix}_norm{j}",
+                    )
+                z_lb = (var_lb - mu) / sigma
+                z_ub = (var_ub - mu) / sigma
+                return embed_model(
+                    model, inner, z_vars, z_lb, z_ub,
+                    name_prefix=f"{name_prefix}_m", rho=rho,
+                )
+            else:
+                return embed_model(
+                    model, inner, x_vars, var_lb, var_ub,
+                    name_prefix=name_prefix, rho=rho,
+                )
+    except ImportError:
+        pass
+
+    # --- Linear models ---
     if isinstance(ml_model, ElasticNet):
         return embed_linear(model, ml_model, x_vars, name_prefix)
 
+    elif isinstance(ml_model, LinearSVR):
+        return embed_svm(model, ml_model, x_vars, name_prefix)
+
+    # --- Neural network ---
+    elif isinstance(ml_model, MLPRegressor):
+        return embed_mlp(model, ml_model, x_vars, var_lb, var_ub, name_prefix)
+
+    # --- Tree-based models ---
     elif isinstance(ml_model, DecisionTreeRegressor):
-        return embed_single_tree(
-            model, ml_model, x_vars, var_lb, var_ub, name_prefix, rho
-        )
+        return embed_single_tree(model, ml_model, x_vars, var_lb, var_ub, name_prefix, rho)
 
     elif isinstance(ml_model, RandomForestRegressor):
         tree_preds = []
         for t, estimator in enumerate(ml_model.estimators_):
             f_t = embed_single_tree(
                 model, estimator, x_vars, var_lb, var_ub,
-                name_prefix=f"{name_prefix}_t{t}", rho=rho
+                name_prefix=f"{name_prefix}_t{t}", rho=rho,
             )
             tree_preds.append(f_t)
-
-        # Average
-        f_var = model.addVar(
-            lb=-GRB.INFINITY, name=f"{name_prefix}_pred"
-        )
         T = len(tree_preds)
+        f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
         model.addConstr(
             f_var == (1.0 / T) * gp.quicksum(tree_preds),
             name=f"{name_prefix}_avg",
@@ -481,24 +712,24 @@ def embed_model(model: gp.Model,
     elif isinstance(ml_model, GradientBoostingRegressor):
         tree_preds = []
         for t, estimator_arr in enumerate(ml_model.estimators_):
-            estimator = estimator_arr[0]  # single output
+            estimator = estimator_arr[0]
             f_t = embed_single_tree(
                 model, estimator, x_vars, var_lb, var_ub,
-                name_prefix=f"{name_prefix}_t{t}", rho=rho
+                name_prefix=f"{name_prefix}_t{t}", rho=rho,
             )
             tree_preds.append(f_t)
-
-        # Sum (with learning rate) + init
-        f_var = model.addVar(
-            lb=-GRB.INFINITY, name=f"{name_prefix}_pred"
-        )
         lr = ml_model.learning_rate
         init = ml_model.init_.constant_[0][0]
+        f_var = model.addVar(lb=-GRB.INFINITY, name=f"{name_prefix}_pred")
         model.addConstr(
             f_var == init + lr * gp.quicksum(tree_preds),
             name=f"{name_prefix}_sum",
         )
         return f_var
+
+    # --- XGBoost ---
+    elif _XGBRegressor is not None and isinstance(ml_model, _XGBRegressor):
+        return embed_xgb(model, ml_model, x_vars, var_lb, var_ub, name_prefix, rho)
 
     else:
         raise ValueError(f"Unsupported model type: {type(ml_model)}")

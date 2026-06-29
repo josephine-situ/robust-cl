@@ -74,9 +74,9 @@ methods:
 
   chemo:
     methods_to_run:
-      - robust_param # Often infeasible, need very small rho
+      # - robust_param # Often infeasible, need very small rho
       - nominal
-      - tree_violation # like paper
+      # - tree_violation # like paper - only different if RF used
       - robust_reg
       - wrapper
       - cp

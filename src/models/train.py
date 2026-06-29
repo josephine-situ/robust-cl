@@ -10,6 +10,8 @@ from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from typing import Union, Dict, Any
 
 try:
@@ -31,7 +33,8 @@ ModelType = Union[
 def train_model(X: np.ndarray,
                 y: np.ndarray,
                 model_type: str = "rf",
-                params: dict = None) -> ModelType:
+                params: dict = None,
+                normalize: bool = True) -> ModelType:
     """
     Train a specified ML model.
 
@@ -39,31 +42,37 @@ def train_model(X: np.ndarray,
     ----------
     X : (n, d) training features
     y : (n,) training labels (possibly perturbed)
-    model_type : "linear", "svm", "cart", "rf", "gbm", or "mlp"
+    model_type : "linear", "svm", "cart", "rf", "gbm", "xgb", or "mlp"
     params : model hyperparameters
+    normalize : if True (default), prepend a StandardScaler so the returned
+        object is a Pipeline(StandardScaler, model).  The scaler is fitted on X.
+        Linear and SVM models benefit most; tree models are scale-invariant but
+        normalization ensures consistent behaviour when the model is embedded
+        into a Gurobi MIP via embed.py.
 
     Returns
     -------
-    Trained sklearn model
+    Fitted sklearn estimator (or Pipeline when normalize=True)
     """
     params = params or {}
     random_state = params.get("random_state", 1)
 
     if model_type == "linear":
-        model = ElasticNet(
+        estimator = ElasticNet(
             alpha=params.get("alpha", 1.0),
             l1_ratio=params.get("l1_ratio", 0.5),
-            random_state=random_state
+            random_state=random_state,
+            max_iter=10_000,
         )
     elif model_type == "svm":
-        model = LinearSVR(
+        estimator = LinearSVR(
             C=params.get("C", 1.0),
             max_iter=params.get("max_iter", 100_000),
             dual=params.get("dual", False),
             loss=params.get("loss", "squared_epsilon_insensitive"),
         )
     elif model_type == "cart":
-        model = DecisionTreeRegressor(
+        estimator = DecisionTreeRegressor(
             max_depth=params.get("max_depth", 5),
             min_samples_leaf=params.get("min_samples_leaf", 1),
             max_features=params.get("max_features", None),
@@ -72,16 +81,15 @@ def train_model(X: np.ndarray,
     elif model_type == "rf":
         max_features = params.get("max_features", 1.0)
         if max_features == "auto":
-            # CL v11 / legacy sklearn: regression RF used all features
             max_features = 1.0
-        model = RandomForestRegressor(
+        estimator = RandomForestRegressor(
             n_estimators=params.get("n_estimators", 50),
             max_depth=params.get("max_depth", 5),
             max_features=max_features,
             random_state=random_state,
         )
     elif model_type == "gbm":
-        model = GradientBoostingRegressor(
+        estimator = GradientBoostingRegressor(
             n_estimators=params.get("n_estimators", 50),
             learning_rate=params.get("learning_rate", 0.1),
             max_depth=params.get("max_depth", 3),
@@ -106,18 +114,48 @@ def train_model(X: np.ndarray,
             xgb_kwargs["reg_lambda"] = params["reg_lambda"]
         if "reg_alpha" in params:
             xgb_kwargs["reg_alpha"] = params["reg_alpha"]
-        model = XGBRegressor(**xgb_kwargs)
+        estimator = XGBRegressor(**xgb_kwargs)
     elif model_type == "mlp":
-        model = MLPRegressor(
+        estimator = MLPRegressor(
             hidden_layer_sizes=params.get("hidden_layer_sizes", (100,)),
             random_state=random_state,
-            max_iter=500
+            max_iter=params.get("max_iter", 10_000),
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
-    model.fit(X, y)
-    return model
+    if normalize:
+        pipe = Pipeline([("scaler", StandardScaler()), ("model", estimator)])
+        pipe.fit(X, y)
+        return pipe
+
+    estimator.fit(X, y)
+    return estimator
+
+
+def _make_base_estimator(model_type: str, random_state: int):
+    """Return a fresh, un-fitted sklearn estimator for the given model type."""
+    if model_type == "linear":
+        return ElasticNet(random_state=random_state, max_iter=10_000)
+    elif model_type == "svm":
+        return LinearSVR(max_iter=100_000, dual=False, loss="squared_epsilon_insensitive")
+    elif model_type == "cart":
+        return DecisionTreeRegressor(random_state=random_state)
+    elif model_type == "rf":
+        return RandomForestRegressor(random_state=random_state)
+    elif model_type == "gbm":
+        return GradientBoostingRegressor(random_state=random_state)
+    elif model_type == "xgb":
+        if XGBRegressor is None:
+            return None
+        return XGBRegressor(
+            objective="reg:squarederror",
+            random_state=random_state,
+            verbosity=0,
+        )
+    elif model_type == "mlp":
+        return MLPRegressor(random_state=random_state, max_iter=10_000)
+    return None
 
 
 def train_best_model_cv(X: np.ndarray,
@@ -131,15 +169,18 @@ def train_best_model_cv(X: np.ndarray,
     """
     Train multiple models using k-fold CV and return the best one across all types.
 
+    Each model type is wrapped in a Pipeline(StandardScaler, estimator) so that
+    features are normalised before fitting.  The ``model__`` prefix is stripped
+    from GridSearchCV's ``best_params_`` before returning, so callers receive
+    clean hyperparameter dicts (e.g. ``{"alpha": 1.0}`` not ``{"model__alpha": 1.0}``).
+
     Parameters
     ----------
     scoring : sklearn scoring string, e.g. ``'r2'`` or ``'neg_mean_squared_error'``.
-        Defaults to ``'r2'`` (matching the paper's ``run_MLmodels.py`` which uses
-        ``metric='r2'`` for continuous gastric outcomes).
     return_all_scores : if True, also return a dict mapping model_type -> best CV score
         for that type. Useful for producing EC.6-style comparison tables.
     """
-    best_model = None
+    best_pipeline = None
     best_score = -np.inf
     best_model_type = None
     best_params = None
@@ -148,28 +189,14 @@ def train_best_model_cv(X: np.ndarray,
     kf = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
 
     for model_type, grid in param_grids.items():
-        if model_type == "linear":
-            base_model = ElasticNet(random_state=random_state)
-        elif model_type == "svm":
-            base_model = LinearSVR(max_iter=100_000, dual=False, loss="squared_epsilon_insensitive")
-        elif model_type == "cart":
-            base_model = DecisionTreeRegressor(random_state=random_state)
-        elif model_type == "rf":
-            base_model = RandomForestRegressor(random_state=random_state)
-        elif model_type == "gbm":
-            base_model = GradientBoostingRegressor(random_state=random_state)
-        elif model_type == "xgb":
-            base_model = XGBRegressor(
-                objective="reg:squarederror",
-                random_state=random_state,
-                verbosity=0,
-            )
-        elif model_type == "mlp":
-            base_model = MLPRegressor(random_state=random_state, max_iter=500)
-        else:
+        base_est = _make_base_estimator(model_type, random_state)
+        if base_est is None:
             continue
 
-        search = GridSearchCV(base_model, grid, cv=kf, scoring=scoring, n_jobs=-1)
+        pipe = Pipeline([("scaler", StandardScaler()), ("model", base_est)])
+        prefixed_grid = {f"model__{k}": v for k, v in grid.items()}
+
+        search = GridSearchCV(pipe, prefixed_grid, cv=kf, scoring=scoring, n_jobs=-1)
         search.fit(X, y)
 
         cv_score = float(search.best_score_)
@@ -177,18 +204,22 @@ def train_best_model_cv(X: np.ndarray,
 
         if cv_score > best_score:
             best_score = cv_score
-            best_model = search.best_estimator_
+            best_pipeline = search.best_estimator_
             best_model_type = model_type
-            best_params = search.best_params_
+            # Strip the "model__" prefix so callers get clean param dicts
+            best_params = {
+                k.replace("model__", ""): v
+                for k, v in search.best_params_.items()
+            }
 
     if return_all_scores:
         if return_params:
-            return best_model, best_model_type, best_params, all_type_scores
-        return best_model, all_type_scores
+            return best_pipeline, best_model_type, best_params, all_type_scores
+        return best_pipeline, all_type_scores
 
     if return_params:
-        return best_model, best_model_type, best_params
-    return best_model
+        return best_pipeline, best_model_type, best_params
+    return best_pipeline
 
 
 class EnsembleModel:
@@ -214,39 +245,26 @@ def train_ensemble_model_cv(X: np.ndarray,
                             scoring: str = "r2",
                             cv_folds: int = 5) -> EnsembleModel:
     """
-    Train an ensemble model by finding the best parameter combination for each model class,
-    and averaging their predictions.
+    Train an ensemble model by finding the best parameter combination for each model
+    class and averaging their predictions.  Each model type is fitted inside a
+    Pipeline(StandardScaler, estimator) for consistent normalisation.
     """
-    best_models = []
+    best_pipelines = []
     kf = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
 
     for model_type, grid in param_grids.items():
-        if model_type == "linear":
-            base_model = ElasticNet(random_state=random_state)
-        elif model_type == "svm":
-            base_model = LinearSVR(max_iter=100_000, dual=False, loss="squared_epsilon_insensitive")
-        elif model_type == "cart":
-            base_model = DecisionTreeRegressor(random_state=random_state)
-        elif model_type == "rf":
-            base_model = RandomForestRegressor(random_state=random_state)
-        elif model_type == "gbm":
-            base_model = GradientBoostingRegressor(random_state=random_state)
-        elif model_type == "xgb":
-            base_model = XGBRegressor(
-                objective="reg:squarederror",
-                random_state=random_state,
-                verbosity=0,
-            )
-        elif model_type == "mlp":
-            base_model = MLPRegressor(random_state=random_state, max_iter=500)
-        else:
+        base_est = _make_base_estimator(model_type, random_state)
+        if base_est is None:
             continue
 
-        search = GridSearchCV(base_model, grid, cv=kf, scoring=scoring, n_jobs=-1)
-        search.fit(X, y)
-        best_models.append(search.best_estimator_)
+        pipe = Pipeline([("scaler", StandardScaler()), ("model", base_est)])
+        prefixed_grid = {f"model__{k}": v for k, v in grid.items()}
 
-    return EnsembleModel(best_models)
+        search = GridSearchCV(pipe, prefixed_grid, cv=kf, scoring=scoring, n_jobs=-1)
+        search.fit(X, y)
+        best_pipelines.append(search.best_estimator_)
+
+    return EnsembleModel(best_pipelines)
 
 
 def retrain_on_perturbed(X: np.ndarray,

@@ -91,6 +91,9 @@ class ProblemInstance:
     # Full-cohort features/outcomes for GT R² diagnostics (461 retained arms)
     gt_eval_data: Optional[Dict[str, Dict[str, np.ndarray]]] = None
 
+    # Ordered feature names for X_train / X_test (context + treatment columns)
+    feature_names: Optional[List[str]] = None
+
 
 # Non-standard combined ECOG buckets (Bertsimas A.1: mark unavailable unless a
 # standard breakdown is available via ECOG_0..4 or ECOG_01).
@@ -658,6 +661,8 @@ def gastric_cancer(seed: int = 42,
         for name in gt_target_arrays
     }
 
+    feature_names = GASTRIC_CTX_COLS + t_cols
+
     return ProblemInstance(
         X_test=X_test,
         X_train=X_train,
@@ -677,6 +682,7 @@ def gastric_cancer(seed: int = 42,
         observed_test_outcomes=observed_test,
         gt_eval_data=gt_eval_data,
         binary_var_indices=binary_var_indices,
+        feature_names=feature_names,
     )
 
 

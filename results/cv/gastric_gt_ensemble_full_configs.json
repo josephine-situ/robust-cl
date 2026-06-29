@@ -54,6 +54,18 @@
         "subsample": 0.9,
         "random_state": 1
       }
+    },
+    {
+      "model_type": "mlp",
+      "params": {
+        "alpha": 0.01,
+        "hidden_layer_sizes": [
+          25,
+          10
+        ],
+        "solver": "lbfgs",
+        "random_state": 1
+      }
     }
   ],
   "blood": [
@@ -111,6 +123,19 @@
         "subsample": 0.7,
         "random_state": 1
       }
+    },
+    {
+      "model_type": "mlp",
+      "params": {
+        "alpha": 0.01,
+        "hidden_layer_sizes": [
+          10,
+          5,
+          2
+        ],
+        "solver": "lbfgs",
+        "random_state": 1
+      }
     }
   ],
   "constitutional": [
@@ -119,6 +144,14 @@
       "params": {
         "alpha": 1.0,
         "l1_ratio": 0.25,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "svm",
+      "params": {
+        "C": 10.0,
+        "epsilon": 0.1,
         "random_state": 1
       }
     },
@@ -160,6 +193,18 @@
         "subsample": 0.7,
         "random_state": 1
       }
+    },
+    {
+      "model_type": "mlp",
+      "params": {
+        "alpha": 0.01,
+        "hidden_layer_sizes": [
+          25,
+          10
+        ],
+        "solver": "lbfgs",
+        "random_state": 1
+      }
     }
   ],
   "infection": [
@@ -168,6 +213,14 @@
       "params": {
         "alpha": 1.0,
         "l1_ratio": 0.25,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "svm",
+      "params": {
+        "C": 0.01,
+        "epsilon": 0.1,
         "random_state": 1
       }
     },
@@ -209,6 +262,19 @@
         "subsample": 0.7,
         "random_state": 1
       }
+    },
+    {
+      "model_type": "mlp",
+      "params": {
+        "alpha": 0.0001,
+        "hidden_layer_sizes": [
+          10,
+          5,
+          2
+        ],
+        "solver": "lbfgs",
+        "random_state": 1
+      }
     }
   ],
   "gi": [
@@ -217,6 +283,23 @@
       "params": {
         "alpha": 1.0,
         "l1_ratio": 0.5,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "svm",
+      "params": {
+        "C": 0.01,
+        "epsilon": 0.1,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "cart",
+      "params": {
+        "max_depth": 6,
+        "max_features": 1.0,
+        "min_samples_leaf": 0.05,
         "random_state": 1
       }
     },
@@ -247,6 +330,19 @@
         "max_depth": 2,
         "n_estimators": 100,
         "subsample": 0.7,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "mlp",
+      "params": {
+        "alpha": 0.001,
+        "hidden_layer_sizes": [
+          10,
+          5,
+          2
+        ],
+        "solver": "lbfgs",
         "random_state": 1
       }
     }

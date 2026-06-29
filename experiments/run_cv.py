@@ -49,77 +49,98 @@ from src.models.train import train_best_model_cv
 # ---------------------------------------------------------------------------
 
 # Models that can be embedded into a Gurobi MIP via src/models/embed.py.
-# xgb and mlp are excluded until embed.py is extended to support them.
-EMBEDDABLE_TYPES = {"linear", "svm", "cart", "rf", "gbm"}
+EMBEDDABLE_TYPES = {"linear", "svm", "cart", "rf", "gbm", "xgb", "mlp"}
 
-# Shared CV parameter grids (matching paper's run_MLmodels.py shallow-model grids).
-# XGB mirrors GBM's grid for a fair comparison in the same shallow-tree regime.
+# Shared CV parameter grids for constraint (embedded) models.
+# Uniform increments: alpha/C use 10× multiples; max_depth uses +2;
+# n_estimators uses ~2× steps; learning_rate uses ~5× steps.
 CV_PARAM_GRIDS = {
     "linear": {
-        "alpha": [0.1, 1, 10, 100, 1000],
-        "l1_ratio": list(np.arange(0.1, 1.0, 0.2)),
+        "alpha": [0.01, 0.1, 1.0, 10.0, 100.0],      # 10× multiples
+        "l1_ratio": [0.01, 0.25, 0.5, 0.75, 1.0],      # +0.25
     },
-    "svm": {"C": [0.1, 1, 10, 100]},
+    "svm": {
+        "C": [0.01, 0.1, 1.0, 10.0],           # 10× multiples
+        "epsilon": [0.01, 0.05, 0.1],
+    },
     "cart": {
-        "max_depth": [3, 4, 5, 6, 7, 8, 9, 10],
-        "min_samples_leaf": [0.02, 0.04, 0.06],
-        "max_features": [0.4, 0.6, 0.8, 1.0],
+        "max_depth": [2, 4, 6, 8],                     # +2
+        "min_samples_leaf": [0.02, 0.05, 0.1],         # ~2.5×
+        "max_features": [0.5, 0.75, 1.0],              # +0.25
     },
     "rf": {
-        "n_estimators": [10, 20],
-        "max_features": [1.0],
+        "n_estimators": [5, 10, 20],                  # ~2.5×
+        "max_depth": [2, 3, 4],                     # +1
+        "max_features": ["sqrt", 0.1, 0.2],
+    },
+    "gbm": {
+        "learning_rate": [0.01, 0.05, 0.1, 0.2],      # ~5× then 2×
+        "max_depth": [2, 3, 4],                     # +1
+        "n_estimators": [5, 10, 20],                 # 2×
+        "subsample": [0.7, 0.9],
+    },
+    "xgb": {
+        "learning_rate": [0.01, 0.05, 0.1, 0.2],
         "max_depth": [2, 3, 4],
-    },
-    "gbm": {
-        "learning_rate": [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2],
-        "max_depth": [2, 3, 4, 5],
-        "n_estimators": [20],
-    },
-    "xgb": {
-        "learning_rate": [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2],
-        "max_depth": [2, 3, 4, 5],
-        "n_estimators": [20],
-    },
-    "mlp": {"hidden_layer_sizes": [(10,), (20,), (50,), (100,)]},
-}
-
-# GT ensemble CV grids — deeper / richer than the constraint (embedded) grids.
-# Matches paper's train_models_full.py (v11_full, all-461-arm ensemble).
-# RF and GBM use more estimators; XGB uses the full paper grid; MLP uses
-# wider architectures with sufficient iterations.
-GT_CV_PARAM_GRIDS = {
-    "linear": {
-        "alpha": [0.1, 1, 10, 100, 1000],
-        "l1_ratio": list(np.arange(0.1, 1.0, 0.2)),
-    },
-    "svm": {"C": [0.1, 1, 10, 100]},
-    "cart": {
-        "max_depth": [3, 4, 5, 6, 7, 8, 9, 10],
-        "min_samples_leaf": [0.02, 0.04, 0.06],
-        "max_features": [0.4, 0.6, 0.8, 1.0],
-    },
-    "rf": {
-        "n_estimators": [250, 500],
-        "max_features": [1.0],
-        "max_depth": [2, 4, 6, 8],
-    },
-    "gbm": {
-        "learning_rate": [0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2],
-        "max_depth": [5, 6, 7, 8],
-        "n_estimators": [250, 500],
-    },
-    "xgb": {
-        "min_child_weight": [1, 5, 10],
-        "gamma": [0.5, 1, 2, 5, 10],
-        "subsample": [0.8, 1.0],
-        "colsample_bytree": [0.8, 1.0],
-        "max_depth": [4, 5, 6],
-        "n_estimators": [250],
+        "n_estimators": [5, 10, 20],
+        "subsample": [0.7, 0.9],
+        "colsample_bytree": [0.3, 0.5],
     },
     "mlp": {
-        "hidden_layer_sizes": [(5,), (10,), (20,), (10, 5), (20, 5)],
-        "max_iter": [10_000],
+        "hidden_layer_sizes": [
+                (25,), (50,),               # Your core 1-layer workhorses
+                (25, 10), (25, 25),         # 2-layer options for slightly more complexity
+                (10, 5, 2)                  # The single 3-layer test (expect this to perform poorly)
+            ],
+        "solver": ["lbfgs"],
+        "alpha": [1e-4, 1e-3, 0.01],                     # Strong L2 regularization
+    }
+}
+
+# GT ensemble CV grids — deeper and richer than the embedded grids.
+# Each grid is a superset of the corresponding CV_PARAM_GRIDS entry so that
+# simpler embedded-model configurations are also evaluated as ensemble members.
+GT_CV_PARAM_GRIDS = {
+    "linear": {
+        "alpha": [0.01, 0.1, 1.0, 10.0, 100.0],
+        "l1_ratio": [0.01, 0.25, 0.5, 0.75, 1.0],
     },
+    "svm": {
+        "C": [0.01, 0.1, 1.0, 10.0],
+        "epsilon": [0.01, 0.05, 0.1],
+    },
+    "cart": {
+        "max_depth": [2, 4, 6, 8, 10],                # +2, one deeper level
+        "min_samples_leaf": [0.02, 0.05, 0.1],
+        "max_features": [0.5, 0.75, 1.0],
+    },
+    "rf": {
+        "n_estimators": [10, 50, 100, 250],      # includes simpler + deeper
+        "max_depth": [2, 4, 6, 8],
+        "max_features": ["sqrt", 0.1, 0.2],
+    },
+    "gbm": {
+        "learning_rate": [0.01, 0.05, 0.1, 0.2],
+        "max_depth": [2, 3, 4, 5],                    # +2, deeper range
+        "n_estimators": [10, 50, 100, 250],           # 2×
+        "subsample": [0.7, 0.9],
+    },
+    "xgb": {
+        "learning_rate": [0.01, 0.05, 0.1, 0.2],
+        "max_depth": [2, 3, 4, 5],                       # +2
+        "n_estimators": [10, 50, 100, 250],
+        "subsample": [0.7, 0.9],
+        "colsample_bytree": [0.3, 0.5],
+    },
+    "mlp": {
+        "hidden_layer_sizes": [
+                (25,), (50,),               # Your core 1-layer workhorses
+                (25, 10), (25, 25),         # 2-layer options for slightly more complexity
+                (10, 5, 2)                  # The single 3-layer test (expect this to perform poorly)
+            ],
+        "solver": ["lbfgs"],
+        "alpha": [1e-4, 1e-3, 0.01],                     
+    }
 }
 
 # Display order for model type columns in CV scores table
@@ -263,6 +284,58 @@ def _write_best_models_tex(df_best: pd.DataFrame, path: Path, caption: str) -> N
 
 
 # ---------------------------------------------------------------------------
+# In-sample R² comparison table writer
+# ---------------------------------------------------------------------------
+
+def _write_insample_r2_tex(df: pd.DataFrame, path: Path, caption: str) -> None:
+    """
+    Write an in-sample R² comparison table as booktabs LaTeX.
+
+    Rows = outcomes.  Columns = individual model types, then full_ensemble and
+    pruned_ensemble.  Best value per row is bolded.
+    """
+    model_cols = [c for c in MODEL_ORDER if c in df.columns]
+    extra_cols = [c for c in ["full_ensemble", "pruned_ensemble"] if c in df.columns]
+    all_val_cols = model_cols + extra_cols
+
+    col_headers = (
+        ["Outcome"]
+        + [c.upper() for c in model_cols]
+        + ["Full Ens.", "Pruned Ens."][: len(extra_cols)]
+    )
+    col_header_str = " & ".join(col_headers)
+    col_fmt = "l" + "r" * len(all_val_cols)
+
+    lines = [
+        r"\begin{table}[ht]",
+        r"\centering",
+        rf"\caption{{{caption}}}",
+        rf"\begin{{tabular}}{{{col_fmt}}}",
+        r"\toprule",
+        col_header_str + r" \\",
+        r"\midrule",
+    ]
+
+    for _, row in df.iterrows():
+        vals = [row.get(c, float("nan")) for c in all_val_cols]
+        valid_vals = [v for v in vals if not np.isnan(float(v))]
+        best_val = max(valid_vals) if valid_vals else float("nan")
+        cells = []
+        for v in vals:
+            fv = float(v)
+            if np.isnan(fv):
+                cells.append("---")
+            elif not np.isnan(best_val) and abs(fv - best_val) < 1e-9:
+                cells.append(rf"\textbf{{{fv:.3f}}}")
+            else:
+                cells.append(f"{fv:.3f}")
+        lines.append(str(row["outcome_label"]) + " & " + " & ".join(cells) + r" \\")
+
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Base model factory (shared by constraint CV and ensemble CV)
 # ---------------------------------------------------------------------------
 
@@ -297,8 +370,214 @@ def _make_base_model(model_type: str, seed: int):
             warnings.warn("xgboost not installed; skipping xgb in ensemble CV.")
             return None
     elif model_type == "mlp":
-        return MLPRegressor(random_state=seed, max_iter=500)
+        return MLPRegressor(random_state=seed, max_iter=10_000)
     return None
+
+
+# ---------------------------------------------------------------------------
+# In-sample R² comparison helper
+# ---------------------------------------------------------------------------
+
+def _compute_insample_r2(
+    outcomes: list,
+    gt_configs_full: dict,
+    gt_configs_pruned: dict,
+    df_cv_scores: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Train each model type on the full cohort and compute in-sample R².
+
+    Also trains the full ensemble (all tuned members) and the pruned ensemble
+    (members whose CV R² passed the cutoff) and reports their in-sample R².
+
+    Parameters
+    ----------
+    outcomes         : list of dicts with keys name, label, X_train, y_train
+                       (X_train / y_train are the *full* cohort arrays)
+    gt_configs_full  : {outcome_name: [{model_type, params}, ...]}  — all members
+    gt_configs_pruned: same structure, only models passing the CV cutoff
+    df_cv_scores     : CV R² DataFrame (used only for row ordering / labels)
+
+    Returns
+    -------
+    pd.DataFrame with columns: name, outcome_label, <model types>, full_ensemble, pruned_ensemble
+    """
+    from sklearn.metrics import r2_score as _r2
+    from src.models.train import train_model
+
+    rows = []
+    for item in outcomes:
+        name = item["name"]
+        label = item["label"]
+        X = item["X_train"]
+        y = item["y_train"]
+
+        row = {"name": name, "outcome_label": label}
+
+        all_preds = []
+        pruned_preds = []
+
+        specs_full = gt_configs_full.get(name, [])
+        pruned_names = {s["model_type"] for s in gt_configs_pruned.get(name, [])}
+
+        for spec in specs_full:
+            mtype = spec["model_type"]
+            params = {k: v for k, v in spec["params"].items() if k != "random_state"}
+            params["random_state"] = spec["params"].get("random_state", 1)
+            try:
+                model = train_model(X, y, mtype, params, normalize=True)
+                preds = model.predict(X)
+                r2_val = float(_r2(y, preds))
+                row[mtype] = r2_val
+                all_preds.append(preds)
+                if mtype in pruned_names:
+                    pruned_preds.append(preds)
+            except Exception as exc:
+                warnings.warn(f"  In-sample R² failed for {name}/{mtype}: {exc}")
+                row[mtype] = float("nan")
+
+        if all_preds:
+            ens_full_pred = np.mean(all_preds, axis=0)
+            row["full_ensemble"] = float(_r2(y, ens_full_pred))
+        else:
+            row["full_ensemble"] = float("nan")
+
+        if pruned_preds:
+            ens_pruned_pred = np.mean(pruned_preds, axis=0)
+            row["pruned_ensemble"] = float(_r2(y, ens_pruned_pred))
+        else:
+            row["pruned_ensemble"] = float("nan")
+
+        print(
+            f"  [{label}]  in-sample R²: "
+            + "  ".join(
+                f"{k}={v:.3f}" for k, v in row.items()
+                if k not in ("name", "outcome_label")
+            ),
+            flush=True,
+        )
+        rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# SHAP feature importance for constraint CV best models
+# ---------------------------------------------------------------------------
+
+def _run_feature_importance_gastric(
+    configs: dict,
+    X_train: np.ndarray,
+    outcomes_y: dict,
+    feature_names: list,
+    out_dir: Path,
+    seed: int = 1,
+) -> None:
+    """
+    Compute SHAP values for each outcome's best constraint model and save outputs.
+
+    For each outcome:
+      - Trains the best model (from constraint CV configs) on X_train / y_train.
+      - Selects an appropriate SHAP explainer:
+          * tree models  (cart, rf, gbm, xgb) → shap.TreeExplainer
+          * linear/svm                         → shap.LinearExplainer
+          * mlp                                → shap.KernelExplainer (slow fallback)
+      - Saves a beeswarm plot (top 20 features) as gastric_shap_{outcome}.png.
+      - Assembles mean |SHAP| per feature across outcomes into a CSV table.
+
+    Parameters
+    ----------
+    configs       : {constraint_name: {"model_type": ..., "model_params": ...}}
+                    from gastric_selected_configs.json
+    X_train       : (n_train, d) feature matrix
+    outcomes_y    : {constraint_name: y_train array}
+    feature_names : list of d feature name strings
+    out_dir       : directory where outputs are saved
+    seed          : random state (used when training models)
+    """
+    try:
+        import shap
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except ImportError:
+        warnings.warn("shap or matplotlib not installed; skipping feature importance.")
+        return
+
+    from src.models.train import train_model
+
+    importance_records = {}  # {outcome_short_name: array of mean |SHAP|}
+
+    for cname, cfg in configs.items():
+        mtype = cfg["model_type"]
+        mparams = {**cfg.get("model_params", {}), "random_state": seed}
+        y = outcomes_y.get(cname)
+        if y is None:
+            continue
+
+        short_name = cname.replace("_constraint", "")
+        label = OUTCOME_LABELS.get(cname, short_name)
+        print(f"\n  SHAP [{label}]  model={mtype}", flush=True)
+
+        try:
+            model = train_model(X_train, y, mtype, mparams, normalize=True)
+        except Exception as exc:
+            warnings.warn(f"  Could not train {mtype} for {cname}: {exc}")
+            continue
+
+        scaler = model.named_steps["scaler"]
+        inner = model.named_steps["model"]
+        X_scaled = scaler.transform(X_train)
+
+        try:
+            if mtype in ("cart", "rf", "gbm", "xgb"):
+                explainer = shap.TreeExplainer(inner)
+                shap_values = explainer.shap_values(X_scaled)
+            elif mtype in ("linear", "svm"):
+                explainer = shap.LinearExplainer(inner, X_scaled)
+                shap_values = explainer.shap_values(X_scaled)
+            else:
+                # MLP fallback: KernelExplainer with a small background summary
+                background = shap.kmeans(X_scaled, min(50, len(X_scaled)))
+                explainer = shap.KernelExplainer(inner.predict, background)
+                shap_values = explainer.shap_values(X_scaled, nsamples=100)
+        except Exception as exc:
+            warnings.warn(f"  SHAP failed for {cname}/{mtype}: {exc}")
+            continue
+
+        shap_values = np.asarray(shap_values)
+        mean_abs_shap = np.abs(shap_values).mean(axis=0)
+        importance_records[short_name] = mean_abs_shap
+
+        # Beeswarm plot — top 20 features by mean |SHAP|
+        top_idx = np.argsort(mean_abs_shap)[::-1][:20]
+        fig, ax = plt.subplots(figsize=(9, 6))
+        shap.summary_plot(
+            shap_values[:, top_idx],
+            X_scaled[:, top_idx],
+            feature_names=[feature_names[i] for i in top_idx],
+            plot_type="dot",
+            show=False,
+            plot_size=None,
+        )
+        ax = plt.gca()
+        ax.set_title(f"SHAP — {label} ({mtype.upper()})", fontsize=12)
+        plt.tight_layout()
+        plot_path = out_dir / f"gastric_shap_{short_name}.png"
+        plt.savefig(plot_path, dpi=150, bbox_inches="tight")
+        plt.close("all")
+        print(f"    Saved SHAP plot: {plot_path.name}", flush=True)
+
+    # Summary CSV: rows = features, cols = outcome short names
+    if importance_records:
+        df_imp = pd.DataFrame(
+            importance_records,
+            index=feature_names,
+        )
+        df_imp.index.name = "feature"
+        imp_csv = out_dir / "gastric_feature_importance.csv"
+        df_imp.to_csv(imp_csv)
+        print(f"\n  Saved feature importance CSV: {imp_csv.name}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +677,7 @@ def run_cv_for_ensemble(
     scoring: str = "r2",
     cv_folds: int = 5,
     seed: int = 1,
+    r2_cutoff: float = 0.0,
 ) -> tuple:
     """
     GT ensemble CV: tune ALL model types per outcome using a deep parameter grid.
@@ -408,19 +688,22 @@ def run_cv_for_ensemble(
 
     Parameters
     ----------
-    outcomes : list of dicts with keys: name (short, e.g. "dlt"), label, X_train, y_train
+    outcomes  : list of dicts with keys: name (short, e.g. "dlt"), label, X_train, y_train
+    r2_cutoff : models with CV R² below this threshold are excluded from the pruned ensemble
+                (default 0.0 — removes only models worse than a constant baseline).
 
     Returns
     -------
-    df_scores  : pd.DataFrame — CV R² pivot (rows=outcomes, cols=model types)
-    gt_configs : dict — {outcome_name: [{model_type, params}, ...]}
-                 Same format as ``GT_ENSEMBLE_SPECS`` in gastric_model_specs.py.
+    df_scores        : pd.DataFrame — CV R² pivot (rows=outcomes, cols=model types)
+    gt_configs_full  : dict — {outcome_name: [{model_type, params}, ...]} (all models)
+    gt_configs_pruned: dict — same structure, but only models with CV R² >= r2_cutoff
     """
     sk_scoring = "r2" if scoring == "r2" else "neg_mean_squared_error"
     kf = KFold(n_splits=cv_folds, shuffle=True, random_state=seed)
 
     score_rows = []
-    gt_configs = {}
+    gt_configs_full: dict = {}
+    gt_configs_pruned: dict = {}
 
     for item in outcomes:
         name = item["name"]
@@ -431,7 +714,8 @@ def run_cv_for_ensemble(
         print(f"\n  [{label}]  n_train={len(y_tr)}", flush=True)
 
         score_row = {"name": name, "outcome_label": label}
-        specs = []
+        specs_full = []
+        specs_pruned = []
 
         for model_type, grid in cv_param_grids.items():
             base = _make_base_model(model_type, seed)
@@ -445,21 +729,27 @@ def run_cv_for_ensemble(
             best_params = dict(search.best_params_)
             score_row[model_type] = cv_score
 
-            print(
-                f"    {model_type:8s}: CV R\u00b2={cv_score:.3f}  params={best_params}",
-                flush=True,
-            )
+            spec = {"model_type": model_type, "params": {**best_params, "random_state": seed}}
+            specs_full.append(spec)
 
-            specs.append({
-                "model_type": model_type,
-                "params": {**best_params, "random_state": seed},
-            })
+            if cv_score >= r2_cutoff:
+                specs_pruned.append(spec)
+                print(
+                    f"    {model_type:8s}: CV R\u00b2={cv_score:.3f}  params={best_params}",
+                    flush=True,
+                )
+            else:
+                print(
+                    f"    {model_type:8s}: CV R\u00b2={cv_score:.3f}  [PRUNED — below cutoff {r2_cutoff}]",
+                    flush=True,
+                )
 
         score_rows.append(score_row)
-        gt_configs[name] = specs
+        gt_configs_full[name] = specs_full
+        gt_configs_pruned[name] = specs_pruned
 
     df_scores = pd.DataFrame(score_rows)
-    return df_scores, gt_configs
+    return df_scores, gt_configs_full, gt_configs_pruned
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +880,22 @@ def run_cv_gastric(args, out_dir: Path) -> None:
         ),
     )
 
+    # SHAP feature importance for each best constraint model
+    if instance.feature_names:
+        print("\n" + "-" * 60)
+        print("  Computing SHAP feature importance for best constraint models...")
+        outcomes_y = {
+            o["name"]: o["y_train"] for o in outcomes
+        }
+        _run_feature_importance_gastric(
+            configs=configs,
+            X_train=X_tr,
+            outcomes_y=outcomes_y,
+            feature_names=instance.feature_names,
+            out_dir=out_dir,
+            seed=seed,
+        )
+
     if getattr(args, "ensemble", False):
         run_cv_gastric_ensemble(args, out_dir, instance=instance)
 
@@ -598,26 +904,29 @@ def run_cv_gastric_ensemble(args, out_dir: Path, instance=None) -> None:
     """
     GT ensemble CV for gastric: tune all model types with a deep grid.
 
-    Hyperparameters are selected on the 320-arm train split.  The actual GT
-    ensemble in gastric_cancer() is then re-trained on all 461 arms using these
-    hyperparameters, matching the paper's train_models_full.py approach.
+    CV is run on the whole cohort (train + test arms) so hyperparameters are
+    selected on all available labeled data, matching the full 461-arm training
+    used for the GT ensemble itself.
     """
     from src.data.generate import gastric_cancer
+    from src.data.gastric_v11 import train_percentile_scores
 
     print("\n" + "=" * 60)
     print("GASTRIC CANCER — GT ENSEMBLE CV  (deep grid, all model types)")
     print("=" * 60)
-    print("  Note: CV is done on the 320-arm train split; the GT ensemble will")
-    print("  be re-trained on all 461 arms using the selected hyperparameters.")
+    print("  CV is run on the whole cohort (train + test arms, all 461 arms).")
 
     seed = args.seed
     if instance is None:
         instance = gastric_cancer()
 
     X_tr = instance.X_train
+    X_te = instance.X_test
+    obs = instance.observed_test_outcomes or {}
 
-    # Build per-outcome training arrays using short outcome keys (dlt, blood, …)
-    # to match GT_ENSEMBLE_SPECS key format.
+    X_all = np.vstack([X_tr, X_te]) if len(X_te) > 0 else X_tr
+
+    # Build per-outcome arrays for all 461 arms using short outcome keys.
     outcomes = []
     for cname, label in GT_OUTCOME_LABELS.items():
         constraint = next(
@@ -627,29 +936,68 @@ def run_cv_gastric_ensemble(args, out_dir: Path, instance=None) -> None:
         if constraint is None:
             continue
         md = constraint.models_data[0]
+        y_tr = md.y_train  # percentile-transformed train labels
+
+        # Build test labels on the same percentile scale as training
+        y_te = None
+        if cname in obs and obs[cname] is not None:
+            raw_te = np.asarray(obs[cname], dtype=float)
+            if cname == "os":
+                y_te = raw_te
+            elif md.y_true is not None:
+                y_te = train_percentile_scores(md.y_true, raw_te)
+
+        if y_te is not None and len(y_te) == len(X_te):
+            y_all = np.concatenate([y_tr, y_te])
+            X_cv = X_all
+            n_total = len(y_all)
+        else:
+            y_all = y_tr
+            X_cv = X_tr
+            n_total = len(y_all)
+            print(f"    Warning: no test labels for '{label}'; using train-only cohort.")
+
+        print(f"  [{label}] CV cohort size: {n_total}", flush=True)
         outcomes.append({
             "name": cname,
             "label": label,
-            "X_train": X_tr,
-            "y_train": md.y_train,
+            "X_train": X_cv,
+            "y_train": y_all,
         })
 
-    df_scores, gt_configs = run_cv_for_ensemble(
+    r2_cutoff = getattr(args, "r2_cutoff", 0.0)
+
+    df_scores, gt_configs_full, gt_configs_pruned = run_cv_for_ensemble(
         outcomes,
         GT_CV_PARAM_GRIDS,
         scoring=args.scoring,
         cv_folds=args.cv_folds,
         seed=seed,
+        r2_cutoff=r2_cutoff,
+    )
+
+    # In-sample R² comparison
+    print("\n" + "-" * 60)
+    print("  Computing in-sample R² (training on full cohort)...")
+    df_insample = _compute_insample_r2(
+        outcomes, gt_configs_full, gt_configs_pruned, df_scores
     )
 
     # Save outputs
     scores_csv = out_dir / "gastric_gt_cv_scores.csv"
     scores_tex = out_dir / "gastric_gt_cv_scores.tex"
-    configs_json = out_dir / "gastric_gt_ensemble_configs.json"
+    insample_csv = out_dir / "gastric_gt_insample_r2.csv"
+    insample_tex = out_dir / "gastric_gt_insample_r2.tex"
+    configs_pruned_json = out_dir / "gastric_gt_ensemble_configs.json"
+    configs_full_json = out_dir / "gastric_gt_ensemble_full_configs.json"
 
     df_scores.to_csv(scores_csv, index=False)
-    with open(configs_json, "w", encoding="utf-8") as f:
-        json.dump(gt_configs, f, indent=2, default=str)
+    df_insample.to_csv(insample_csv, index=False)
+
+    with open(configs_pruned_json, "w", encoding="utf-8") as f:
+        json.dump(gt_configs_pruned, f, indent=2, default=str)
+    with open(configs_full_json, "w", encoding="utf-8") as f:
+        json.dump(gt_configs_full, f, indent=2, default=str)
 
     _write_cv_scores_tex(
         df_scores,
@@ -657,15 +1005,27 @@ def run_cv_gastric_ensemble(args, out_dir: Path, instance=None) -> None:
         "Gastric Cancer: GT Ensemble CV R\\textsuperscript{2} by Model Type "
         "(Deep Grid, Table EC.11 Style)",
     )
+    _write_insample_r2_tex(
+        df_insample,
+        insample_tex,
+        f"Gastric Cancer: In-Sample R\\textsuperscript{{2}} — Individual Models and Ensembles "
+        f"(R\\textsuperscript{{2}} cutoff $\\geq {r2_cutoff}$ for pruned ensemble)",
+    )
 
     print(f"\n  Outputs saved to {out_dir}/")
     print(f"    {scores_csv.name}, {scores_tex.name}")
-    print(f"    {configs_json.name}")
+    print(f"    {insample_csv.name}, {insample_tex.name}")
+    print(f"    {configs_pruned_json.name}  (pruned ensemble, R²≥{r2_cutoff})")
+    print(f"    {configs_full_json.name}  (all models)")
 
     print("\n  GT Ensemble CV Scores (5-fold R\u00b2):")
     model_cols = [c for c in MODEL_ORDER if c in df_scores.columns]
     display_cols = ["outcome_label"] + model_cols
     print(df_scores[[c for c in display_cols if c in df_scores.columns]].to_string(index=False))
+
+    print("\n  In-sample R\u00b2 (full cohort):")
+    insample_display = ["outcome_label"] + model_cols + ["full_ensemble", "pruned_ensemble"]
+    print(df_insample[[c for c in insample_display if c in df_insample.columns]].to_string(index=False))
 
 
 # ---------------------------------------------------------------------------
@@ -769,6 +1129,19 @@ def main():
             "Slow — omit for a quick constraint-model-only run."
         ),
     )
+    parser.add_argument(
+        "--r2-cutoff",
+        type=float,
+        default=0.0,
+        dest="r2_cutoff",
+        metavar="R2",
+        help=(
+            "CV R² cutoff for GT ensemble membership (default: 0.0). "
+            "Models whose CV R² falls below this threshold are excluded from the "
+            "pruned ensemble saved to gastric_gt_ensemble_configs.json. "
+            "All models are still saved to gastric_gt_ensemble_full_configs.json."
+        ),
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -782,6 +1155,7 @@ def main():
     print(f"  cv_folds  : {args.cv_folds}")
     print(f"  seed      : {args.seed}")
     print(f"  scoring   : {args.scoring}")
+    print(f"  r2_cutoff : {args.r2_cutoff}")
     print(f"  output_dir: {out_dir}")
     print(f"  constraint models : {list(CV_PARAM_GRIDS.keys())}")
     if args.ensemble:
