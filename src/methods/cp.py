@@ -4,17 +4,17 @@ Cutting Planes method for robust constraint learning.
 One driver (:func:`solve_cp`) handles every scenario and **auto-selects** the
 separation strategy from the problem shape:
 
-- **basic** -- a single global LP with a single learned constraint (synthetic):
-  plain worst-case localized-bootstrap separation at ``x*``; no chance budget.
-- **coherent** -- multiple constraints, multiple optimal solutions ``x*``, or a
-  learned objective (e.g. gastric): one *shared* bootstrap relabeling drives
-  every constraint (and the objective) jointly and the single worst scenario --
-  ranked by **normalized average distance** (mean relative exceedance over all
-  ``(x*, outcome)`` cells, range 0–1) -- is cut. We stop when that distance
-  falls within ``cp_dist_tol`` or no scenario can be added without pushing more
-  than ``cp_alpha`` of the ``x*`` infeasible. With multiple ``x*`` the coverage
-  cap ``cp_alpha`` bounds the fraction allowed to go infeasible (feasibility
-  only); with a single ``x*`` there is no cap.
+- **basic** -- non-contextual synthetic only: a single global LP with a single
+  learned constraint; plain worst-case localized-bootstrap separation at ``x*``.
+- **coherent** -- contextual problems (gastric), multiple constraints, multiple
+  optimal solutions ``x*``, or a learned objective: one *shared* bootstrap
+  relabeling drives every constraint (and the objective) jointly and the single
+  worst scenario -- ranked by **normalized average distance** (mean relative
+  exceedance over all ``(x*, outcome)`` cells, range 0–1) -- is cut. We stop
+  when that distance falls within ``cp_dist_tol`` or no scenario can be added
+  without pushing more than ``cp_alpha`` of the ``x*`` infeasible. With multiple
+  ``x*`` the coverage cap ``cp_alpha`` bounds the fraction allowed to go
+  infeasible (feasibility only); with a single ``x*`` there is no cap.
 
 The objective uses an **epigraph** reformulation ``min c'x + t``, ``t >= sum of
 learned objective terms``, so a learned objective is robustified by the same
@@ -23,7 +23,6 @@ worst-case cuts (each raises ``t``). Only the coherent strategy robustifies it.
 Both reuse the same scaffolding: train nominal -> build master -> solve for the
 optimal solution(s) ``x*`` -> separate -> add cuts -> terminate.
 """
-import concurrent.futures
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional
@@ -243,8 +242,7 @@ def localized_bootstrap_separation(model_data, x_current, model_type, model_para
         (cand, model_data.X_train, model_data.y_train, x_2d, model_type, model_params)
         for cand in candidates
     ]
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        results = list(executor.map(_evaluate_real_candidate, args_list))
+    results = [_evaluate_real_candidate(args) for args in args_list]
 
     best_value, best_candidate = max(results, key=lambda vc: vc[0])
 
@@ -1125,7 +1123,14 @@ def _run_cp_loop(instance: ProblemInstance,
     if not cp_robustify_objective:
         has_obj_models = False
     single_point = len(anchors) == 1
-    use_basic = (n_constraints <= 1) and single_point and not has_obj_models
+    contextual = bool(instance.context_var_indices)
+    # Basic separation is for the non-contextual synthetic case only. Contextual
+    # gastric (including dlt_only + per_anchor_nearest) uses coherent separation
+    # so anchors are pinned via _solve_all_anchors and separation stays in-process.
+    use_basic = (
+        (n_constraints <= 1) and single_point and not has_obj_models
+        and not contextual
+    )
 
     if use_basic:
         strategy = _BasicSeparation(
@@ -1206,13 +1211,13 @@ def solve_cp(instance: ProblemInstance,
     solve for the optimal solution(s) ``x*``, separate, add cuts, terminate. The
     separation strategy is chosen automatically from the problem shape:
 
-    - **basic** -- a single global LP with a single learned constraint
-      (synthetic): plain worst-case localized-bootstrap separation at ``x*``,
-      cut whatever violates, stop when nothing does. No ``cp_alpha``.
-    - **coherent** -- multiple constraints, multiple ``x*``, and/or a learned
-      objective (e.g. gastric): one *shared* bootstrap relabeling drives all
-      constraints (and optionally the epigraph objective), and the worst scenario
-      -- ranked by **normalized average distance** -- is cut.
+    - **basic** -- non-contextual synthetic only: a single global LP with a single
+      learned constraint; plain worst-case localized-bootstrap separation at ``x*``.
+      No ``cp_alpha``.
+    - **coherent** -- contextual problems (gastric), multiple constraints,
+      multiple ``x*``, and/or a learned objective: one *shared* bootstrap
+      relabeling drives all constraints (and optionally the epigraph objective),
+      and the worst scenario -- ranked by **normalized average distance** -- is cut.
 
     ``cp_eval_mode``:
     - ``"global"`` (default): one shared master; cuts from all anchors.
