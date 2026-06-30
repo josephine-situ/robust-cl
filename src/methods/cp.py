@@ -619,13 +619,16 @@ def _resolve_distance(cp_distance, instance):
 
 
 def _finalize(instance, master, ctx_bounds, history, status, total_start,
-              cp_trace_path, last_x=None, last_obj=np.inf):
+              cp_trace_path, last_x=None, last_obj=np.inf, anchors=None):
     """Restore context-free bounds, do a tight final solve, persist trace."""
     d = instance.n_features
     print("Re-solving with default MIP gap...")
     _restore_context_bounds(master, ctx_bounds)
+    if anchors and len(anchors) == 1 and anchors[0] is not None:
+        _fix_anchor_context(master, instance, anchors[0])
     master.opt.Params.MIPGap = 1e-4
     x_final, obj_final = master.solve()
+    _restore_context_bounds(master, ctx_bounds)
     if x_final is not None:
         x_opt, obj_value = x_final, obj_final
     elif last_x is not None:
@@ -681,9 +684,11 @@ class _BasicSeparation:
 
     Solves the master, takes the worst-case localized-bootstrap model per
     constraint at the optimal solution ``x*``, and cuts every constraint that
-    violates -- no chance budget, no anchors. Terminates when nothing violates
-    (the worst-case robust region has converged). This is the simple case: one
-    LP with a single learned constraint (synthetic).
+    violates -- no chance budget. Terminates when nothing violates (the
+    worst-case robust region has converged). Used for the synthetic case (one LP,
+    one constraint, no context) and for contextual single-anchor masters
+    (``per_anchor_nearest`` with ``dlt_only``): the lone anchor's context is
+    pinned before each solve so only treatment variables are optimized.
     """
 
     def __init__(self, k_neighbors_frac, n_candidates, k_neighbors_min=1):
@@ -694,6 +699,9 @@ class _BasicSeparation:
     def step(self, env: _SepEnv, iteration: int) -> _StepResult:
         iter_start = time.time()
         inst, master = env.instance, env.master
+
+        if len(env.anchors) == 1 and env.anchors[0] is not None:
+            _fix_anchor_context(master, inst, env.anchors[0])
 
         x_star, obj_star = master.solve()
         if x_star is None:
@@ -1167,7 +1175,7 @@ def _run_cp_loop(instance: ProblemInstance,
 
     return _finalize(
         instance, master, ctx_bounds, history, status,
-        total_start, cp_trace_path, last_x, last_obj,
+        total_start, cp_trace_path, last_x, last_obj, anchors=anchors,
     )
 
 
