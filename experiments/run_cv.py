@@ -10,9 +10,9 @@ Two CV passes are available:
                *_selected_configs.json  (used by --cv-configs)
 
   GT Ensemble CV  (--ensemble flag, slow)
-      Deep grids; tunes ALL model types since they are all used as GT ensemble
-      members (deeper trees, more estimators, richer XGB grid).
-      Outputs: *_gt_cv_scores.{csv,tex},
+      Tunes the six paper GT model types (linear, svm, cart, rf, gbm, xgb) on the
+      full train+test cohort; all six are averaged for ground-truth evaluation.
+      Outputs: *_gt_cv_scores.{csv,tex}, *_gt_insample_r2.{csv,tex},
                *_gt_ensemble_configs.json  (used by --gt-cv-configs)
 
 Usage:
@@ -132,19 +132,13 @@ GT_CV_PARAM_GRIDS = {
         "subsample": [0.7, 0.9],
         "colsample_bytree": [0.3, 0.5],
     },
-    "mlp": {
-        "hidden_layer_sizes": [
-                (25,), (50,),               # Your core 1-layer workhorses
-                (25, 10), (25, 25),         # 2-layer options for slightly more complexity
-                (10, 5, 2)                  # The single 3-layer test (expect this to perform poorly)
-            ],
-        "solver": ["lbfgs"],
-        "alpha": [1e-4, 1e-3, 0.01],                     
-    }
 }
 
 # Display order for model type columns in CV scores table
 MODEL_ORDER = ["linear", "svm", "cart", "rf", "gbm", "xgb", "mlp"]
+
+# Paper GT ensemble members (Table EC.12): average of these six model types
+GT_MODEL_ORDER = ["linear", "svm", "cart", "rf", "gbm", "xgb"]
 
 # Human-readable labels for outcome/constraint names
 OUTCOME_LABELS = {
@@ -189,14 +183,20 @@ def _params_str(params: dict) -> str:
     return ", ".join(f"{k}={v}" for k, v in sorted(params.items()))
 
 
-def _write_cv_scores_tex(df_scores: pd.DataFrame, path: Path, caption: str) -> None:
+def _write_cv_scores_tex(
+    df_scores: pd.DataFrame,
+    path: Path,
+    caption: str,
+    model_order: list | None = None,
+) -> None:
     """
     Write CV scores table as booktabs LaTeX.
 
     Rows = outcomes, columns = model types, values = 5-fold CV R².
     Best score per row is bolded.
     """
-    model_cols = [c for c in MODEL_ORDER if c in df_scores.columns]
+    order = model_order if model_order is not None else MODEL_ORDER
+    model_cols = [c for c in order if c in df_scores.columns]
     col_header = " & ".join(["Outcome"] + [c.upper() for c in model_cols])
 
     lines = [
@@ -287,21 +287,27 @@ def _write_best_models_tex(df_best: pd.DataFrame, path: Path, caption: str) -> N
 # In-sample R² comparison table writer
 # ---------------------------------------------------------------------------
 
-def _write_insample_r2_tex(df: pd.DataFrame, path: Path, caption: str) -> None:
+def _write_insample_r2_tex(
+    df: pd.DataFrame,
+    path: Path,
+    caption: str,
+    model_order: list | None = None,
+) -> None:
     """
     Write an in-sample R² comparison table as booktabs LaTeX.
 
-    Rows = outcomes.  Columns = individual model types, then full_ensemble and
-    pruned_ensemble.  Best value per row is bolded.
+    Rows = outcomes.  Columns = individual model types, then ensemble.
+    Best value per row is bolded.
     """
-    model_cols = [c for c in MODEL_ORDER if c in df.columns]
-    extra_cols = [c for c in ["full_ensemble", "pruned_ensemble"] if c in df.columns]
+    order = model_order if model_order is not None else MODEL_ORDER
+    model_cols = [c for c in order if c in df.columns]
+    extra_cols = [c for c in ["ensemble"] if c in df.columns]
     all_val_cols = model_cols + extra_cols
 
     col_headers = (
         ["Outcome"]
         + [c.upper() for c in model_cols]
-        + ["Full Ens.", "Pruned Ens."][: len(extra_cols)]
+        + ["Ensemble"][: len(extra_cols)]
     )
     col_header_str = " & ".join(col_headers)
     col_fmt = "l" + "r" * len(all_val_cols)
@@ -380,27 +386,25 @@ def _make_base_model(model_type: str, seed: int):
 
 def _compute_insample_r2(
     outcomes: list,
-    gt_configs_full: dict,
-    gt_configs_pruned: dict,
+    gt_configs: dict,
     df_cv_scores: pd.DataFrame,
 ) -> pd.DataFrame:
     """
     Train each model type on the full cohort and compute in-sample R².
 
-    Also trains the full ensemble (all tuned members) and the pruned ensemble
-    (members whose CV R² passed the cutoff) and reports their in-sample R².
+    Also trains the ensemble (mean of all tuned members) and reports its
+    in-sample R².
 
     Parameters
     ----------
-    outcomes         : list of dicts with keys name, label, X_train, y_train
-                       (X_train / y_train are the *full* cohort arrays)
-    gt_configs_full  : {outcome_name: [{model_type, params}, ...]}  — all members
-    gt_configs_pruned: same structure, only models passing the CV cutoff
-    df_cv_scores     : CV R² DataFrame (used only for row ordering / labels)
+    outcomes     : list of dicts with keys name, label, X_train, y_train
+                   (X_train / y_train are the *full* cohort arrays)
+    gt_configs   : {outcome_name: [{model_type, params}, ...]}
+    df_cv_scores : CV R² DataFrame (used only for row ordering / labels)
 
     Returns
     -------
-    pd.DataFrame with columns: name, outcome_label, <model types>, full_ensemble, pruned_ensemble
+    pd.DataFrame with columns: name, outcome_label, <model types>, ensemble
     """
     from sklearn.metrics import r2_score as _r2
     from src.models.train import train_model
@@ -414,13 +418,10 @@ def _compute_insample_r2(
 
         row = {"name": name, "outcome_label": label}
 
-        all_preds = []
-        pruned_preds = []
+        member_preds = []
+        specs = gt_configs.get(name, [])
 
-        specs_full = gt_configs_full.get(name, [])
-        pruned_names = {s["model_type"] for s in gt_configs_pruned.get(name, [])}
-
-        for spec in specs_full:
+        for spec in specs:
             mtype = spec["model_type"]
             params = {k: v for k, v in spec["params"].items() if k != "random_state"}
             params["random_state"] = spec["params"].get("random_state", 1)
@@ -429,24 +430,16 @@ def _compute_insample_r2(
                 preds = model.predict(X)
                 r2_val = float(_r2(y, preds))
                 row[mtype] = r2_val
-                all_preds.append(preds)
-                if mtype in pruned_names:
-                    pruned_preds.append(preds)
+                member_preds.append(preds)
             except Exception as exc:
                 warnings.warn(f"  In-sample R² failed for {name}/{mtype}: {exc}")
                 row[mtype] = float("nan")
 
-        if all_preds:
-            ens_full_pred = np.mean(all_preds, axis=0)
-            row["full_ensemble"] = float(_r2(y, ens_full_pred))
+        if member_preds:
+            ens_pred = np.mean(member_preds, axis=0)
+            row["ensemble"] = float(_r2(y, ens_pred))
         else:
-            row["full_ensemble"] = float("nan")
-
-        if pruned_preds:
-            ens_pruned_pred = np.mean(pruned_preds, axis=0)
-            row["pruned_ensemble"] = float(_r2(y, ens_pruned_pred))
-        else:
-            row["pruned_ensemble"] = float("nan")
+            row["ensemble"] = float("nan")
 
         print(
             f"  [{label}]  in-sample R²: "
@@ -677,7 +670,6 @@ def run_cv_for_ensemble(
     scoring: str = "r2",
     cv_folds: int = 5,
     seed: int = 1,
-    r2_cutoff: float = 0.0,
 ) -> tuple:
     """
     GT ensemble CV: tune ALL model types per outcome using a deep parameter grid.
@@ -688,22 +680,19 @@ def run_cv_for_ensemble(
 
     Parameters
     ----------
-    outcomes  : list of dicts with keys: name (short, e.g. "dlt"), label, X_train, y_train
-    r2_cutoff : models with CV R² below this threshold are excluded from the pruned ensemble
-                (default 0.0 — removes only models worse than a constant baseline).
+    outcomes : list of dicts with keys: name (short, e.g. "dlt"), label, X_train, y_train
 
     Returns
     -------
-    df_scores        : pd.DataFrame — CV R² pivot (rows=outcomes, cols=model types)
-    gt_configs_full  : dict — {outcome_name: [{model_type, params}, ...]} (all models)
-    gt_configs_pruned: dict — same structure, but only models with CV R² >= r2_cutoff
+    df_scores  : pd.DataFrame — CV R² pivot (rows=outcomes, cols=model types)
+    gt_configs : dict — {outcome_name: [{model_type, params}, ...]}
+                 Same format as ``GT_ENSEMBLE_SPECS`` in gastric_model_specs.py.
     """
     sk_scoring = "r2" if scoring == "r2" else "neg_mean_squared_error"
     kf = KFold(n_splits=cv_folds, shuffle=True, random_state=seed)
 
     score_rows = []
-    gt_configs_full: dict = {}
-    gt_configs_pruned: dict = {}
+    gt_configs: dict = {}
 
     for item in outcomes:
         name = item["name"]
@@ -714,8 +703,7 @@ def run_cv_for_ensemble(
         print(f"\n  [{label}]  n_train={len(y_tr)}", flush=True)
 
         score_row = {"name": name, "outcome_label": label}
-        specs_full = []
-        specs_pruned = []
+        specs = []
 
         for model_type, grid in cv_param_grids.items():
             base = _make_base_model(model_type, seed)
@@ -729,27 +717,21 @@ def run_cv_for_ensemble(
             best_params = dict(search.best_params_)
             score_row[model_type] = cv_score
 
-            spec = {"model_type": model_type, "params": {**best_params, "random_state": seed}}
-            specs_full.append(spec)
+            print(
+                f"    {model_type:8s}: CV R\u00b2={cv_score:.3f}  params={best_params}",
+                flush=True,
+            )
 
-            if cv_score >= r2_cutoff:
-                specs_pruned.append(spec)
-                print(
-                    f"    {model_type:8s}: CV R\u00b2={cv_score:.3f}  params={best_params}",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"    {model_type:8s}: CV R\u00b2={cv_score:.3f}  [PRUNED — below cutoff {r2_cutoff}]",
-                    flush=True,
-                )
+            specs.append({
+                "model_type": model_type,
+                "params": {**best_params, "random_state": seed},
+            })
 
         score_rows.append(score_row)
-        gt_configs_full[name] = specs_full
-        gt_configs_pruned[name] = specs_pruned
+        gt_configs[name] = specs
 
     df_scores = pd.DataFrame(score_rows)
-    return df_scores, gt_configs_full, gt_configs_pruned
+    return df_scores, gt_configs
 
 
 # ---------------------------------------------------------------------------
@@ -912,7 +894,7 @@ def run_cv_gastric_ensemble(args, out_dir: Path, instance=None) -> None:
     from src.data.gastric_v11 import train_percentile_scores
 
     print("\n" + "=" * 60)
-    print("GASTRIC CANCER — GT ENSEMBLE CV  (deep grid, all model types)")
+    print("GASTRIC CANCER — GT ENSEMBLE CV  (6 paper model types)")
     print("=" * 60)
     print("  CV is run on the whole cohort (train + test arms, all 461 arms).")
 
@@ -965,66 +947,58 @@ def run_cv_gastric_ensemble(args, out_dir: Path, instance=None) -> None:
             "y_train": y_all,
         })
 
-    r2_cutoff = getattr(args, "r2_cutoff", 0.0)
-
-    df_scores, gt_configs_full, gt_configs_pruned = run_cv_for_ensemble(
+    df_scores, gt_configs = run_cv_for_ensemble(
         outcomes,
         GT_CV_PARAM_GRIDS,
         scoring=args.scoring,
         cv_folds=args.cv_folds,
         seed=seed,
-        r2_cutoff=r2_cutoff,
     )
 
     # In-sample R² comparison
     print("\n" + "-" * 60)
     print("  Computing in-sample R² (training on full cohort)...")
-    df_insample = _compute_insample_r2(
-        outcomes, gt_configs_full, gt_configs_pruned, df_scores
-    )
+    df_insample = _compute_insample_r2(outcomes, gt_configs, df_scores)
 
     # Save outputs
     scores_csv = out_dir / "gastric_gt_cv_scores.csv"
     scores_tex = out_dir / "gastric_gt_cv_scores.tex"
     insample_csv = out_dir / "gastric_gt_insample_r2.csv"
     insample_tex = out_dir / "gastric_gt_insample_r2.tex"
-    configs_pruned_json = out_dir / "gastric_gt_ensemble_configs.json"
-    configs_full_json = out_dir / "gastric_gt_ensemble_full_configs.json"
+    configs_json = out_dir / "gastric_gt_ensemble_configs.json"
 
     df_scores.to_csv(scores_csv, index=False)
     df_insample.to_csv(insample_csv, index=False)
 
-    with open(configs_pruned_json, "w", encoding="utf-8") as f:
-        json.dump(gt_configs_pruned, f, indent=2, default=str)
-    with open(configs_full_json, "w", encoding="utf-8") as f:
-        json.dump(gt_configs_full, f, indent=2, default=str)
+    with open(configs_json, "w", encoding="utf-8") as f:
+        json.dump(gt_configs, f, indent=2, default=str)
 
     _write_cv_scores_tex(
         df_scores,
         scores_tex,
         "Gastric Cancer: GT Ensemble CV R\\textsuperscript{2} by Model Type "
         "(Deep Grid, Table EC.11 Style)",
+        model_order=GT_MODEL_ORDER,
     )
     _write_insample_r2_tex(
         df_insample,
         insample_tex,
-        f"Gastric Cancer: In-Sample R\\textsuperscript{{2}} — Individual Models and Ensembles "
-        f"(R\\textsuperscript{{2}} cutoff $\\geq {r2_cutoff}$ for pruned ensemble)",
+        "Gastric Cancer: In-Sample R\\textsuperscript{2} — Individual Models and Ensemble",
+        model_order=GT_MODEL_ORDER,
     )
 
     print(f"\n  Outputs saved to {out_dir}/")
     print(f"    {scores_csv.name}, {scores_tex.name}")
     print(f"    {insample_csv.name}, {insample_tex.name}")
-    print(f"    {configs_pruned_json.name}  (pruned ensemble, R²≥{r2_cutoff})")
-    print(f"    {configs_full_json.name}  (all models)")
+    print(f"    {configs_json.name}")
 
     print("\n  GT Ensemble CV Scores (5-fold R\u00b2):")
-    model_cols = [c for c in MODEL_ORDER if c in df_scores.columns]
+    model_cols = [c for c in GT_MODEL_ORDER if c in df_scores.columns]
     display_cols = ["outcome_label"] + model_cols
     print(df_scores[[c for c in display_cols if c in df_scores.columns]].to_string(index=False))
 
     print("\n  In-sample R\u00b2 (full cohort):")
-    insample_display = ["outcome_label"] + model_cols + ["full_ensemble", "pruned_ensemble"]
+    insample_display = ["outcome_label"] + model_cols + ["ensemble"]
     print(df_insample[[c for c in insample_display if c in df_insample.columns]].to_string(index=False))
 
 
@@ -1129,19 +1103,6 @@ def main():
             "Slow — omit for a quick constraint-model-only run."
         ),
     )
-    parser.add_argument(
-        "--r2-cutoff",
-        type=float,
-        default=0.0,
-        dest="r2_cutoff",
-        metavar="R2",
-        help=(
-            "CV R² cutoff for GT ensemble membership (default: 0.0). "
-            "Models whose CV R² falls below this threshold are excluded from the "
-            "pruned ensemble saved to gastric_gt_ensemble_configs.json. "
-            "All models are still saved to gastric_gt_ensemble_full_configs.json."
-        ),
-    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -1155,7 +1116,6 @@ def main():
     print(f"  cv_folds  : {args.cv_folds}")
     print(f"  seed      : {args.seed}")
     print(f"  scoring   : {args.scoring}")
-    print(f"  r2_cutoff : {args.r2_cutoff}")
     print(f"  output_dir: {out_dir}")
     print(f"  constraint models : {list(CV_PARAM_GRIDS.keys())}")
     if args.ensemble:
