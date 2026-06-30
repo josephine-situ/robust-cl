@@ -804,10 +804,9 @@ class _CoherentSeparation:
     optimal solves (patients) allowed to become infeasible. We add the *most
     adversarial scenario we can afford* (worst-first by total distance, keeping
     ``p_infeas <= alpha``), falling back to the next-worst if the worst
-    over-tightens. ``alpha`` only gates feasibility -- never the objective, and
-    never scenario ranking. With a **single ``x*``** there is no coverage cap
-    (``p_infeas`` is degenerate 0/1); we just cut the worst scenario each
-    iteration until the total distance falls within ``dist_tol``.
+    over-tightens. With a **single ``x*``** we require ``p_infeas == 0`` (same
+    rollback loop with ``alpha=0``): only cuts that leave the anchor solve
+    feasible are kept.
 
     Two solver-acceleration tricks are applied (sound because cuts are global
     embedded models that only shrink each fixed context's region):
@@ -829,6 +828,7 @@ class _CoherentSeparation:
         self.k_neighbors_min = k_neighbors_min
         self.obj_bound = {}          # a_idx -> best (max) objective seen so far
         self.prev_max_exceed = 0.0   # scale for the dynamic pruning threshold (raw)
+        self.last_added_ids: List[int] = []  # scenario ids from the last accepted cut
 
     def step(self, env: _SepEnv, iteration: int) -> _StepResult:
         iter_start = time.time()
@@ -839,6 +839,17 @@ class _CoherentSeparation:
             obj_bounds=self.obj_bound, collect_slack=True,
         )
         if not feasible:
+            if iteration > 0 and self.last_added_ids:
+                for s in reversed(self.last_added_ids):
+                    master.remove_scenario(s)
+                master.opt.update()
+                print(
+                    f"Iter {iteration}: rolled back scenario(s) {self.last_added_ids} "
+                    f"(solve infeasible after last cut); stopping.",
+                    flush=True,
+                )
+                self.last_added_ids = []
+                return _StepResult(stop=True, status="coverage_cap")
             print(f"Iter {iteration}: all optimal solves infeasible; stopping.")
             return _StepResult(stop=True, status="infeasible")
 
@@ -995,23 +1006,16 @@ class _CoherentSeparation:
         if best_dist <= self.dist_tol:
             return _StepResult(stop=True, status="optimal", obj=last_obj, violation=history_viol)
 
-        # Single x*: no coverage cap (degenerate); just cut the worst scenario.
-        if self.single_point:
-            for c_idx, models, rhs in candidates[0][2]:
-                master.add_scenario(c_idx, models, rhs, rho=env.rho)
-            return _StepResult(stop=False, status="running", obj=last_obj,
-                               violation=history_viol)
-
-        # Coverage cap (multiple x*): add the *most adversarial scenario we can
-        # afford* -- one that keeps >= (1-alpha) of optimal solves feasible. If
-        # the worst over-tightens, fall back to the next-worst.
-        # Fast pre-check: already-infeasible anchors stay infeasible under more
-        # cuts, so if we are already over the budget we can skip all candidates.
+        # Add the most adversarial scenario we can afford (worst-first). Single
+        # x* uses alpha=0: every cut must keep the anchor solve feasible.
+        feas_alpha = 0.0 if self.single_point else self.alpha
         n_infeas_base = len(env.anchors) - len(feasible)
-        if n_infeas_base > (self.alpha + 1e-12) * len(env.anchors):
+        if n_infeas_base > (feas_alpha + 1e-12) * len(env.anchors):
+            cap_label = "feasibility" if self.single_point else "coverage"
             print(
-                f"Iter {iteration}: coverage cap hit before adding any cuts "
-                f"(p_infeas={p_infeas*100:.1f}% > alpha {self.alpha*100:.1f}%); stopping."
+                f"Iter {iteration}: {cap_label} cap hit before adding any cuts "
+                f"(p_infeas={p_infeas*100:.1f}% > alpha {feas_alpha*100:.1f}%); stopping.",
+                flush=True,
             )
             return _StepResult(stop=True, status="coverage_cap", obj=last_obj,
                                violation=history_viol)
@@ -1022,32 +1026,43 @@ class _CoherentSeparation:
                 master.add_scenario(c_idx, models, rhs, rho=env.rho)
                 added_ids.append(master.n_models - 1)
             p_infeas_after, fits = _p_infeas_after_cuts(
-                master, inst, env.anchors, feasible, n_infeas_base, self.alpha
+                master, inst, env.anchors, feasible, n_infeas_base, feas_alpha
             )
             if fits:
+                self.last_added_ids = added_ids
+                cap_note = (
+                    "feasible"
+                    if self.single_point
+                    else f"p_infeas={p_infeas_after*100:.1f}%"
+                )
                 print(
                     f"Iter {iteration}: Added scenario(s) {added_ids} "
                     f"(candidate rank {cand_rank + 1}/{len(candidates)}, "
-                    f"norm_dist={_dist:.4f}); "
-                    f"p_infeas={p_infeas_after*100:.1f}%"
+                    f"norm_dist={_dist:.4f}); {cap_note}",
+                    flush=True,
                 )
                 return _StepResult(stop=False, status="running", obj=last_obj,
                                    violation=history_viol)
             for s in reversed(added_ids):
                 master.remove_scenario(s)
             master.opt.update()
+            reject_msg = (
+                "would become infeasible"
+                if self.single_point
+                else f"p_infeas_after={p_infeas_after*100:.1f}% > alpha {feas_alpha*100:.1f}%"
+            )
             print(
                 f"Iter {iteration}: Rolled back scenario(s) {added_ids} "
                 f"(candidate rank {cand_rank + 1}/{len(candidates)}, "
-                f"norm_dist={_dist:.4f}); "
-                f"p_infeas_after={p_infeas_after*100:.1f}% > alpha {self.alpha*100:.1f}%"
+                f"norm_dist={_dist:.4f}); {reject_msg}",
+                flush=True,
             )
 
-        # Terminate (2): no sampled adversary can be added without pushing more
-        # than alpha of the optimal solves infeasible -- feasibility frontier.
+        cap_label = "feasibility" if self.single_point else "coverage"
         print(
-            f"Iter {iteration}: coverage cap hit (no sampled scenario keeps "
-            f"p_infeas <= alpha {self.alpha*100:.1f}%); stopping."
+            f"Iter {iteration}: {cap_label} cap hit (no sampled scenario keeps "
+            f"p_infeas <= alpha {feas_alpha*100:.1f}%); stopping.",
+            flush=True,
         )
         return _StepResult(stop=True, status="coverage_cap", obj=last_obj,
                            violation=history_viol)
