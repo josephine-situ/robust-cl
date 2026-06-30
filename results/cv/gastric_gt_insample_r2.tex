@@ -1,16 +1,16 @@
 \begin{table}[ht]
 \centering
-\caption{Gastric Cancer: In-Sample R\textsuperscript{2} — Individual Models and Ensembles (R\textsuperscript{2} cutoff $\geq 0.0$ for pruned ensemble)}
-\begin{tabular}{lrrrrrrrrr}
+\caption{Gastric Cancer: In-Sample R\textsuperscript{2} — Individual Models and Ensemble}
+\begin{tabular}{lrrrrrrr}
 \toprule
-Outcome & LINEAR & SVM & CART & RF & GBM & XGB & MLP & Full Ens. & Pruned Ens. \\
+Outcome & LINEAR & SVM & CART & RF & GBM & XGB & Ensemble \\
 \midrule
-Any DLT & 0.000 & 0.441 & 0.177 & 0.514 & 0.422 & 0.560 & \textbf{0.601} & 0.471 & 0.423 \\
-Blood & 0.089 & 0.329 & 0.160 & 0.627 & 0.679 & \textbf{0.869} & 0.059 & 0.503 & 0.547 \\
-Constitutional & 0.000 & 0.343 & 0.125 & \textbf{0.651} & 0.557 & 0.622 & 0.546 & 0.485 & 0.450 \\
-Infection & 0.000 & 0.273 & 0.153 & \textbf{0.584} & 0.468 & 0.464 & 0.037 & 0.353 & 0.386 \\
-Gastrointestinal & 0.000 & 0.345 & 0.286 & \textbf{0.614} & 0.504 & 0.388 & 0.154 & 0.406 & 0.425 \\
-Overall Survival & 0.147 & 0.653 & 0.444 & 0.788 & \textbf{0.911} & 0.784 & 0.542 & 0.727 & 0.727 \\
+Any DLT & 0.000 & 0.441 & 0.177 & 0.514 & 0.422 & \textbf{0.560} & 0.423 \\
+Blood & 0.089 & 0.329 & 0.160 & 0.627 & 0.679 & \textbf{0.869} & 0.547 \\
+Constitutional & 0.000 & 0.343 & 0.125 & \textbf{0.651} & 0.557 & 0.622 & 0.453 \\
+Infection & 0.000 & 0.273 & 0.153 & \textbf{0.584} & 0.468 & 0.464 & 0.383 \\
+Gastrointestinal & 0.000 & 0.345 & 0.286 & \textbf{0.614} & 0.504 & 0.388 & 0.423 \\
+Overall Survival & 0.147 & 0.653 & 0.444 & 0.788 & \textbf{0.911} & 0.784 & 0.725 \\
 \bottomrule
 \end{tabular}
 \end{table}

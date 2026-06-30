@@ -62,7 +62,7 @@ methods:
     # Contextual (gastric): anchors are representative cohorts at which we collect
     # an optimal solution x* (one per context).
     anchor_source: "train"   # "train" (offline, no test labels) | "test" (online)
-    n_anchors: 15            # representatives over context space (null -> all rows)
+    n_anchors: 10            # representatives over context space (null -> all rows)
     anchor_method: "kmedoids"  # "kmedoids" | "sample" | "all"
     distance: "full"         # neighbor localization (default for all scenarios):
                              # "full" (context+decision, around x*) |
@@ -72,21 +72,21 @@ methods:
     # average distance (mean relative exceedance over all x* x outcomes) is at
     # or below this. Range 0-1; 0 = stop only when nothing violates.
     dist_tol: 0.01
-    robustify_objective: false   # false = nominal embedded OS, no epigraph cuts
+    robustify_objective: true   # false = nominal embedded OS, no epigraph cuts
     eval_mode: "per_anchor_nearest"         # "global" | "per_anchor_nearest"
     nearest_distance: "context" # anchor assignment at prescribe: "context" | "full"
 
   chemo:
     methods_to_run:
       # - robust_param # Often infeasible, need very small rho
-      - nominal
       - cp
-      # - tree_violation # like paper - only different if RF used
+      - nominal
+      # - tree_violation # like paper - only different if RF used. Often infeasible.
       - robust_reg
       - wrapper
     constraint_modes:
-      - all_constraints
       - dlt_only
+      - all_constraints
     quick:
       max_test_rows: 5
       methods_to_run: [nominal, wrapper, robust_reg, cp]
