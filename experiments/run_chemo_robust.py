@@ -79,6 +79,7 @@ def _resolve_run_settings(config, args):
             "alpha": quick_cfg.get("alpha", unc.get("alpha", 0.0)),
             "cp_n_anchors": quick_cfg.get("cp_n_anchors", cp_cfg.get("n_anchors", 4)),
             "output_path": "results/gastric/chemo_robust_table6_quick.csv",
+            "prescriptions_dir": "results/gastric/prescriptions",
         }
     else:
         settings = {
@@ -94,6 +95,7 @@ def _resolve_run_settings(config, args):
             "alpha": unc.get("alpha", 0.0),
             "cp_n_anchors": cp_cfg.get("n_anchors", 15),
             "output_path": "results/gastric/chemo_robust_table6.csv",
+            "prescriptions_dir": "results/gastric/prescriptions",
         }
 
     settings["cp_anchor_source"] = cp_cfg.get("anchor_source", "train")
@@ -346,12 +348,13 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None):
             sub = filter_constraints(instance, _constraint_names(constraint_mode))
             print(f"\n  constraint_mode={constraint_mode}")
             solver_fn = _resolve_solver(method, sub)
-            _, feasible_mask, mean_time, sd_time, full_outcomes = evaluate_prescribed_table6(
+            _, feasible_mask, mean_time, sd_time, full_outcomes, _ = evaluate_prescribed_table6(
                 solver_fn,
                 sub,
                 max_test_rows=settings["max_test_rows"],
                 method_name=method,
                 constraint_mode=constraint_mode,
+                prescriptions_dir=settings["prescriptions_dir"],
             )
             n_feasible = int(feasible_mask.sum())
             print(f"  Feasible prescriptions: {n_feasible}/{n_test}")

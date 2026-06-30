@@ -286,6 +286,7 @@ def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemIn
         observed_test_outcomes=instance.observed_test_outcomes,
         gt_eval_data=instance.gt_eval_data,
         binary_var_indices=list(instance.binary_var_indices or []),
+        feature_names=instance.feature_names,
     )
 
 def _synthetic_f_true(x):

@@ -37,6 +37,7 @@ from src.methods.nominal import (
     SolutionResult,
     resolve_constraint_config,
     add_domain_constraints,
+    build_decision_vars,
 )
 from src.models.train import (
     train_model,
@@ -69,14 +70,7 @@ class IncrementalMaster:
         self.opt.Params.MIPFocus = 1
         self.opt.Params.Threads = 0
 
-        self.x = [
-            self.opt.addVar(
-                lb=instance.variable_lb[j],
-                ub=instance.variable_ub[j],
-                name=f"x_{j}",
-            )
-            for j in range(self.d)
-        ]
+        self.x = build_decision_vars(self.opt, instance)
 
         self.base_cost = gp.quicksum(
             instance.cost_vector[j] * self.x[j] for j in range(self.d)

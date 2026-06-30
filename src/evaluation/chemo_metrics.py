@@ -12,6 +12,8 @@ Metrics match Maragno et al. (2025) Section 5.5:
 
 from __future__ import annotations
 
+import csv
+import os
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List
@@ -51,6 +53,59 @@ def subset_table6_outcomes(
     mask: np.ndarray,
 ) -> Dict[str, np.ndarray]:
     return {label: values[mask] for label, values in full_outcomes.items()}
+
+
+def _feature_column_names(instance: ProblemInstance) -> List[str]:
+    if instance.feature_names and len(instance.feature_names) == instance.n_features:
+        return list(instance.feature_names)
+    return [f"x_{j}" for j in range(instance.n_features)]
+
+
+def save_prescriptions_csv(
+    path: str,
+    instance: ProblemInstance,
+    prescriptions: np.ndarray,
+    feasible_mask: np.ndarray,
+    solve_times: np.ndarray,
+    *,
+    method: str | None = None,
+    constraint_mode: str | None = None,
+) -> str:
+    """Write per-test prescription vectors to CSV.
+
+    ``prescriptions`` is ``(n_test, n_features)`` with ``nan`` rows for infeasible
+    solves. Returns the path written.
+    """
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    feature_cols = _feature_column_names(instance)
+    header = ["test_idx", "feasible", "solve_time_s"]
+    if method is not None:
+        header.append("method")
+    if constraint_mode is not None:
+        header.append("constraint_mode")
+    header.extend(feature_cols)
+
+    n_test = prescriptions.shape[0]
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        for i in range(n_test):
+            row = [
+                i,
+                int(bool(feasible_mask[i])),
+                "" if not np.isfinite(solve_times[i]) else float(solve_times[i]),
+            ]
+            if method is not None:
+                row.append(method)
+            if constraint_mode is not None:
+                row.append(constraint_mode)
+            x_row = prescriptions[i]
+            if np.all(np.isnan(x_row)):
+                row.extend([""] * len(feature_cols))
+            else:
+                row.extend(float(v) for v in x_row)
+            writer.writerow(row)
+    return path
 
 
 def _predict_outcome(gt_fn, x: np.ndarray) -> float:
@@ -108,8 +163,16 @@ def evaluate_prescribed_table6(
     max_test_rows: int | None = None,
     method_name: str | None = None,
     constraint_mode: str | None = None,
+    prescriptions_dir: str | None = None,
     **solver_kwargs,
-) -> tuple[Dict[str, np.ndarray], np.ndarray, float, float, Dict[str, np.ndarray]]:
+) -> tuple[
+    Dict[str, np.ndarray],
+    np.ndarray,
+    float,
+    float,
+    Dict[str, np.ndarray],
+    np.ndarray,
+]:
     """
     Optimize a prescription per test cohort; return outcome vectors on feasible cohorts.
 
@@ -117,6 +180,11 @@ def evaluate_prescribed_table6(
     test indices where both the optimizer is feasible and eval_mask is True.
     The fifth return value is the full-length (n_test) outcome vectors for
     building a samestore cohort across constraint modes.
+    The sixth return value is the full-length (n_test, n_features) prescription
+    matrix (``nan`` rows when infeasible).
+
+    If ``prescriptions_dir`` is set, writes
+    ``{prescriptions_dir}/{method}_{constraint_mode}.csv`` after the prescribe pass.
 
     Returns
     -------
@@ -124,6 +192,7 @@ def evaluate_prescribed_table6(
     feasible_mask : bool array length n_test (optimizer feasibility per row)
     mean_solve_time, solve_time_sd : per-cohort re-optimization times (seconds)
     full_outcomes : dict outcome_label -> length n_test arrays (nan if infeasible)
+    full_prescriptions : (n_test, n_features) prescription vectors
     """
     label = method_name or getattr(solver_fn, "func", solver_fn).__name__
     if constraint_mode:
@@ -147,6 +216,8 @@ def evaluate_prescribed_table6(
     row_times: List[float] = []
 
     outcome_buffers = {o.label: np.full(n_test, np.nan) for o in instance.eval_outcomes}
+    full_prescriptions = np.full((n_test, instance.n_features), np.nan)
+    row_solve_times = np.full(n_test, np.nan)
 
     print(f"  [{label}] Prescribing per test cohort ({n_eval_rows} rows)...", flush=True)
 
@@ -156,6 +227,7 @@ def evaluate_prescribed_table6(
         status, x_opt = solve_for_context(result, instance, instance.X_test[i])
         row_elapsed = time.time() - t0
         row_times.append(row_elapsed)
+        row_solve_times[i] = row_elapsed
 
         if status == 2:
             status_str = "optimal"
@@ -175,6 +247,7 @@ def evaluate_prescribed_table6(
             continue
 
         feasible_mask[i] = True
+        full_prescriptions[i] = x_opt
         for outcome in instance.eval_outcomes:
             if outcome.is_survival:
                 outcome_buffers[outcome.label][i] = _predict_outcome(outcome.gt_fn, x_opt)
@@ -192,12 +265,27 @@ def evaluate_prescribed_table6(
         flush=True,
     )
 
+    if prescriptions_dir and method_name and constraint_mode:
+        rx_path = os.path.join(
+            prescriptions_dir, f"{method_name}_{constraint_mode}.csv"
+        )
+        save_prescriptions_csv(
+            rx_path,
+            instance,
+            full_prescriptions,
+            feasible_mask,
+            row_solve_times,
+            method=method_name,
+            constraint_mode=constraint_mode,
+        )
+        print(f"  [{label}] Prescriptions saved to {rx_path}", flush=True)
+
     report_mask = feasible_mask if eval_mask is None else (feasible_mask & eval_mask)
     feasible_outcomes = {
         label: values[report_mask]
         for label, values in outcome_buffers.items()
     }
-    return feasible_outcomes, feasible_mask, mean_time, sd_time, outcome_buffers
+    return feasible_outcomes, feasible_mask, mean_time, sd_time, outcome_buffers, full_prescriptions
 
 
 def build_table6_rows(
