@@ -65,15 +65,19 @@ def run_chemo_replication(config):
 
     all_sub = filter_constraints(instance, ALL_CONSTRAINTS)
     print("\nOptimizing prescriptions (all_constraints)...")
-    _, mask_all, mean_time_all, sd_time_all, full_all = evaluate_prescribed_table6(
+    _, mask_all, mean_time_all, sd_time_all, full_all, _ = evaluate_prescribed_table6(
         solver_fn, all_sub, constraint_mode="all_constraints",
+        method_name="tree_violation",
+        prescriptions_dir="results/gastric/prescriptions",
     )
     print(f"  Feasible prescriptions: {int(mask_all.sum())}/{n_test}")
 
     dlt_sub = filter_constraints(instance, DLT_ONLY)
     print("\nOptimizing prescriptions (dlt_only)...")
-    _, mask_dlt, mean_time_dlt, sd_time_dlt, full_dlt = evaluate_prescribed_table6(
+    _, mask_dlt, mean_time_dlt, sd_time_dlt, full_dlt, _ = evaluate_prescribed_table6(
         solver_fn, dlt_sub, constraint_mode="dlt_only",
+        method_name="tree_violation",
+        prescriptions_dir="results/gastric/prescriptions",
     )
     print(f"  Feasible prescriptions: {int(mask_dlt.sum())}/{n_test}")
 

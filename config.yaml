@@ -70,16 +70,16 @@ methods:
     # coherent separation: stop once the worst sampled scenario's normalized
     # average distance (mean relative exceedance over all x* x outcomes) is at
     # or below this. Range 0-1; 0 = stop only when nothing violates.
-    dist_tol: 0.05
+    dist_tol: 0.01
 
   chemo:
     methods_to_run:
       # - robust_param # Often infeasible, need very small rho
       - nominal
+      - cp
       # - tree_violation # like paper - only different if RF used
       - robust_reg
       - wrapper
-      - cp
     constraint_modes:
       - all_constraints
       - dlt_only
