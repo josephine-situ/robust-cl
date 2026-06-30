@@ -43,6 +43,7 @@ from src.models.train import (
     train_model,
     retrain_on_bootstrap,
     localized_bootstrap_indices,
+    resolve_neighbor_pool_size,
 )
 from src.models.embed import embed_model
 from src.utils.trust_region import add_trust_region
@@ -215,7 +216,8 @@ def _evaluate_real_candidate(args):
 
 def localized_bootstrap_separation(model_data, x_current, model_type, model_params,
                                    k_neighbors_frac, n_candidates, seed,
-                                   distance_feature_indices: list = None):
+                                   distance_feature_indices: list = None,
+                                   k_neighbors_min: int = 1):
     """Localized bootstrap separation: worst-case over the localized ensemble.
 
     Each localized bootstrap resample is retrained with the **actual** constraint
@@ -234,6 +236,7 @@ def localized_bootstrap_separation(model_data, x_current, model_type, model_para
     candidates = localized_bootstrap_indices(
         model_data.X_train, x_current, k_neighbors_frac, n_candidates, seed,
         distance_feature_indices=distance_feature_indices,
+        k_neighbors_min=k_neighbors_min,
     )
 
     args_list = [
@@ -255,7 +258,8 @@ def localized_bootstrap_separation(model_data, x_current, model_type, model_para
 
 
 def _union_neighbor_pool(X_train, query_points, k_neighbors_frac,
-                         distance_feature_indices=None):
+                         distance_feature_indices=None,
+                         k_neighbors_min: int = 1):
     """Union of the k-nearest training indices across a set of query points.
 
     Localizes a single shared pool to the region spanned by the current query
@@ -265,7 +269,7 @@ def _union_neighbor_pool(X_train, query_points, k_neighbors_frac,
     distance uses the full feature vector (context + decision).
     """
     n = X_train.shape[0]
-    k = max(1, int(round(k_neighbors_frac * n)))
+    k = resolve_neighbor_pool_size(n, k_neighbors_frac, k_neighbors_min)
     cols = list(distance_feature_indices) if distance_feature_indices else None
     Xc = X_train[:, cols] if cols is not None else X_train
     # Standardize the training matrix once; query points are standardized with
@@ -656,6 +660,7 @@ class _SepEnv:
     distance_feature_indices: Optional[list]
     rho: float
     seed: int
+    k_neighbors_min: int = 1
 
 
 @dataclass
@@ -681,9 +686,10 @@ class _BasicSeparation:
     LP with a single learned constraint (synthetic).
     """
 
-    def __init__(self, k_neighbors_frac, n_candidates):
+    def __init__(self, k_neighbors_frac, n_candidates, k_neighbors_min=1):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_candidates = n_candidates
+        self.k_neighbors_min = k_neighbors_min
 
     def step(self, env: _SepEnv, iteration: int) -> _StepResult:
         iter_start = time.time()
@@ -716,6 +722,7 @@ class _BasicSeparation:
                         self.k_neighbors_frac, self.n_candidates,
                         env.seed + iteration * 1000 + c_idx * 10 + m_idx,
                         distance_feature_indices=env.distance_feature_indices,
+                        k_neighbors_min=env.k_neighbors_min,
                     )
                     sep_cache[md_id] = (best_model, best_value)
 
@@ -812,12 +819,14 @@ class _CoherentSeparation:
       ``x*`` (so removing them changes no current solution and not ``p_infeas``).
     """
 
-    def __init__(self, k_neighbors_frac, n_scenarios, alpha, single_point, dist_tol):
+    def __init__(self, k_neighbors_frac, n_scenarios, alpha, single_point, dist_tol,
+                 k_neighbors_min=1):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_scenarios = n_scenarios
         self.alpha = alpha               # coverage cap: max fraction of x* infeasible
         self.single_point = single_point
         self.dist_tol = dist_tol         # stop once worst normalized distance <= this
+        self.k_neighbors_min = k_neighbors_min
         self.obj_bound = {}          # a_idx -> best (max) objective seen so far
         self.prev_max_exceed = 0.0   # scale for the dynamic pruning threshold (raw)
 
@@ -890,6 +899,7 @@ class _CoherentSeparation:
         pool = _union_neighbor_pool(
             ref_md.X_train, x_stars, self.k_neighbors_frac,
             env.distance_feature_indices,
+            k_neighbors_min=env.k_neighbors_min,
         )
         pool_frac = len(pool) / n_train
         rng = np.random.RandomState(env.seed + iteration)
@@ -1057,6 +1067,7 @@ def _run_cp_loop(instance: ProblemInstance,
                  cp_dist_tol: float,
                  cp_robustify_objective: bool,
                  anchors: list,
+                 cp_k_neighbors_min: int = 1,
                  cp_trace_path: Optional[str] = None) -> tuple[SolutionResult, CPHistory]:
     """Run the CP cut loop for a fixed anchor set (one or many contexts)."""
     total_start = time.time()
@@ -1081,6 +1092,7 @@ def _run_cp_loop(instance: ProblemInstance,
         model_config_map=model_config_map,
         distance_feature_indices=distance_feature_indices,
         rho=rho, seed=seed,
+        k_neighbors_min=cp_k_neighbors_min,
     )
 
     n_constraints = sum(1 for c in instance.constraints if _is_constraint_constraint(c))
@@ -1093,21 +1105,28 @@ def _run_cp_loop(instance: ProblemInstance,
     use_basic = (n_constraints <= 1) and single_point and not has_obj_models
 
     if use_basic:
-        strategy = _BasicSeparation(cp_k_neighbors_frac, cp_n_candidates)
+        strategy = _BasicSeparation(
+            cp_k_neighbors_frac, cp_n_candidates, cp_k_neighbors_min,
+        )
         mode = "basic"
     else:
         strategy = _CoherentSeparation(
             cp_k_neighbors_frac, cp_n_candidates, cp_alpha,
-            single_point, cp_dist_tol,
+            single_point, cp_dist_tol, cp_k_neighbors_min,
         )
         mode = "coherent (single x*)" if single_point else "coherent (multi x*)"
 
     n_solves = 1 if single_point else len(anchors)
     extra = f", alpha={cp_alpha}" if (not use_basic and not single_point) else ""
     obj_flag = "robustify_objective" if cp_robustify_objective else "nominal_objective"
+    n_pool = resolve_neighbor_pool_size(
+        len(instance.constraints[0].models_data[0].y_train),
+        cp_k_neighbors_frac, cp_k_neighbors_min,
+    )
     print(
         f"    [cp] separation={mode}; constraints={n_constraints}, "
-        f"optimal solves={n_solves}, distance={cp_distance}, {obj_flag}{extra}",
+        f"optimal solves={n_solves}, distance={cp_distance}, {obj_flag}, "
+        f"neighbor_pool>={cp_k_neighbors_min} (k={n_pool}){extra}",
         flush=True,
     )
 
@@ -1144,6 +1163,7 @@ def solve_cp(instance: ProblemInstance,
              max_iterations: int = 50,
              cp_k_neighbors_frac: float = 0.1,
              cp_n_candidates: int = 20,
+             cp_k_neighbors_min: int = 1,
              seed: int = 42,
              cp_alpha: float = 0.0,
              cp_anchor_source: str = "train",
@@ -1187,6 +1207,7 @@ def solve_cp(instance: ProblemInstance,
         max_iterations=max_iterations,
         cp_k_neighbors_frac=cp_k_neighbors_frac,
         cp_n_candidates=cp_n_candidates,
+        cp_k_neighbors_min=cp_k_neighbors_min,
         seed=seed,
         cp_alpha=cp_alpha,
         cp_distance=cp_distance,

@@ -22,6 +22,7 @@ uncertainty:
   n_bootstrap: 20  # P — shared fixed resamples for wrapper + robust_reg
   bootstrap_seed: 42
   cp_k_neighbors_frac: 0.1  # fraction of n_train for CP localized pool
+  cp_k_neighbors_min: 100      # floor on pool size: k = max(min, round(frac * n_train))
   cp_n_candidates: 20  # bootstrap candidates per CP separation call
   alpha: 0.1     # shared coverage cap (used by CP and to calibrate the baselines):
                  # at most this fraction of training contexts (patients) may be

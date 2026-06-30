@@ -117,7 +117,7 @@ python experiments/run_chemo_replication.py
 sbatch experiments/submit_chemo_robust.sh
 ```
 
-Uncertainty is **data-driven**: bootstrap resamples of observed training labels (no parametric label noise). Config: `uncertainty.n_bootstrap`, `cp_k_neighbors_frac`, `cp_n_candidates` in `config.yaml`.
+Uncertainty is **data-driven**: bootstrap resamples of observed training labels (no parametric label noise). Config: `uncertainty.n_bootstrap`, `cp_k_neighbors_frac`, `cp_k_neighbors_min`, `cp_n_candidates` in `config.yaml`.
 
 ## Synthetic Experiment
 
@@ -170,7 +170,7 @@ python experiments/run_sweep.py --sweep all --plot-only
 Edit `config.yaml` to change:
 - Data: number of training points, features, noise level
 - Model: type (cart/rf/xgb), hyperparameters
-- Uncertainty: bootstrap resamples (`n_bootstrap`, `cp_k_neighbors_frac`, `cp_alpha`)
+- Uncertainty: bootstrap resamples (`n_bootstrap`, `cp_k_neighbors_frac`, `cp_k_neighbors_min`, `cp_alpha`)
 - Method-specific: wrapper alpha/P, number of scenarios, Cutting Planes settings (`cp.anchor_source`, `cp.n_anchors`, `cp.anchor_method`, `cp.distance`, `cp.dist_tol`, `cp.robustify_objective`, `cp.eval_mode`, `cp.nearest_distance`). `solve_cp` auto-selects basic vs coherent separation from the problem shape; there is no separation flag.
 - Evaluation: CV folds, Bootstrap resamples
 

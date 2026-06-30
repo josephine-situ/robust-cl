@@ -76,6 +76,7 @@ def run_experiment(config, cv_configs=None):
     n_bootstrap = unc.get("n_bootstrap", 25)
     bootstrap_seed = unc.get("bootstrap_seed", 42)
     cp_k_neighbors_frac = unc.get("cp_k_neighbors_frac", 0.1)
+    cp_k_neighbors_min = unc.get("cp_k_neighbors_min", 1)
     cp_n_candidates = unc.get("cp_n_candidates", 20)
 
     from functools import partial
@@ -126,6 +127,7 @@ def run_experiment(config, cv_configs=None):
         rho=0.0,
         max_iterations=cp_cfg["max_iterations"],
         cp_k_neighbors_frac=cp_k_neighbors_frac,
+        cp_k_neighbors_min=cp_k_neighbors_min,
         cp_n_candidates=cp_n_candidates,
         seed=bootstrap_seed,
     )

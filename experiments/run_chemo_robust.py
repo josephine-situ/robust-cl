@@ -76,6 +76,9 @@ def _resolve_run_settings(config, args):
             "cp_max_iterations": quick_cfg.get("cp_max_iterations", 5),
             "cp_n_candidates": quick_cfg.get("cp_n_candidates", 5),
             "cp_k_neighbors_frac": quick_cfg.get("cp_k_neighbors_frac", 0.05),
+            "cp_k_neighbors_min": quick_cfg.get(
+                "cp_k_neighbors_min", unc.get("cp_k_neighbors_min", 1)
+            ),
             "alpha": quick_cfg.get("alpha", unc.get("alpha", 0.0)),
             "cp_n_anchors": quick_cfg.get("cp_n_anchors", cp_cfg.get("n_anchors", 4)),
             "output_path": "results/gastric/chemo_robust_table6_quick.csv",
@@ -92,6 +95,7 @@ def _resolve_run_settings(config, args):
             "cp_max_iterations": cp_cfg.get("max_iterations", 20),
             "cp_n_candidates": unc.get("cp_n_candidates", 20),
             "cp_k_neighbors_frac": unc.get("cp_k_neighbors_frac", 0.1),
+            "cp_k_neighbors_min": unc.get("cp_k_neighbors_min", 1),
             "alpha": unc.get("alpha", 0.0),
             "cp_n_anchors": cp_cfg.get("n_anchors", 15),
             "output_path": "results/gastric/chemo_robust_table6.csv",
@@ -194,6 +198,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             rho=0.0,
             max_iterations=settings["cp_max_iterations"],
             cp_k_neighbors_frac=settings["cp_k_neighbors_frac"],
+            cp_k_neighbors_min=settings["cp_k_neighbors_min"],
             cp_n_candidates=settings["cp_n_candidates"],
             seed=seed,
             cp_alpha=settings["alpha"],

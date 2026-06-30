@@ -360,12 +360,21 @@ def _standardize(X_ref: np.ndarray, X_query: np.ndarray):
     return (X_ref - mu) / sigma, (X_query - mu) / sigma
 
 
+def resolve_neighbor_pool_size(n: int,
+                               k_neighbors_frac: float,
+                               k_neighbors_min: int = 1) -> int:
+    """Number of training arms in the localized bootstrap pool."""
+    k = max(k_neighbors_min, int(round(k_neighbors_frac * n)))
+    return min(k, n)
+
+
 def localized_bootstrap_indices(X: np.ndarray,
                                 x_star: np.ndarray,
                                 k_neighbors_frac: float,
                                 n_candidates: int,
                                 seed: int = 42,
-                                distance_feature_indices: list = None) -> list:
+                                distance_feature_indices: list = None,
+                                k_neighbors_min: int = 1) -> list:
     """Generate bootstrap candidates resampling only from training points
     nearest to x_star in feature space.
 
@@ -381,7 +390,7 @@ def localized_bootstrap_indices(X: np.ndarray,
         features are ignored. Defaults to all columns (full-vector distance).
     """
     n = X.shape[0]
-    k = max(1, int(round(k_neighbors_frac * n)))
+    k = resolve_neighbor_pool_size(n, k_neighbors_frac, k_neighbors_min)
     x_star = np.asarray(x_star, dtype=float).ravel()
     cols = list(distance_feature_indices) if distance_feature_indices else None
     Xc = X[:, cols] if cols is not None else X
