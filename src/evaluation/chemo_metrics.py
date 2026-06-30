@@ -21,6 +21,7 @@ from typing import Callable, Dict, List
 import numpy as np
 
 from src.data.generate import ProblemInstance
+from src.methods.cp import CPMultiAnchorResult, nearest_anchor_index
 
 
 @dataclass
@@ -144,6 +145,19 @@ def solve_for_context(result, instance: ProblemInstance, context_row: np.ndarray
     return status, None
 
 
+def solve_for_test_cohort(result, instance: ProblemInstance, test_row: np.ndarray):
+    """Prescribe for one test cohort; dispatch multi-anchor CP when needed."""
+    if isinstance(result, CPMultiAnchorResult):
+        k = nearest_anchor_index(
+            test_row,
+            result.anchor_rows,
+            instance.context_var_indices,
+            result.nearest_distance_feature_indices,
+        )
+        return solve_for_context(result.anchor_results[k], instance, test_row)
+    return solve_for_context(result, instance, test_row)
+
+
 def evaluate_given_table6(
     instance: ProblemInstance,
     feasible_mask: np.ndarray,
@@ -224,7 +238,7 @@ def evaluate_prescribed_table6(
     for i in range(n_eval_rows):
         print(f"  [{label}] test row {i + 1}/{n_eval_rows}: optimizing...", flush=True)
         t0 = time.time()
-        status, x_opt = solve_for_context(result, instance, instance.X_test[i])
+        status, x_opt = solve_for_test_cohort(result, instance, instance.X_test[i])
         row_elapsed = time.time() - t0
         row_times.append(row_elapsed)
         row_solve_times[i] = row_elapsed

@@ -57,6 +57,18 @@ class CPHistory:
     x_solutions: List[np.ndarray] = field(default_factory=list)
 
 
+@dataclass
+class CPMultiAnchorResult:
+    """One finalized CP master per training anchor; prescribe via nearest anchor."""
+    anchor_rows: np.ndarray
+    anchor_results: List[SolutionResult]
+    status: str
+    solve_time: float
+    models_embedded: int
+    nearest_distance_feature_indices: Optional[list] = None
+    iterations: Optional[int] = None
+
+
 class IncrementalMaster:
     """Keeps the Gurobi model in memory to add constraints incrementally."""
 
@@ -324,6 +336,49 @@ def select_anchor_contexts(X: np.ndarray,
     return X[medoid_idx].copy()
 
 
+def _get_anchor_rows(instance: ProblemInstance,
+                     cp_anchors: Optional[np.ndarray],
+                     cp_anchor_source: str,
+                     cp_n_anchors: Optional[int],
+                     cp_anchor_method: str,
+                     seed: int) -> Optional[np.ndarray]:
+    """Return representative anchor rows, or ``None`` for non-contextual problems."""
+    if not instance.context_var_indices:
+        return None
+    if cp_anchors is not None:
+        return np.asarray(cp_anchors, dtype=float)
+    if cp_anchor_source == "test":
+        source = instance.X_test
+    else:
+        source = instance.X_train if instance.X_train is not None else instance.X_test
+    return select_anchor_contexts(
+        source, instance.context_var_indices,
+        cp_n_anchors, cp_anchor_method, seed,
+    )
+
+
+def _resolve_nearest_distance(nearest_distance: str, instance: ProblemInstance):
+    """Column subset for nearest-anchor assignment at prescribe time."""
+    contextual = bool(instance.context_var_indices)
+    if nearest_distance == "full":
+        return None
+    if nearest_distance in ("context", "auto"):
+        return list(instance.context_var_indices) if contextual else None
+    raise ValueError(f"Unknown nearest_distance: {nearest_distance}")
+
+
+def nearest_anchor_index(context_row: np.ndarray,
+                         anchor_rows: np.ndarray,
+                         context_var_indices: list,
+                         distance_feature_indices: Optional[list] = None) -> int:
+    """Index of the anchor row closest to ``context_row`` (L2 on selected columns)."""
+    cols = list(distance_feature_indices) if distance_feature_indices else None
+    Z = anchor_rows[:, cols] if cols is not None else anchor_rows
+    z = np.asarray(context_row, dtype=float).ravel()
+    zc = z[cols] if cols is not None else z
+    return int(np.argmin(np.linalg.norm(Z - zc, axis=1)))
+
+
 def _is_constraint_constraint(constraint) -> bool:
     """True if constraint contributes learned bounds (not objective-only)."""
     return any(md.obj_weight == 0.0 for md in constraint.models_data)
@@ -372,7 +427,8 @@ def _write_cp_trace(history: "CPHistory", path: Optional[str]) -> None:
 # Shared scaffolding (build / anchors / solve / finalize)
 # ---------------------------------------------------------------------------
 
-def _build_master_with_nominal(instance, model_type, model_params, rho):
+def _build_master_with_nominal(instance, model_type, model_params, rho,
+                               robustify_objective: bool = True):
     """Train nominal models, build the master MIP, embed objective + initial cuts.
 
     Returns ``(master, model_config_map)`` where ``model_config_map`` maps each
@@ -396,9 +452,13 @@ def _build_master_with_nominal(instance, model_type, model_params, rho):
                 )
             nominal_obj_terms.append(obj_weight * master.embedded_models_cache[m_id])
 
-    # Epigraph reformulation so the learned objective can be robustified by cuts.
     if nominal_obj_terms:
-        master.set_epigraph_objective(nominal_obj_terms)
+        if robustify_objective:
+            master.set_epigraph_objective(nominal_obj_terms)
+        else:
+            master.obj_expr = master.base_cost + gp.quicksum(nominal_obj_terms)
+            master.opt.setObjective(master.obj_expr, GRB.MINIMIZE)
+            master.opt.update()
 
     for c_idx, constraint in enumerate(instance.constraints):
         if not _is_constraint_constraint(constraint):
@@ -432,17 +492,9 @@ def _setup_anchors(instance, master, cp_anchors, cp_anchor_source,
     if not instance.context_var_indices:
         return [None], {}
 
-    if cp_anchors is not None:
-        anchor_rows = np.asarray(cp_anchors, dtype=float)
-    else:
-        if cp_anchor_source == "test":
-            source = instance.X_test
-        else:
-            source = instance.X_train if instance.X_train is not None else instance.X_test
-        anchor_rows = select_anchor_contexts(
-            source, instance.context_var_indices,
-            cp_n_anchors, cp_anchor_method, seed,
-        )
+    anchor_rows = _get_anchor_rows(
+        instance, cp_anchors, cp_anchor_source, cp_n_anchors, cp_anchor_method, seed,
+    )
     anchors = [anchor_rows[i] for i in range(anchor_rows.shape[0])]
     ctx_bounds = {
         c: (master.x[c].lb, master.x[c].ub)
@@ -692,7 +744,8 @@ class _BasicSeparation:
                     f"Iter {iteration}: Pruned {pruned_count}/{total_active} "
                     f"inactive scenarios"
                 )
-        master.add_objective_cut(obj_star, iteration)
+        if master.t_obj is not None:
+            master.add_objective_cut(obj_star, iteration)
 
         for c_idx, worst_case_models, rhs in scenarios_to_add:
             master.add_scenario(c_idx, worst_case_models, rhs, rho=env.rho)
@@ -990,62 +1043,39 @@ class _CoherentSeparation:
                            violation=history_viol)
 
 
-def solve_cp(instance: ProblemInstance,
-             model_type: str = "rf",
-             model_params: dict = None,
-             rho: float = 0.0,
-             max_iterations: int = 50,
-             cp_k_neighbors_frac: float = 0.1,
-             cp_n_candidates: int = 20,
-             seed: int = 42,
-             cp_alpha: float = 0.0,
-             cp_anchor_source: str = "train",
-             cp_n_anchors: Optional[int] = None,
-             cp_anchor_method: str = "kmedoids",
-             cp_anchors: Optional[np.ndarray] = None,
-             cp_distance: str = "full",
-             cp_dist_tol: float = 1e-3,
-             cp_trace_path: Optional[str] = None
-             ) -> tuple[SolutionResult, CPHistory]:
-    """Cutting Planes for robust constraint learning (one driver, auto-selected oracle).
-
-    The loop is identical across scenarios -- train nominal, build the master,
-    solve for the optimal solution(s) ``x*``, separate, add cuts, terminate. The
-    separation strategy is chosen automatically from the problem shape:
-
-    - **basic** -- a single global LP with a single learned constraint
-      (synthetic): plain worst-case localized-bootstrap separation at ``x*``,
-      cut whatever violates, stop when nothing does. No ``cp_alpha``.
-    - **coherent** -- multiple constraints, multiple ``x*``, and/or a learned
-      objective (e.g. gastric): one *shared* bootstrap relabeling drives all
-      constraints (and the epigraph objective), and the worst scenario -- ranked
-      by **normalized average distance** (mean relative exceedance over all
-      ``(x*, outcome)`` cells, range 0–1) -- is cut. We stop when that distance
-      is ``<= cp_dist_tol`` or no scenario can be added without pushing more than
-      ``cp_alpha`` of the ``x*`` infeasible. ``cp_alpha`` only caps feasibility
-      (multiple ``x*``); it never affects ranking or the objective. See
-      :class:`_CoherentSeparation`.
-
-    Anchors (the contexts at which we collect ``x*``) come from
-    ``select_anchor_contexts`` over ``cp_anchor_source`` rows when
-    ``instance.context_var_indices`` is set; otherwise there is a single global
-    LP. ``cp_distance`` (``"full" | "context" | "auto"``) sets neighbor
-    localization and defaults to ``"full"`` (context + decision, around ``x*``).
-    """
-    model_params = model_params or {}
+def _run_cp_loop(instance: ProblemInstance,
+                 *,
+                 model_type: str,
+                 model_params: dict,
+                 rho: float,
+                 max_iterations: int,
+                 cp_k_neighbors_frac: float,
+                 cp_n_candidates: int,
+                 seed: int,
+                 cp_alpha: float,
+                 cp_distance: str,
+                 cp_dist_tol: float,
+                 cp_robustify_objective: bool,
+                 anchors: list,
+                 cp_trace_path: Optional[str] = None) -> tuple[SolutionResult, CPHistory]:
+    """Run the CP cut loop for a fixed anchor set (one or many contexts)."""
     total_start = time.time()
     history = CPHistory()
 
     print("    [cp] Training nominal models and building master MIP...", flush=True)
     master, model_config_map = _build_master_with_nominal(
-        instance, model_type, model_params, rho
+        instance, model_type, model_params, rho,
+        robustify_objective=cp_robustify_objective,
     )
-    anchors, ctx_bounds = _setup_anchors(
-        instance, master, cp_anchors, cp_anchor_source,
-        cp_n_anchors, cp_anchor_method, seed,
-    )
-    distance_feature_indices = _resolve_distance(cp_distance, instance)
+    if not instance.context_var_indices:
+        ctx_bounds = {}
+    else:
+        ctx_bounds = {
+            c: (master.x[c].lb, master.x[c].ub)
+            for c in instance.context_var_indices
+        }
 
+    distance_feature_indices = _resolve_distance(cp_distance, instance)
     env = _SepEnv(
         instance=instance, master=master, anchors=anchors,
         model_config_map=model_config_map,
@@ -1053,14 +1083,12 @@ def solve_cp(instance: ProblemInstance,
         rho=rho, seed=seed,
     )
 
-    # Auto-select: the trivial single-LP / single-constraint case uses plain
-    # worst-case separation; anything with multiple constraints, multiple
-    # optimal solutions, or a learned (robustifiable) objective uses coherent
-    # (simultaneous) separation -- only coherent robustifies the epigraph.
     n_constraints = sum(1 for c in instance.constraints if _is_constraint_constraint(c))
     has_obj_models = any(
         md.obj_weight != 0.0 for c in instance.constraints for md in c.models_data
     )
+    if not cp_robustify_objective:
+        has_obj_models = False
     single_point = len(anchors) == 1
     use_basic = (n_constraints <= 1) and single_point and not has_obj_models
 
@@ -1076,9 +1104,10 @@ def solve_cp(instance: ProblemInstance,
 
     n_solves = 1 if single_point else len(anchors)
     extra = f", alpha={cp_alpha}" if (not use_basic and not single_point) else ""
+    obj_flag = "robustify_objective" if cp_robustify_objective else "nominal_objective"
     print(
         f"    [cp] separation={mode}; constraints={n_constraints}, "
-        f"optimal solves={n_solves}, distance={cp_distance}{extra}",
+        f"optimal solves={n_solves}, distance={cp_distance}, {obj_flag}{extra}",
         flush=True,
     )
 
@@ -1105,4 +1134,123 @@ def solve_cp(instance: ProblemInstance,
     return _finalize(
         instance, master, ctx_bounds, history, status,
         total_start, cp_trace_path, last_x, last_obj,
+    )
+
+
+def solve_cp(instance: ProblemInstance,
+             model_type: str = "rf",
+             model_params: dict = None,
+             rho: float = 0.0,
+             max_iterations: int = 50,
+             cp_k_neighbors_frac: float = 0.1,
+             cp_n_candidates: int = 20,
+             seed: int = 42,
+             cp_alpha: float = 0.0,
+             cp_anchor_source: str = "train",
+             cp_n_anchors: Optional[int] = None,
+             cp_anchor_method: str = "kmedoids",
+             cp_anchors: Optional[np.ndarray] = None,
+             cp_distance: str = "full",
+             cp_dist_tol: float = 1e-3,
+             cp_trace_path: Optional[str] = None,
+             cp_robustify_objective: bool = True,
+             cp_eval_mode: str = "global",
+             cp_nearest_distance: str = "context",
+             ) -> tuple:
+    """Cutting Planes for robust constraint learning (one driver, auto-selected oracle).
+
+    The loop is identical across scenarios -- train nominal, build the master,
+    solve for the optimal solution(s) ``x*``, separate, add cuts, terminate. The
+    separation strategy is chosen automatically from the problem shape:
+
+    - **basic** -- a single global LP with a single learned constraint
+      (synthetic): plain worst-case localized-bootstrap separation at ``x*``,
+      cut whatever violates, stop when nothing does. No ``cp_alpha``.
+    - **coherent** -- multiple constraints, multiple ``x*``, and/or a learned
+      objective (e.g. gastric): one *shared* bootstrap relabeling drives all
+      constraints (and optionally the epigraph objective), and the worst scenario
+      -- ranked by **normalized average distance** -- is cut.
+
+    ``cp_eval_mode``:
+    - ``"global"`` (default): one shared master; cuts from all anchors.
+    - ``"per_anchor_nearest"``: train one CP master per anchor; at prescribe time
+      pick the nearest training anchor's master (see ``CPMultiAnchorResult``).
+
+    ``cp_robustify_objective``: when ``False``, embed OS directly (no epigraph
+    cuts); only constraint feasibility is robustified.
+    """
+    model_params = model_params or {}
+    loop_kwargs = dict(
+        model_type=model_type,
+        model_params=model_params,
+        rho=rho,
+        max_iterations=max_iterations,
+        cp_k_neighbors_frac=cp_k_neighbors_frac,
+        cp_n_candidates=cp_n_candidates,
+        seed=seed,
+        cp_alpha=cp_alpha,
+        cp_distance=cp_distance,
+        cp_dist_tol=cp_dist_tol,
+        cp_robustify_objective=cp_robustify_objective,
+    )
+
+    if cp_eval_mode == "per_anchor_nearest":
+        anchor_rows = _get_anchor_rows(
+            instance, cp_anchors, cp_anchor_source,
+            cp_n_anchors, cp_anchor_method, seed,
+        )
+        if anchor_rows is None:
+            anchors = [None]
+            anchor_rows = np.empty((0, instance.n_features))
+        else:
+            anchors = [anchor_rows[i] for i in range(anchor_rows.shape[0])]
+
+        print(
+            f"    [cp] eval_mode=per_anchor_nearest; "
+            f"{len(anchors)} anchor-specific masters "
+            f"(nearest_distance={cp_nearest_distance})",
+            flush=True,
+        )
+        total_start = time.time()
+        anchor_results: List[SolutionResult] = []
+        combined = CPHistory()
+        statuses = []
+        for k, anchor in enumerate(anchors):
+            print(f"    [cp] anchor {k + 1}/{len(anchors)}...", flush=True)
+            trace = cp_trace_path if k == len(anchors) - 1 else None
+            result, hist = _run_cp_loop(
+                instance, anchors=[anchor], cp_trace_path=trace, **loop_kwargs,
+            )
+            anchor_results.append(result)
+            statuses.append(result.status)
+            combined.iterations = max(combined.iterations, hist.iterations or 0)
+            combined.violations.extend(hist.violations)
+            combined.objectives.extend(hist.objectives)
+
+        aggregate_status = "optimal" if all(s == "optimal" for s in statuses) else statuses[-1]
+        multi = CPMultiAnchorResult(
+            anchor_rows=anchor_rows,
+            anchor_results=anchor_results,
+            status=aggregate_status,
+            solve_time=time.time() - total_start,
+            models_embedded=sum(r.models_embedded for r in anchor_results),
+            nearest_distance_feature_indices=_resolve_nearest_distance(
+                cp_nearest_distance, instance,
+            ),
+            iterations=combined.iterations,
+        )
+        return multi, combined
+
+    print("    [cp] eval_mode=global", flush=True)
+    anchor_rows = _get_anchor_rows(
+        instance, cp_anchors, cp_anchor_source,
+        cp_n_anchors, cp_anchor_method, seed,
+    )
+    if anchor_rows is None:
+        anchors = [None]
+    else:
+        anchors = [anchor_rows[i] for i in range(anchor_rows.shape[0])]
+
+    return _run_cp_loop(
+        instance, anchors=anchors, cp_trace_path=cp_trace_path, **loop_kwargs,
     )

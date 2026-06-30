@@ -86,6 +86,8 @@ Two further knobs are shared:
 
 - **Anchor set (where we collect $x^\*$).** For the *parametric-context* gastric case the master is solved once per representative context anchor, giving $x^\*_1,\dots,x^\*_K$. Anchors are chosen by `select_anchor_contexts` (k-medoids over the context columns by default; `sample`/`all` available) from either the training or test contexts (`cp_anchor_source`). Training anchors give an **offline** robust region (no test labels, precomputable); each cut is a full embedded model valid at every context, so it remains sound when `evaluate_prescribed_table6` re-solves per test cohort.
 - **Localization distance (which pool).** `cp_distance` defaults to **`"full"`** for all scenarios (context + decision distance, so the pool follows $x^\*$). `"context"` localizes on the context columns only (models trained on arms for *similar patients*), and `"auto"` uses context-only when the problem is contextual, full otherwise. Training points are only the bootstrap *pool*, never feasibility targets.
+- **Objective robustification.** `cp.robustify_objective` (default `true`) uses the epigraph reformulation and worst-case objective cuts in coherent separation. Set `false` to embed OS nominally (constraints only are robustified).
+- **Per-anchor evaluation mode.** `cp.eval_mode: "per_anchor_nearest"` trains one CP master per training anchor (each with single-$x^*$ coherent separation, so no coverage-cap deadlock). At prescribe time, `evaluate_prescribed_table6` picks the nearest training anchor (by `cp.nearest_distance`, default context-only) and re-solves that anchor's MIP. Cost is $K\times$ the single-anchor CP train time. Default `eval_mode: "global"` keeps one shared master with global cuts.
 
 The *marketing* (in-LP context, **coupled**) setting — one constraint summing a shared $\theta$ over many in-LP context points, $\sum_q f(a(x,z_q)) \le b$ — would add a third strategy (worst-case model over the aggregate); it is not implemented pending a marketing data loader.
 
@@ -169,7 +171,7 @@ Edit `config.yaml` to change:
 - Data: number of training points, features, noise level
 - Model: type (cart/rf/xgb), hyperparameters
 - Uncertainty: bootstrap resamples (`n_bootstrap`, `cp_k_neighbors_frac`, `cp_alpha`)
-- Method-specific: wrapper alpha/P, number of scenarios, Cutting Planes settings (`cp.anchor_source`, `cp.n_anchors`, `cp.anchor_method`, `cp.distance`, and `cp.dist_tol` — the normalized-average-distance stopping tolerance for the coherent strategy (range 0–1)). `solve_cp` auto-selects basic vs coherent separation from the problem shape; there is no separation flag.
+- Method-specific: wrapper alpha/P, number of scenarios, Cutting Planes settings (`cp.anchor_source`, `cp.n_anchors`, `cp.anchor_method`, `cp.distance`, `cp.dist_tol`, `cp.robustify_objective`, `cp.eval_mode`, `cp.nearest_distance`). `solve_cp` auto-selects basic vs coherent separation from the problem shape; there is no separation flag.
 - Evaluation: CV folds, Bootstrap resamples
 
 ## Project Structure

@@ -103,6 +103,9 @@ def _resolve_run_settings(config, args):
     settings["cp_trace_path"] = "results/gastric/cp_trace.csv"
     settings["cp_distance"] = cp_cfg.get("distance", "full")
     settings["cp_dist_tol"] = cp_cfg.get("dist_tol", 1e-3)
+    settings["cp_robustify_objective"] = cp_cfg.get("robustify_objective", True)
+    settings["cp_eval_mode"] = cp_cfg.get("eval_mode", "global")
+    settings["cp_nearest_distance"] = cp_cfg.get("nearest_distance", "context")
 
     if args.max_test_rows is not None:
         settings["max_test_rows"] = args.max_test_rows
@@ -200,6 +203,9 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             cp_anchor_method=settings["cp_anchor_method"],
             cp_distance=settings["cp_distance"],
             cp_trace_path=settings["cp_trace_path"],
+            cp_robustify_objective=settings["cp_robustify_objective"],
+            cp_eval_mode=settings["cp_eval_mode"],
+            cp_nearest_distance=settings["cp_nearest_distance"],
         ),
     }
     return solvers

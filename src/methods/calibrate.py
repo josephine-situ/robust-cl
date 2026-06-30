@@ -20,7 +20,7 @@ from typing import Callable
 import numpy as np
 
 from src.data.generate import ProblemInstance
-from src.evaluation.chemo_metrics import solve_for_context
+from src.evaluation.chemo_metrics import solve_for_test_cohort
 
 
 def infeasible_fraction(solver_fn: Callable, instance: ProblemInstance,
@@ -56,7 +56,7 @@ def infeasible_fraction(solver_fn: Callable, instance: ProblemInstance,
     n_infeas = 0
     infeasible_indices: list[int] = []
     for i in order:
-        _, x_opt = solve_for_context(result, instance, contexts[i])
+        _, x_opt = solve_for_test_cohort(result, instance, contexts[i])
         if x_opt is None:
             n_infeas += 1
             infeasible_indices.append(i)

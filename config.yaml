@@ -71,6 +71,9 @@ methods:
     # average distance (mean relative exceedance over all x* x outcomes) is at
     # or below this. Range 0-1; 0 = stop only when nothing violates.
     dist_tol: 0.01
+    robustify_objective: false   # false = nominal embedded OS, no epigraph cuts
+    eval_mode: "per_anchor_nearest"         # "global" | "per_anchor_nearest"
+    nearest_distance: "context" # anchor assignment at prescribe: "context" | "full"
 
   chemo:
     methods_to_run:
