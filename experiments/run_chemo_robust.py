@@ -284,11 +284,15 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
     return build(knob)
 
 
-def run_chemo_robust(config, args, cv_configs=None, gt_configs=None):
+def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
+                     subsample_frac=None, subsample_seed=None,
+                     write_output=True):
     settings = _resolve_run_settings(config, args)
     instance = gastric_cancer(
         fixed_constraint_configs=cv_configs if cv_configs else None,
         fixed_gt_ensemble_configs=gt_configs if gt_configs else None,
+        train_subsample_frac=subsample_frac,
+        subsample_seed=subsample_seed,
     )
     n_test = instance.X_test.shape[0]
     n_train = instance.X_train.shape[0]
@@ -423,15 +427,77 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None):
 
     import pandas as pd
     df = pd.DataFrame(all_rows)
+    if write_output:
+        os.makedirs("results/gastric", exist_ok=True)
+        df.to_csv(settings["output_path"], index=False)
+
+        print("\n" + "=" * 60)
+        print("RESULTS")
+        print("=" * 60)
+        print(df.to_string(index=False))
+        print(f"\nSaved to {settings['output_path']}")
+    return df
+
+
+def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None):
+    """Label-noise robustness probe: repeat the whole prescribe/evaluate pipeline
+    over R independent training subsamples (m-out-of-n, without replacement) and
+    report the *distribution* of GT-feasibility per method.
+
+    The GT ensemble oracle is unchanged across realizations (it is fit on the full
+    clean cohort); only the rows that FIT the embedded/robust constraint models are
+    resampled. Robust methods should show a higher worst-case and lower SD on the
+    ``all_constraints`` conjunction row than ``nominal``.
+    """
+    import pandas as pd
+    from src.evaluation.chemo_metrics import aggregate_realizations
+
+    n_real = args.n_realizations
+    frac = args.subsample_frac
+    base_seed = config["uncertainty"].get("bootstrap_seed", 42)
+
+    print("=" * 60)
+    print(
+        f"LABEL-NOISE ROBUSTNESS PROBE: {n_real} realizations, "
+        f"subsample_frac={frac}"
+    )
+    print("=" * 60)
+
+    per_real = []
+    for r in range(n_real):
+        sub_seed = base_seed + 1000 * (r + 1)
+        print(f"\n{'#' * 60}\n# Realization {r + 1}/{n_real} "
+              f"(subsample_seed={sub_seed})\n{'#' * 60}")
+        df_r = run_chemo_robust(
+            config, args, cv_configs=cv_configs, gt_configs=gt_configs,
+            subsample_frac=frac, subsample_seed=sub_seed,
+            write_output=False,
+        )
+        df_r = df_r.copy()
+        df_r["realization"] = r
+        df_r["subsample_seed"] = sub_seed
+        per_real.append(df_r)
+
+    df_long = pd.concat(per_real, ignore_index=True)
     os.makedirs("results/gastric", exist_ok=True)
-    df.to_csv(settings["output_path"], index=False)
+    long_path = "results/gastric/chemo_robust_realizations.csv"
+    df_long.to_csv(long_path, index=False)
+
+    summary = aggregate_realizations(df_long)
+    summary_path = "results/gastric/chemo_robust_robustness_summary.csv"
+    summary.to_csv(summary_path, index=False)
 
     print("\n" + "=" * 60)
-    print("RESULTS")
+    print("ROBUSTNESS SUMMARY (distribution across realizations)")
     print("=" * 60)
-    print(df.to_string(index=False))
-    print(f"\nSaved to {settings['output_path']}")
-    return df
+    # Highlight the headline conjunction row.
+    joint = summary[summary["outcome"] == "all_constraints"]
+    if not joint.empty:
+        print("\nJoint toxicity feasibility (all_constraints conjunction):")
+        print(joint.to_string(index=False))
+    print(f"\nSaved per-realization rows to {long_path}")
+    print(f"Saved robustness summary to {summary_path}")
+    return summary
 
 
 _DEFAULT_CV_CONFIGS = "results/cv/gastric_selected_configs.json"
@@ -445,6 +511,27 @@ def main():
     parser.add_argument("--methods", nargs="+", default=None)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--config", type=str, default="config.yaml")
+    parser.add_argument(
+        "--n-realizations",
+        type=int,
+        default=1,
+        help=(
+            "Number of training-subsample realizations for the label-noise "
+            "robustness probe. 1 (default) runs the standard single Table 6."
+        ),
+    )
+    parser.add_argument(
+        "--subsample-frac",
+        type=float,
+        default=None,
+        metavar="FRAC",
+        help=(
+            "Fraction of training rows drawn WITHOUT replacement to fit the "
+            "embedded/robust constraint models each realization (m-out-of-n). "
+            "Default None = full training set. Only the fit data is resampled; "
+            "the GT ensemble oracle is unchanged."
+        ),
+    )
     parser.add_argument(
         "--cv-configs",
         type=str,
@@ -514,7 +601,12 @@ def main():
                 "Run experiments/run_cv.py --ensemble to generate them."
             )
 
-    run_chemo_robust(config, args, cv_configs=cv_configs, gt_configs=gt_configs)
+    if args.n_realizations > 1 or args.subsample_frac is not None:
+        run_chemo_robust_realizations(
+            config, args, cv_configs=cv_configs, gt_configs=gt_configs
+        )
+    else:
+        run_chemo_robust(config, args, cv_configs=cv_configs, gt_configs=gt_configs)
 
 
 if __name__ == "__main__":

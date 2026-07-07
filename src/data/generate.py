@@ -374,7 +374,9 @@ def gastric_cancer(seed: int = 42,
                    cv_tune_gt: bool = False,
                    constraint_cv: bool = False,
                    fixed_constraint_configs: dict = None,
-                   fixed_gt_ensemble_configs: dict = None) -> ProblemInstance:
+                   fixed_gt_ensemble_configs: dict = None,
+                   train_subsample_frac: float = None,
+                   subsample_seed: int = None) -> ProblemInstance:
     """
     Chemotherapy regimen design for advanced gastric cancer.
 
@@ -467,6 +469,33 @@ def gastric_cancer(seed: int = 42,
     context_var_indices = list(range(n_ctx))
 
     # ------------------------------------------------------------------
+    # 9.5  Optional training subsample (robustness probe).
+    # ------------------------------------------------------------------
+    # Resample WITHOUT replacement only the rows used to FIT the embedded/robust
+    # constraint models (and the trust region / anchors that live on the observed
+    # data). The GT ensemble's percentile reference (`raw_train_targets`, used at
+    # the GT block below) stays on the FULL training targets, so the oracle is
+    # identical across realizations. `train_subsample_frac=None` -> full training
+    # set (default path byte-for-byte unchanged).
+    if train_subsample_frac is not None:
+        n_tr = X_train.shape[0]
+        m = max(1, int(round(train_subsample_frac * n_tr)))
+        sub_rng = np.random.RandomState(subsample_seed)
+        sub_idx = np.sort(sub_rng.choice(n_tr, size=m, replace=False))
+        X_fit = X_train[sub_idx]
+        print(
+            f"Step 9.5: Training subsample {m}/{n_tr} rows "
+            f"(frac={train_subsample_frac}, seed={subsample_seed})."
+        )
+    else:
+        sub_idx = None
+        X_fit = X_train
+
+    def _sub(arr):
+        """Index a full-length training array down to the fit subsample."""
+        return arr if sub_idx is None else arr[sub_idx]
+
+    # ------------------------------------------------------------------
     # 10.  Constraint models (percentile targets, fixed UB=0.6; v11 / Sec. 5.5)
     # ------------------------------------------------------------------
     constraints = []
@@ -480,11 +509,12 @@ def gastric_cancer(seed: int = 42,
     }
 
     for name, y_raw in raw_train_targets.items():
-        y_pct = train_percentile_scores(y_raw, y_raw)
+        y_fit = _sub(y_raw)
+        y_pct = train_percentile_scores(y_fit, y_fit)
         model_data = MLModelData(
-            X_train=X_train,
+            X_train=X_fit,
             y_train=y_pct,
-            y_true=y_raw,
+            y_true=y_fit,
             weight=1.0,
             obj_weight=0.0,
         )
@@ -494,19 +524,20 @@ def gastric_cancer(seed: int = 42,
             rhs=GASTRIC_TOX_UB,
             f_true=None,
         ))
-        
+
     # Inject OS model as an unconstrained bounding system directly applied to the objective
+    os_fit = _sub(os_train)
     os_model_data = MLModelData(
-        X_train=X_train,
-        y_train=os_train,
-        y_true=os_train,
+        X_train=X_fit,
+        y_train=os_fit,
+        y_true=os_fit,
         weight=1.0,
         obj_weight=-1.0 # Maximize OS
     )
     constraints.append(LearnedConstraint(
         name="os_constraint",
         models_data=[os_model_data],
-        rhs=np.max(os_train),
+        rhs=np.max(os_fit),
         f_true=None
     ))
 
@@ -647,7 +678,7 @@ def gastric_cancer(seed: int = 42,
         is_survival=True,
     ))
 
-    trust_region_points = X_train[:, decision_var_indices].copy()
+    trust_region_points = X_fit[:, decision_var_indices].copy()
     binary_var_indices = [
         n_ctx + j for j, col in enumerate(t_cols) if col.endswith("_Ind")
     ]
@@ -666,7 +697,7 @@ def gastric_cancer(seed: int = 42,
 
     return ProblemInstance(
         X_test=X_test,
-        X_train=X_train,
+        X_train=X_fit,
         cost_vector=cost_vector,
         variable_lb=variable_lb,
         variable_ub=variable_ub,

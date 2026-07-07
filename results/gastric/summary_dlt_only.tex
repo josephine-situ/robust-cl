@@ -1,6 +1,6 @@
 \begin{table}[ht]
 \centering
-\caption{Comparison of robust prescriptive methods under DLT-only constraints. Any DLT: fraction of regimens satisfying the DLT toxicity constraint (ground-truth ensemble). Evaluated on $n=82$ samestore patients.}
+\caption{Comparison of robust prescriptive methods under DLT-only constraints. Any DLT: fraction of regimens satisfying the DLT toxicity constraint (ground-truth ensemble). Evaluated on $n=95$ samestore patients.}
 \label{tab:chemo_dlt_only}
 \begin{tabular}{lcccccc}
 \toprule
@@ -8,14 +8,12 @@
 \cmidrule(lr){2-3} \cmidrule(lr){4-5}
 Method & mean (SD) & \% Improv & mean (SD) & \% Improv & Solve Time (s) \\
 \midrule
-Given & 82.9 (37.9) & --- & 10.86 (1.98) & --- & --- \\
+Given & 85.3 (35.6) & --- & 10.61 (1.63) & --- & --- \\
 \midrule
-Nominal & 93.9 (24.1) & +13.2\% & \textbf{12.48 (1.40)} & \textbf{+14.9\%} & 0.022 \\
-Robust (Param.) & 89.0 (31.5) & +7.4\% & 12.42 (1.44) & +14.3\% & 0.020 \\
-Robust (Reg.) & 95.1 (21.7) & +14.7\% & 10.84 (1.79) & -0.2\% & \textbf{0.017} \\
-Tree Violation & 93.9 (24.1) & +13.2\% & \textbf{12.48 (1.40)} & \textbf{+14.9\%} & 0.022 \\
-Wrapper & 96.3 (18.9) & +16.2\% & 11.27 (1.30) & +3.7\% & 0.651 \\
-CP & \textbf{98.8 (11.0)} & \textbf{+19.1\%} & 11.11 (1.03) & +2.3\% & 0.157 \\
+Nominal & \textbf{100.0 (0.0)} & \textbf{+17.3\%} & \textbf{11.75 (0.84)} & \textbf{+10.7\%} & 0.020 \\
+Robust (Reg.) & \textbf{100.0 (0.0)} & \textbf{+17.3\%} & 8.15 (0.98) & -23.2\% & \textbf{0.017} \\
+Wrapper & \textbf{100.0 (0.0)} & \textbf{+17.3\%} & 11.64 (1.07) & +9.7\% & 0.336 \\
+CP & \textbf{100.0 (0.0)} & \textbf{+17.3\%} & 11.73 (0.87) & +10.5\% & 0.027 \\
 \bottomrule
 \end{tabular}
 \end{table}

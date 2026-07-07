@@ -390,3 +390,48 @@ def table6_results_to_dataframe(rows: List[ChemoTable6Result]):
     import pandas as pd
 
     return pd.DataFrame([row.__dict__ for row in rows])
+
+
+def aggregate_realizations(df_long, quantile: float = 0.10):
+    """Summarize the label-noise robustness probe across training subsamples.
+
+    ``df_long`` is a concatenation of the per-realization Table 6 dataframes with
+    an added integer ``realization`` column. For each
+    ``(method, constraint_mode, outcome)`` we report the distribution of
+    ``prescribed_mean`` across realizations: its mean, SD, worst-case (min for the
+    toxicity feasibility / conjunction rows, where higher = better), and a low
+    quantile (``quantile``, default 10th percentile) as a tail / CVaR-style stat.
+
+    Robustness claim: robust methods should show a **higher worst-case** and
+    **lower SD** on the ``all_constraints`` conjunction row than ``nominal``, even
+    when the means are comparable.
+    """
+    import numpy as np
+    import pandas as pd
+
+    def _agg(g: pd.DataFrame) -> pd.Series:
+        vals = g["prescribed_mean"].to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            stats = dict(
+                prescribed_mean=np.nan, prescribed_sd=np.nan,
+                worst_case=np.nan, low_quantile=np.nan,
+            )
+        else:
+            stats = dict(
+                prescribed_mean=float(np.mean(vals)),
+                prescribed_sd=float(np.std(vals, ddof=1)) if vals.size > 1 else 0.0,
+                worst_case=float(np.min(vals)),
+                low_quantile=float(np.quantile(vals, quantile)),
+            )
+        stats["given_mean"] = float(np.nanmean(g["given_mean"].to_numpy(dtype=float)))
+        stats["n_realizations"] = int(vals.size)
+        return pd.Series(stats)
+
+    summary = (
+        df_long
+        .groupby(["method", "constraint_mode", "outcome"], sort=False)
+        .apply(_agg, include_groups=False)
+        .reset_index()
+    )
+    return summary
