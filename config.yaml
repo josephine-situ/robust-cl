@@ -83,7 +83,7 @@ methods:
       - nominal
       # - tree_violation # like paper - only different if RF used. Often infeasible.
       - robust_reg
-      - wrapper
+      # - wrapper # too slow
     constraint_modes:
       - dlt_only
       - all_constraints
