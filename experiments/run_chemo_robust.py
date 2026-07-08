@@ -117,6 +117,11 @@ def _resolve_run_settings(config, args):
         settings["methods_to_run"] = args.methods
     if args.output:
         settings["output_path"] = args.output
+    # CP ablation overrides (default None -> use config.yaml values).
+    if getattr(args, "cp_robustify_objective", None) is not None:
+        settings["cp_robustify_objective"] = (args.cp_robustify_objective == "true")
+    if getattr(args, "cp_eval_mode", None) is not None:
+        settings["cp_eval_mode"] = args.cp_eval_mode
 
     settings["bootstrap_seed"] = unc.get("bootstrap_seed", 42)
     settings["embedding_mode"] = config["methods"].get("embedding_mode", "hard")
@@ -495,7 +500,8 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
 
     df_long = pd.concat(rows, ignore_index=True)
     os.makedirs("results/gastric", exist_ok=True)
-    suffix = "_rhs_sweep" if sweeping else ""
+    tag = f"_{args.output_tag}" if getattr(args, "output_tag", None) else ""
+    suffix = tag + ("_rhs_sweep" if sweeping else "")
     long_path = f"results/gastric/chemo_robust_realizations{suffix}.csv"
     df_long.to_csv(long_path, index=False)
 
@@ -560,6 +566,25 @@ def main():
             "both the embedded constraint and the GT threshold). Crossed with the "
             "realization loop using common random numbers. E.g. --rhs-grid 0.3 0.4 0.5 0.6."
         ),
+    )
+    parser.add_argument(
+        "--cp-robustify-objective",
+        choices=["true", "false"],
+        default=None,
+        help="CP ablation: override methods.cp.robustify_objective (default from config).",
+    )
+    parser.add_argument(
+        "--cp-eval-mode",
+        choices=["global", "per_anchor_nearest"],
+        default=None,
+        help="CP ablation: override methods.cp.eval_mode (default from config).",
+    )
+    parser.add_argument(
+        "--output-tag",
+        type=str,
+        default=None,
+        metavar="TAG",
+        help="Suffix for realization/summary output filenames (keeps ablation variants separate).",
     )
     parser.add_argument(
         "--cv-configs",
