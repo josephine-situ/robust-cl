@@ -20,22 +20,38 @@ conda activate robcl_env
 
 export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 
-# Label-noise robustness probe over R training subsamples (m-out-of-n, without
+# Label-noise robustness over R training subsamples (m-out-of-n, without
 # replacement). Uses the full config from config.yaml: 96-row test set, both
 # constraint modes, n_bootstrap=20, CP 20 iterations, 10 anchors. The GT ensemble
-# oracle is refit on the full clean cohort each realization (invariant), only the
-# constraint/robust model fit rows are resampled. Writes
-# results/gastric/chemo_robust_realizations.csv and
-# results/gastric/chemo_robust_robustness_summary.csv.
-# NOTE: runtime scales ~linearly with R; raise --time / lower R if it overruns.
+# oracle is refit on the full clean cohort each realization (invariant); only the
+# constraint/robust model fit rows are resampled.
+# NOTE: runtime scales ~linearly with (R * #RHS); raise --time / lower R if it overruns.
+#
+# RUN_MODE=probe (default): single subsample_frac, all methods. Writes
+#   results/gastric/chemo_robust_{realizations,robustness_summary}.csv
+# RUN_MODE=sweep: RHS x subsample-frac frontier with common random numbers, over
+#   nominal/robust_reg/cp (wrapper excluded here -- slow; add it on final cells).
+#   Writes results/gastric/chemo_robust_{realizations,robustness_summary}_rhs_sweep.csv
+RUN_MODE="${RUN_MODE:-probe}"
 N_REALIZATIONS="${N_REALIZATIONS:-20}"
 SUBSAMPLE_FRAC="${SUBSAMPLE_FRAC:-0.8}"
+RHS_GRID="${RHS_GRID:-0.3 0.4 0.5 0.6}"
 
-python -u experiments/run_chemo_robust.py \
-    --n-realizations "${N_REALIZATIONS}" \
-    --subsample-frac "${SUBSAMPLE_FRAC}"
+if [[ "${RUN_MODE}" == "sweep" ]]; then
+    python -u experiments/run_chemo_robust.py \
+        --n-realizations "${N_REALIZATIONS}" \
+        --subsample-frac "${SUBSAMPLE_FRAC}" \
+        --rhs-grid ${RHS_GRID} \
+        --methods nominal robust_reg cp
+else
+    python -u experiments/run_chemo_robust.py \
+        --n-realizations "${N_REALIZATIONS}" \
+        --subsample-frac "${SUBSAMPLE_FRAC}"
+fi
 
-# Sensitivity (stronger dataset variability): uncomment to also run at 50%.
-# python -u experiments/run_chemo_robust.py --n-realizations "${N_REALIZATIONS}" --subsample-frac 0.5
+# Examples:
+#   sbatch experiments/submit_chemo_robust.sh                                  # probe, frac=0.8
+#   SUBSAMPLE_FRAC=0.5 sbatch experiments/submit_chemo_robust.sh               # probe sensitivity
+#   RUN_MODE=sweep N_REALIZATIONS=10 SUBSAMPLE_FRAC=0.5 sbatch experiments/submit_chemo_robust.sh
 
 echo "Finished at $(date)"
