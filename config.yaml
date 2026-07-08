@@ -41,12 +41,21 @@ calibration:
   tree_alpha_max: 0.5     # weakest tree-violation budget (strongest = 0.0)
   rho_min: 0.001           # weakest robust_param rho (never nominal)
   rho_max: 0.005           # strongest robust_param rho scanned
+  robust_reg_eps_max: 0.3  # strongest label-uncertainty radius scanned (robust_reg)
 
 methods:
   embedding_mode: "hard"  # "hard" | "tree_violation"
 
   robust_param:
     rho: 0.05  # parameter robustness on the splits (dual norm penalty)
+
+  robust_reg:
+    # Label-robust training counterpart (Bertsimas et al. 2019, Sec. 5), adapted to
+    # regression via a bounded additive label set D = {||dy||_1<=gamma, |dy_i|<=eps}.
+    # eps = label_eps * std(y) (per-outcome); gamma = budget_frac * n * eps.
+    label_eps: 0.1     # unitless label-uncertainty radius (calibrated when enabled)
+    budget_frac: 0.5   # fraction of rows the adversary may fully perturb (m = frac*n)
+    K: 5               # adversarial-training iterations (tree/xgb path only)
 
   wrapper:
     n_estimators: 25  # P (bootstrap wrapper; uses uncertainty.n_bootstrap in chemo runner)

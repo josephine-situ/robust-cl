@@ -123,6 +123,10 @@ def _resolve_run_settings(config, args):
     settings["rf_alpha"] = config["methods"].get("chemo_wrapper", {}).get("alpha", 0.25)
     settings["wrapper_alpha"] = config["methods"]["wrapper"].get("alpha", 0.1)
     settings["robust_rho"] = config["methods"].get("robust_param", {}).get("rho", 0.05)
+    rr_cfg = config["methods"].get("robust_reg", {})
+    settings["robust_reg_label_eps"] = rr_cfg.get("label_eps", 0.1)
+    settings["robust_reg_budget_frac"] = rr_cfg.get("budget_frac", 0.5)
+    settings["robust_reg_K"] = rr_cfg.get("K", 5)
 
     calib_cfg = config.get("calibration", {})
     settings["calibrate_to_alpha"] = calib_cfg.get("enabled", False)
@@ -131,6 +135,7 @@ def _resolve_run_settings(config, args):
     settings["calib_tree_alpha_max"] = calib_cfg.get("tree_alpha_max", 0.5)
     settings["calib_rho_min"] = calib_cfg.get("rho_min", 0.01)
     settings["calib_rho_max"] = calib_cfg.get("rho_max", 0.05)
+    settings["calib_robust_reg_eps_max"] = calib_cfg.get("robust_reg_eps_max", 0.3)
     return settings
 
 
@@ -170,13 +175,13 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             solve_robust_regression,
             model_type=model_type,
             model_params=model_params,
-            n_bootstrap=n_bootstrap,
+            label_eps=settings["robust_reg_label_eps"],
+            budget_frac=settings["robust_reg_budget_frac"],
+            K=settings["robust_reg_K"],
             seed=seed,
             rho=0.0,
             embedding_mode=embedding_mode,
             rf_alpha=rf_alpha,
-            conservativeness=1.0,
-            bootstrap_cache=bootstrap_cache,
         ),
         "wrapper": partial(
             solve_wrapper,
@@ -262,12 +267,13 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
             rho=knob, embedding_mode=em, rf_alpha=rf_alpha,
         )
     elif method == "robust_reg":
-        strength_to_knob = lambda s: s                 # conservativeness quantile
+        eps_max = settings["calib_robust_reg_eps_max"]
+        strength_to_knob = lambda s: eps_max * s        # label-uncertainty radius
         build = lambda knob: partial(
             solve_robust_regression, model_type=model_type, model_params=model_params,
-            n_bootstrap=nb, seed=seed, rho=0.0, embedding_mode=em, rf_alpha=rf_alpha,
-            conservativeness=knob, bootstrap_cache=bootstrap_cache,
-            ensembles_cache=ensembles_cache,
+            label_eps=knob, budget_frac=settings["robust_reg_budget_frac"],
+            K=settings["robust_reg_K"], seed=seed, rho=0.0,
+            embedding_mode=em, rf_alpha=rf_alpha,
         )
     else:
         raise ValueError(f"Method {method} is not calibratable")
@@ -330,9 +336,10 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
             settings["bootstrap_seed"],
         )
         print(f"Calibration contexts: {len(calib_contexts)} training anchors")
-        if any(m in ("wrapper", "robust_reg") for m in settings["methods_to_run"]):
+        if "wrapper" in settings["methods_to_run"]:
             # Pre-train the shared bootstrap ensembles once so calibration grid
             # evaluations (which change only the knob, not the models) reuse them.
+            # (robust_reg no longer uses bootstrap ensembles.)
             ensembles_cache, _ = train_bootstrap_ensembles_for_instance(
                 instance, model_type, model_params,
                 settings["n_bootstrap"], settings["bootstrap_seed"], coherent_cache,

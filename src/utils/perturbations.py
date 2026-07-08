@@ -30,6 +30,35 @@ def sample_random_perturbation(n: int,
     return delta
 
 
+def worst_case_label_shift(residuals: np.ndarray,
+                           eps: float,
+                           gamma: float) -> np.ndarray:
+    """Worst-case additive label perturbation over D = {|dy_i| <= eps, ||dy||_1 <= gamma}.
+
+    For a squared-loss objective ``sum_i (r_i + dy_i)^2`` with current residuals
+    ``r_i = y_i - f(x_i)``, the inner maximization over the box+budget set ``D`` is
+    attained at a vertex: push ``dy_i = eps * sign(r_i)`` on the largest-``|r_i|``
+    points until the L1 budget ``gamma`` is exhausted (a fractional shift on the
+    last point). This is the training-time analogue of
+    :func:`greedy_adversarial_perturbation` (which is decision-localized) and is
+    shared by the adversarial-training loop and the linear closed-form counterpart.
+    """
+    r = np.asarray(residuals, dtype=float)
+    delta = np.zeros(r.shape[0])
+    if eps <= 0 or gamma <= 0:
+        return delta
+    order = np.argsort(-np.abs(r))          # largest |residual| first
+    budget = float(gamma)
+    for i in order:
+        if budget <= 1e-12:
+            break
+        shift = min(eps, budget)
+        sign = 1.0 if r[i] >= 0 else -1.0    # ties (r_i == 0) -> +eps, harmless
+        delta[i] = sign * shift
+        budget -= shift
+    return delta
+
+
 def project_l1_ball(v: np.ndarray, radius: float) -> np.ndarray:
     """Project v onto the L1 ball of given radius."""
     if np.sum(np.abs(v)) <= radius:
