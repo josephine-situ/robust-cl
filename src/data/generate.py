@@ -376,7 +376,8 @@ def gastric_cancer(seed: int = 42,
                    fixed_constraint_configs: dict = None,
                    fixed_gt_ensemble_configs: dict = None,
                    train_subsample_frac: float = None,
-                   subsample_seed: int = None) -> ProblemInstance:
+                   subsample_seed: int = None,
+                   tox_ub: float = None) -> ProblemInstance:
     """
     Chemotherapy regimen design for advanced gastric cancer.
 
@@ -500,6 +501,10 @@ def gastric_cancer(seed: int = 42,
     # ------------------------------------------------------------------
     constraints = []
 
+    # Toxicity upper bound: default to the paper's 0.6, or override for an RHS sweep.
+    # The same value is used for the embedded constraint and the GT eval threshold.
+    tox_ub = GASTRIC_TOX_UB if tox_ub is None else float(tox_ub)
+
     raw_train_targets = {
         "dlt": dlt_train,
         "blood": blood_train,
@@ -510,7 +515,10 @@ def gastric_cancer(seed: int = 42,
 
     for name, y_raw in raw_train_targets.items():
         y_fit = _sub(y_raw)
-        y_pct = train_percentile_scores(y_fit, y_fit)
+        # Percentile reference is the FULL clean training target (not the subsample),
+        # shared with the GT ensemble's reference below and fixed across subsamples,
+        # so "<= tox_ub" means the same raw toxicity for the optimizer and the judge.
+        y_pct = train_percentile_scores(y_raw, y_fit)
         model_data = MLModelData(
             X_train=X_fit,
             y_train=y_pct,
@@ -521,7 +529,7 @@ def gastric_cancer(seed: int = 42,
         constraints.append(LearnedConstraint(
             name=f"{name}_constraint",
             models_data=[model_data],
-            rhs=GASTRIC_TOX_UB,
+            rhs=tox_ub,
             f_true=None,
         ))
 
@@ -666,7 +674,7 @@ def gastric_cancer(seed: int = 42,
         eval_outcomes.append(EvalOutcome(
             label=label,
             name=outcome_name,
-            rhs=GASTRIC_TOX_UB,
+            rhs=tox_ub,
             gt_fn=gt_models[outcome_name],
             is_survival=False,
         ))

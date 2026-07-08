@@ -292,13 +292,14 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
 
 def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
                      subsample_frac=None, subsample_seed=None,
-                     write_output=True):
+                     write_output=True, tox_ub=None):
     settings = _resolve_run_settings(config, args)
     instance = gastric_cancer(
         fixed_constraint_configs=cv_configs if cv_configs else None,
         fixed_gt_ensemble_configs=gt_configs if gt_configs else None,
         train_subsample_frac=subsample_frac,
         subsample_seed=subsample_seed,
+        tox_ub=tox_ub,
     )
     n_test = instance.X_test.shape[0]
     n_train = instance.X_train.shape[0]
@@ -462,36 +463,45 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
     n_real = args.n_realizations
     frac = args.subsample_frac
     base_seed = config["uncertainty"].get("bootstrap_seed", 42)
+    # RHS grid: sweep the toxicity upper bound (default = paper's value). Common
+    # random numbers -- the subsample seed depends only on the realization, not the
+    # RHS -- so RHS comparisons are paired across the same training draws.
+    rhs_grid = args.rhs_grid if args.rhs_grid else [None]
+    sweeping = args.rhs_grid is not None
 
     print("=" * 60)
     print(
         f"LABEL-NOISE ROBUSTNESS PROBE: {n_real} realizations, "
-        f"subsample_frac={frac}"
+        f"subsample_frac={frac}, rhs_grid={rhs_grid}"
     )
     print("=" * 60)
 
-    per_real = []
-    for r in range(n_real):
-        sub_seed = base_seed + 1000 * (r + 1)
-        print(f"\n{'#' * 60}\n# Realization {r + 1}/{n_real} "
-              f"(subsample_seed={sub_seed})\n{'#' * 60}")
-        df_r = run_chemo_robust(
-            config, args, cv_configs=cv_configs, gt_configs=gt_configs,
-            subsample_frac=frac, subsample_seed=sub_seed,
-            write_output=False,
-        )
-        df_r = df_r.copy()
-        df_r["realization"] = r
-        df_r["subsample_seed"] = sub_seed
-        per_real.append(df_r)
+    rows = []
+    for rhs in rhs_grid:
+        for r in range(n_real):
+            sub_seed = base_seed + 1000 * (r + 1)      # CRN: same across RHS
+            print(f"\n{'#' * 60}\n# rhs={rhs} realization {r + 1}/{n_real} "
+                  f"(subsample_seed={sub_seed})\n{'#' * 60}")
+            df_r = run_chemo_robust(
+                config, args, cv_configs=cv_configs, gt_configs=gt_configs,
+                subsample_frac=frac, subsample_seed=sub_seed,
+                write_output=False, tox_ub=rhs,
+            )
+            df_r = df_r.copy()
+            df_r["realization"] = r
+            df_r["subsample_seed"] = sub_seed
+            df_r["rhs"] = rhs if rhs is not None else "default"
+            rows.append(df_r)
 
-    df_long = pd.concat(per_real, ignore_index=True)
+    df_long = pd.concat(rows, ignore_index=True)
     os.makedirs("results/gastric", exist_ok=True)
-    long_path = "results/gastric/chemo_robust_realizations.csv"
+    suffix = "_rhs_sweep" if sweeping else ""
+    long_path = f"results/gastric/chemo_robust_realizations{suffix}.csv"
     df_long.to_csv(long_path, index=False)
 
-    summary = aggregate_realizations(df_long)
-    summary_path = "results/gastric/chemo_robust_robustness_summary.csv"
+    group_cols = ["rhs"] if sweeping else None
+    summary = aggregate_realizations(df_long, extra_group_cols=group_cols)
+    summary_path = f"results/gastric/chemo_robust_robustness_summary{suffix}.csv"
     summary.to_csv(summary_path, index=False)
 
     print("\n" + "=" * 60)
@@ -537,6 +547,18 @@ def main():
             "embedded/robust constraint models each realization (m-out-of-n). "
             "Default None = full training set. Only the fit data is resampled; "
             "the GT ensemble oracle is unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--rhs-grid",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="UB",
+        help=(
+            "Toxicity upper-bound values to sweep (overrides the paper's 0.6 for "
+            "both the embedded constraint and the GT threshold). Crossed with the "
+            "realization loop using common random numbers. E.g. --rhs-grid 0.3 0.4 0.5 0.6."
         ),
     )
     parser.add_argument(
@@ -608,7 +630,7 @@ def main():
                 "Run experiments/run_cv.py --ensemble to generate them."
             )
 
-    if args.n_realizations > 1 or args.subsample_frac is not None:
+    if args.n_realizations > 1 or args.subsample_frac is not None or args.rhs_grid:
         run_chemo_robust_realizations(
             config, args, cv_configs=cv_configs, gt_configs=gt_configs
         )

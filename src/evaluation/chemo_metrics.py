@@ -392,15 +392,16 @@ def table6_results_to_dataframe(rows: List[ChemoTable6Result]):
     return pd.DataFrame([row.__dict__ for row in rows])
 
 
-def aggregate_realizations(df_long, quantile: float = 0.10):
+def aggregate_realizations(df_long, quantile: float = 0.10, extra_group_cols=None):
     """Summarize the label-noise robustness probe across training subsamples.
 
     ``df_long`` is a concatenation of the per-realization Table 6 dataframes with
     an added integer ``realization`` column. For each
-    ``(method, constraint_mode, outcome)`` we report the distribution of
-    ``prescribed_mean`` across realizations: its mean, SD, worst-case (min for the
-    toxicity feasibility / conjunction rows, where higher = better), and a low
-    quantile (``quantile``, default 10th percentile) as a tail / CVaR-style stat.
+    ``(method, constraint_mode, outcome)`` (plus any ``extra_group_cols`` such as
+    ``rhs`` for a threshold sweep) we report the distribution of ``prescribed_mean``
+    across realizations: its mean, SD, worst-case (min for the toxicity feasibility /
+    conjunction rows, where higher = better), and a low quantile (``quantile``,
+    default 10th percentile) as a tail / CVaR-style stat.
 
     Robustness claim: robust methods should show a **higher worst-case** and
     **lower SD** on the ``all_constraints`` conjunction row than ``nominal``, even
@@ -408,6 +409,10 @@ def aggregate_realizations(df_long, quantile: float = 0.10):
     """
     import numpy as np
     import pandas as pd
+
+    group_cols = ["method", "constraint_mode", "outcome"]
+    if extra_group_cols:
+        group_cols = group_cols + list(extra_group_cols)
 
     def _agg(g: pd.DataFrame) -> pd.Series:
         vals = g["prescribed_mean"].to_numpy(dtype=float)
@@ -430,7 +435,7 @@ def aggregate_realizations(df_long, quantile: float = 0.10):
 
     summary = (
         df_long
-        .groupby(["method", "constraint_mode", "outcome"], sort=False)
+        .groupby(group_cols, sort=False)
         .apply(_agg, include_groups=False)
         .reset_index()
     )
