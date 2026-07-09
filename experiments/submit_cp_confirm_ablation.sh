@@ -2,8 +2,8 @@
 #SBATCH --job-name=cp-confirm-abl
 #SBATCH --partition=mit_normal
 #SBATCH --time=12:00:00
-#SBATCH --mem=128G
-#SBATCH --cpus-per-task=16
+#SBATCH --mem=16G
+#SBATCH --cpus-per-task=8
 #SBATCH --array=0-4%2
 #SBATCH --output=logs/cp_confirm_abl_%A_%a.out
 #SBATCH --error=logs/cp_confirm_abl_%A_%a.err

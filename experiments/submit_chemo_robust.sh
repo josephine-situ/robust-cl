@@ -2,8 +2,8 @@
 #SBATCH --job-name=chemo-robust
 #SBATCH --partition=mit_normal
 #SBATCH --time=12:00:00
-#SBATCH --mem=128G
-#SBATCH --cpus-per-task=16
+#SBATCH --mem=16G
+#SBATCH --cpus-per-task=8
 #SBATCH --output=logs/chemo_robust_%j.out
 #SBATCH --error=logs/chemo_robust_%j.err
 
