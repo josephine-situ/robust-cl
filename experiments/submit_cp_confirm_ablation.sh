@@ -4,7 +4,7 @@
 #SBATCH --time=12:00:00
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=16
-#SBATCH --array=0-4
+#SBATCH --array=0-4%2
 #SBATCH --output=logs/cp_confirm_abl_%A_%a.out
 #SBATCH --error=logs/cp_confirm_abl_%A_%a.err
 
@@ -26,11 +26,14 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # Common random numbers across tasks (subsample seed depends only on the
 # realization), so every task is paired on the same training draws.
 #
-# JOB ARRAY (fits a 12h wall clock): one task per variant, run in parallel.
+# JOB ARRAY (fits a 12h wall clock): one task per variant.
 #   task 0        : headline confirmation (nominal / robust_reg / cp)
 #   tasks 1-4     : CP ablation, 2x2 over {robustify_objective} x {eval_mode}
 # Each task's heaviest work <= task 0, which is lighter than the R=10 x 4-rhs
 # sweep that already completed, so each fits well under 12h.
+# `--array=0-4%2` caps concurrency at 2 tasks => at most 2 Gurobi sessions at
+# once (the license limit); the other tasks queue and start as seats free up.
+# Use %1 if you need to keep a Gurobi seat free for other work.
 #
 # Outputs: results/gastric/chemo_robust_{realizations,robustness_summary}_<TAG>_rhs_sweep.csv
 # ============================================================================
@@ -58,9 +61,9 @@ echo "Finished task ${SLURM_ARRAY_TASK_ID} at $(date)"
 
 # Notes:
 #   - Submit all five tasks:  sbatch experiments/submit_cp_confirm_ablation.sh
-#   - Just the confirmation:  sbatch --array=0   experiments/submit_cp_confirm_ablation.sh
-#   - Just the ablation:      sbatch --array=1-4 experiments/submit_cp_confirm_ablation.sh
-#   - If tasks queue rather than run in parallel, they still each fit 12h.
+#   - Just the confirmation:  sbatch --array=0     experiments/submit_cp_confirm_ablation.sh
+#   - Just the ablation:      sbatch --array=1-4%2 experiments/submit_cp_confirm_ablation.sh
+#   - At most 2 tasks run at once (Gurobi license); the rest queue.
 #   - Shared scratch (results/gastric/cp_trace.csv, prescriptions/*.csv) is
 #     overwritten across concurrent CP tasks; only the *tagged* summary/realization
 #     CSVs are per-variant and used for analysis.
