@@ -466,46 +466,52 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
     from src.evaluation.chemo_metrics import aggregate_realizations
 
     n_real = args.n_realizations
-    frac = args.subsample_frac
     base_seed = config["uncertainty"].get("bootstrap_seed", 42)
-    # RHS grid: sweep the toxicity upper bound (default = paper's value). Common
-    # random numbers -- the subsample seed depends only on the realization, not the
-    # RHS -- so RHS comparisons are paired across the same training draws.
+    # Two sweep axes, both with common random numbers -- the subsample seed depends
+    # only on the realization, not on rhs/frac -- so every cell is paired across the
+    # same training draws. rhs: toxicity upper bound; frac: subsample fraction
+    # (scarcity). Either can be a single value (default) or a grid.
     rhs_grid = args.rhs_grid if args.rhs_grid else [None]
-    sweeping = args.rhs_grid is not None
+    frac_grid = args.frac_grid if args.frac_grid else [args.subsample_frac]
+    sweeping_rhs = args.rhs_grid is not None
+    sweeping_frac = args.frac_grid is not None
+    sweeping = sweeping_rhs or sweeping_frac
 
     print("=" * 60)
     print(
         f"LABEL-NOISE ROBUSTNESS PROBE: {n_real} realizations, "
-        f"subsample_frac={frac}, rhs_grid={rhs_grid}"
+        f"frac_grid={frac_grid}, rhs_grid={rhs_grid}"
     )
     print("=" * 60)
 
     rows = []
-    for rhs in rhs_grid:
-        for r in range(n_real):
-            sub_seed = base_seed + 1000 * (r + 1)      # CRN: same across RHS
-            print(f"\n{'#' * 60}\n# rhs={rhs} realization {r + 1}/{n_real} "
-                  f"(subsample_seed={sub_seed})\n{'#' * 60}")
-            df_r = run_chemo_robust(
-                config, args, cv_configs=cv_configs, gt_configs=gt_configs,
-                subsample_frac=frac, subsample_seed=sub_seed,
-                write_output=False, tox_ub=rhs,
-            )
-            df_r = df_r.copy()
-            df_r["realization"] = r
-            df_r["subsample_seed"] = sub_seed
-            df_r["rhs"] = rhs if rhs is not None else "default"
-            rows.append(df_r)
+    for frac in frac_grid:
+        for rhs in rhs_grid:
+            for r in range(n_real):
+                sub_seed = base_seed + 1000 * (r + 1)  # CRN: same across frac & rhs
+                print(f"\n{'#' * 60}\n# frac={frac} rhs={rhs} realization "
+                      f"{r + 1}/{n_real} (subsample_seed={sub_seed})\n{'#' * 60}")
+                df_r = run_chemo_robust(
+                    config, args, cv_configs=cv_configs, gt_configs=gt_configs,
+                    subsample_frac=frac, subsample_seed=sub_seed,
+                    write_output=False, tox_ub=rhs,
+                )
+                df_r = df_r.copy()
+                df_r["realization"] = r
+                df_r["subsample_seed"] = sub_seed
+                df_r["rhs"] = rhs if rhs is not None else "default"
+                df_r["frac"] = frac if frac is not None else "full"
+                rows.append(df_r)
 
     df_long = pd.concat(rows, ignore_index=True)
     os.makedirs("results/gastric", exist_ok=True)
     tag = f"_{args.output_tag}" if getattr(args, "output_tag", None) else ""
-    suffix = tag + ("_rhs_sweep" if sweeping else "")
+    suffix = tag + ("_sweep" if sweeping else "")
     long_path = f"results/gastric/chemo_robust_realizations{suffix}.csv"
     df_long.to_csv(long_path, index=False)
 
-    group_cols = ["rhs"] if sweeping else None
+    group_cols = ([["frac"] if sweeping_frac else []] + [["rhs"] if sweeping_rhs else []])
+    group_cols = [c for sub in group_cols for c in sub] or None
     summary = aggregate_realizations(df_long, extra_group_cols=group_cols)
     summary_path = f"results/gastric/chemo_robust_robustness_summary{suffix}.csv"
     summary.to_csv(summary_path, index=False)
@@ -565,6 +571,18 @@ def main():
             "Toxicity upper-bound values to sweep (overrides the paper's 0.6 for "
             "both the embedded constraint and the GT threshold). Crossed with the "
             "realization loop using common random numbers. E.g. --rhs-grid 0.3 0.4 0.5 0.6."
+        ),
+    )
+    parser.add_argument(
+        "--frac-grid",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="FRAC",
+        help=(
+            "Subsample fractions to sweep (the scarcity axis), crossed with the "
+            "realization loop using common random numbers. Overrides --subsample-frac. "
+            "E.g. --frac-grid 0.3 0.4 0.5 0.6 0.7 0.8."
         ),
     )
     parser.add_argument(
@@ -655,7 +673,8 @@ def main():
                 "Run experiments/run_cv.py --ensemble to generate them."
             )
 
-    if args.n_realizations > 1 or args.subsample_frac is not None or args.rhs_grid:
+    if (args.n_realizations > 1 or args.subsample_frac is not None
+            or args.rhs_grid or args.frac_grid):
         run_chemo_robust_realizations(
             config, args, cv_configs=cv_configs, gt_configs=gt_configs
         )
