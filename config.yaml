@@ -81,8 +81,11 @@ methods:
     # average distance (mean relative exceedance over all x* x outcomes) is at
     # or below this. Range 0-1; 0 = stop only when nothing violates.
     dist_tol: 0.01
-    robustify_objective: true   # false = nominal embedded OS, no epigraph cuts
-    eval_mode: "per_anchor_nearest"         # "global" | "per_anchor_nearest"
+    # Ablation (rhs=0.6, frac=0.5) showed the robustness comes from the toxicity
+    # cuts; robustifying the OS objective and per-anchor masters both hurt (lower
+    # feasibility + OS, higher variance). Best config: objective off, global master.
+    robustify_objective: false  # false = nominal embedded OS, no epigraph cuts
+    eval_mode: "global"         # "global" | "per_anchor_nearest"
     nearest_distance: "context" # anchor assignment at prescribe: "context" | "full"
 
   chemo:
