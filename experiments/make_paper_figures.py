@@ -140,10 +140,53 @@ def _frontier(tag, xcol, xlabel, fname, title, fixed=None):
     _save(fig, fname)
 
 
+# ------------------------------------------------------ Pareto (conservativeness) ---
+def fig_pareto(tag="final_pareto"):
+    """OS vs worst-case feasibility as each method sweeps its OWN conservativeness
+    knob (fixed threshold). Genuine robustness = frontier dominance over conservative
+    nominal (robust_param); mere conservatism = curves overlap."""
+    path = f"{RES}/chemo_robust_robustness_summary_{tag}_sweep.csv"
+    if not os.path.exists(path):
+        print(f"  (skip fig_pareto: {path} not found)")
+        return
+    df = pd.read_csv(path)
+    swept = [m for m in ["robust_reg", "wrapper", "cp"] if m in df.method.unique()]
+    fig, axes = plt.subplots(1, 2, figsize=(9.4, 4.4))
+    for ax, mode in zip(axes, MODES):
+        f = _feas(df, mode); o = _os(df, mode)
+        for m in swept:                                       # robust methods: frontier line
+            fm = f[f.method == m].copy(); om = o[o.method == m].copy()
+            for d in (fm, om):
+                d["strength"] = pd.to_numeric(d["strength"], errors="coerce")
+            xy = fm.merge(om[["strength", "prescribed_mean"]], on="strength",
+                          suffixes=("_f", "_os")).sort_values("strength")
+            xy = xy.dropna(subset=["worst_case", "prescribed_mean_os"])
+            if xy.empty:
+                continue
+            ax.plot(xy["worst_case"], xy["prescribed_mean_os"], marker=MARKER.get(m, "o"),
+                    color=COLOR.get(m, "#333"), lw=2, ms=7, mec="white", mew=1,
+                    label=LABEL.get(m, m), zorder=3)
+        if "nominal" in df.method.unique():                   # nominal: single reference point
+            fn = _feas(df, mode); on = _os(df, mode)
+            wx = fn[fn.method == "nominal"]["worst_case"].dropna().mean()
+            oy = on[on.method == "nominal"]["prescribed_mean"].dropna().mean()
+            ax.scatter(wx, oy, s=150, color=COLOR["nominal"], marker=MARKER["nominal"],
+                       edgecolor="white", linewidth=1.3, zorder=4, label="Nominal (no knob)")
+        ax.set_title(MODE_TITLE[mode]); ax.set_xlabel("Worst-case joint feasibility")
+        ax.margins(0.12)
+    axes[0].set_ylabel("Overall survival (months)")
+    axes[0].legend(loc="best", fontsize=9)
+    fig.suptitle("Conservativeness frontier (rhs=0.6, frac=0.5): up-right dominates.\n"
+                 "A higher/right frontier $\\Rightarrow$ more efficient robustness (feasibility per unit OS)",
+                 y=1.06, fontsize=11)
+    _save(fig, "fig_pareto")
+
+
 def main():
     print("Generating paper figures ->", OUT)
     fig_headline()
     fig_tradeoff()
+    fig_pareto()
     _frontier("final_rhs", "rhs", "Toxicity upper bound (percentile)", "fig_rhs_frontier",
               "Frontier vs constraint tightness (frac=0.5): CP protects the tail where nominal is fragile")
     _frontier("final_frac", "frac", "Fraction of training data", "fig_frac_frontier",

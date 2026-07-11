@@ -4,7 +4,7 @@
 #SBATCH --time=12:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=8
-#SBATCH --array=0-3%2
+#SBATCH --array=0-4%2
 #SBATCH --output=logs/cp_final_%A_%a.out
 #SBATCH --error=logs/cp_final_%A_%a.err
 
@@ -31,18 +31,23 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 #   1 : RHS frontier            nominal/robust_reg/cp, frac=0.5, rhs 0.4..0.8, R=10
 #   2 : frac (scarcity) frontier nominal/robust_reg/cp, rhs=0.6, frac 0.3..0.8, R=10
 #   3 : wrapper (headline cell)  wrapper,               frac=0.5, rhs=0.6,      R=10
+#   4 : conservativeness Pareto  nominal/robust_reg/cp, rhs=0.6, frac=0.5,
+#         sweep each robust method's own knob (strength 0..1) -> OS-vs-worst-case
+#         feasibility frontier per method (separates robustness from conservatism).
 # Outputs: results/gastric/chemo_robust_{realizations,robustness_summary}_<TAG>_sweep.csv
-# (frontier CSVs carry rhs and/or frac columns for the figures.)
+# (frontier CSVs carry rhs, frac, and/or strength columns for the figures.)
 # ============================================================================
 R_CONFIRM="${R_CONFIRM:-30}"
 R_SWEEP="${R_SWEEP:-10}"
 FRAC_GRID="${FRAC_GRID:-0.3 0.4 0.5 0.6 0.7 0.8}"   # uniform scarcity axis
+CONS_GRID="${CONS_GRID:-0 0.25 0.5 0.75 1.0}"       # conservativeness strengths
 
 case "${SLURM_ARRAY_TASK_ID:-0}" in
   0) CMD="--subsample-frac 0.5 --rhs-grid 0.6";              METHODS="nominal robust_reg cp"; R="${R_CONFIRM}"; TAG="final_confirm" ;;
   1) CMD="--subsample-frac 0.5 --rhs-grid 0.4 0.5 0.6 0.7 0.8"; METHODS="nominal robust_reg cp"; R="${R_SWEEP}"; TAG="final_rhs" ;;
   2) CMD="--rhs-grid 0.6 --frac-grid ${FRAC_GRID}";         METHODS="nominal robust_reg cp"; R="${R_SWEEP}";   TAG="final_frac" ;;
   3) CMD="--subsample-frac 0.5 --rhs-grid 0.6";             METHODS="wrapper";               R="${R_SWEEP}";   TAG="final_wrapper" ;;
+  4) CMD="--subsample-frac 0.5 --rhs-grid 0.6 --conservativeness-grid ${CONS_GRID}"; METHODS="nominal robust_reg cp"; R="${R_SWEEP}"; TAG="final_pareto" ;;
   *) echo "unknown array task ${SLURM_ARRAY_TASK_ID}"; exit 1 ;;
 esac
 

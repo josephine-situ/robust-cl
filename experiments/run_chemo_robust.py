@@ -141,6 +141,12 @@ def _resolve_run_settings(config, args):
     settings["calib_rho_min"] = calib_cfg.get("rho_min", 0.01)
     settings["calib_rho_max"] = calib_cfg.get("rho_max", 0.05)
     settings["calib_robust_reg_eps_max"] = calib_cfg.get("robust_reg_eps_max", 0.3)
+
+    cs_cfg = config.get("conservativeness_sweep", {})
+    settings["cs_robust_param_rho_max"] = cs_cfg.get("robust_param_rho_max", 0.1)
+    settings["cs_cp_alpha_max"] = cs_cfg.get("cp_alpha_max", 0.3)
+    settings["cs_robust_reg_eps_max"] = cs_cfg.get("robust_reg_eps_max", 0.5)
+    settings["cs_wrapper_alpha_max"] = cs_cfg.get("wrapper_alpha_max", 0.5)
     return settings
 
 
@@ -201,29 +207,31 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
         # Single driver; gastric (multiple toxicity constraints over many
         # patients) auto-selects coherent separation with the shared alpha as the
         # feasibility coverage cap.
-        "cp": partial(
-            solve_cp,
-            model_type=model_type,
-            model_params=model_params,
-            rho=0.0,
-            max_iterations=settings["cp_max_iterations"],
-            cp_k_neighbors_frac=settings["cp_k_neighbors_frac"],
-            cp_k_neighbors_min=settings["cp_k_neighbors_min"],
-            cp_n_candidates=settings["cp_n_candidates"],
-            seed=seed,
-            cp_alpha=settings["alpha"],
-            cp_dist_tol=settings["cp_dist_tol"],
-            cp_anchor_source=settings["cp_anchor_source"],
-            cp_n_anchors=settings["cp_n_anchors"],
-            cp_anchor_method=settings["cp_anchor_method"],
-            cp_distance=settings["cp_distance"],
-            cp_trace_path=settings["cp_trace_path"],
-            cp_robustify_objective=settings["cp_robustify_objective"],
-            cp_eval_mode=settings["cp_eval_mode"],
-            cp_nearest_distance=settings["cp_nearest_distance"],
-        ),
+        "cp": _cp_solver(settings, model_type, model_params, settings["alpha"]),
     }
     return solvers
+
+
+def _cp_solver(settings, model_type, model_params, cp_alpha):
+    """Build the CP solver partial with a given coverage cap ``cp_alpha`` (lower =
+    more conservative). Shared by the default build and the conservativeness sweep."""
+    return partial(
+        solve_cp, model_type=model_type, model_params=model_params, rho=0.0,
+        max_iterations=settings["cp_max_iterations"],
+        cp_k_neighbors_frac=settings["cp_k_neighbors_frac"],
+        cp_k_neighbors_min=settings["cp_k_neighbors_min"],
+        cp_n_candidates=settings["cp_n_candidates"],
+        seed=settings["bootstrap_seed"], cp_alpha=cp_alpha,
+        cp_dist_tol=settings["cp_dist_tol"],
+        cp_anchor_source=settings["cp_anchor_source"],
+        cp_n_anchors=settings["cp_n_anchors"],
+        cp_anchor_method=settings["cp_anchor_method"],
+        cp_distance=settings["cp_distance"],
+        cp_trace_path=settings["cp_trace_path"],
+        cp_robustify_objective=settings["cp_robustify_objective"],
+        cp_eval_mode=settings["cp_eval_mode"],
+        cp_nearest_distance=settings["cp_nearest_distance"],
+    )
 
 
 def _constraint_names(constraint_mode):
@@ -234,18 +242,19 @@ def _constraint_names(constraint_mode):
     raise ValueError(f"Unknown constraint mode: {constraint_mode}")
 
 
-def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
-                            model_params, bootstrap_cache, ensembles_cache):
-    """Calibrate a baseline's robustness knob on ``sub`` training contexts and
-    return a solver_fn with that knob baked in."""
+def _method_build_map(method, settings, ranges, model_type, model_params,
+                      bootstrap_cache, ensembles_cache):
+    """Return ``(build, strength_to_knob)`` for a method: ``build(knob)`` -> solver_fn,
+    ``strength_to_knob(s in [0,1])`` -> knob (0 = weakest ~ nominal, 1 = strongest).
+    ``ranges`` supplies the knob endpoints, so the same mapping serves both
+    calibration (calibration ranges) and the conservativeness sweep (wider ranges)."""
     nb = settings["n_bootstrap"]
     seed = settings["bootstrap_seed"]
     em = settings["embedding_mode"]
     rf_alpha = settings["rf_alpha"]
-    target = settings["alpha"]
 
     if method == "wrapper":
-        amax = settings["calib_wrapper_alpha_max"]
+        amax = ranges["wrapper_alpha_max"]
         strength_to_knob = lambda s: amax * (1.0 - s)  # s=1 strongest -> alpha_w=0
         build = lambda knob: partial(
             solve_wrapper, model_type=model_type, model_params=model_params,
@@ -253,26 +262,29 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
             bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
         )
     elif method == "tree_violation":
-        amax = settings["calib_tree_alpha_max"]
+        amax = ranges["tree_alpha_max"]
         strength_to_knob = lambda s: amax * (1.0 - s)  # s=1 strongest -> alpha_t=0
         build = lambda knob: partial(
             solve_tree_violation_wrapper, model_type=model_type,
             model_params=model_params, alpha=knob, rho=0.0,
         )
     elif method == "robust_param":
-        rho_min = settings["calib_rho_min"]
-        rho_max = settings["calib_rho_max"]
-        if rho_min >= rho_max:
-            raise ValueError(
-                f"calibration.rho_min ({rho_min}) must be < rho_max ({rho_max})"
-            )
+        rho_min = ranges.get("rho_min", 0.0)
+        rho_max = ranges["rho_max"]
         strength_to_knob = lambda s: rho_min + (rho_max - rho_min) * s
         build = lambda knob: partial(
             solve_nominal, model_type=model_type, model_params=model_params,
             rho=knob, embedding_mode=em, rf_alpha=rf_alpha,
         )
+    elif method == "nominal":
+        # No robustness knob: a single reference point (same at every strength).
+        strength_to_knob = lambda s: 0.0
+        build = lambda knob: partial(
+            solve_nominal, model_type=model_type, model_params=model_params,
+            rho=0.0, embedding_mode=em, rf_alpha=rf_alpha,
+        )
     elif method == "robust_reg":
-        eps_max = settings["calib_robust_reg_eps_max"]
+        eps_max = ranges["robust_reg_eps_max"]
         strength_to_knob = lambda s: eps_max * s        # label-uncertainty radius
         build = lambda knob: partial(
             solve_robust_regression, model_type=model_type, model_params=model_params,
@@ -280,9 +292,55 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
             K=settings["robust_reg_K"], seed=seed, rho=0.0,
             embedding_mode=em, rf_alpha=rf_alpha,
         )
+    elif method == "cp":
+        amax = ranges["cp_alpha_max"]
+        strength_to_knob = lambda s: amax * (1.0 - s)   # s=1 strongest -> alpha=0
+        build = lambda knob: _cp_solver(settings, model_type, model_params, knob)
     else:
-        raise ValueError(f"Method {method} is not calibratable")
+        raise ValueError(f"Unknown method for knob map: {method}")
+    return build, strength_to_knob
 
+
+def _solver_at_strength(method, strength, settings, model_type, model_params,
+                        bootstrap_cache, ensembles_cache):
+    """Build a solver at a fixed conservativeness ``strength`` in [0,1] (no
+    calibration), using the wider conservativeness-sweep knob ranges."""
+    ranges = {
+        "wrapper_alpha_max": settings["cs_wrapper_alpha_max"],
+        "tree_alpha_max": settings["calib_tree_alpha_max"],
+        "rho_min": 0.0, "rho_max": settings["cs_robust_param_rho_max"],
+        "robust_reg_eps_max": settings["cs_robust_reg_eps_max"],
+        "cp_alpha_max": settings["cs_cp_alpha_max"],
+    }
+    build, s2k = _method_build_map(
+        method, settings, ranges, model_type, model_params,
+        bootstrap_cache, ensembles_cache,
+    )
+    return build(s2k(strength))
+
+
+def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
+                            model_params, bootstrap_cache, ensembles_cache):
+    """Calibrate a baseline's robustness knob on ``sub`` training contexts and
+    return a solver_fn with that knob baked in."""
+    if method == "robust_param" and settings["calib_rho_min"] >= settings["calib_rho_max"]:
+        raise ValueError(
+            f"calibration.rho_min ({settings['calib_rho_min']}) must be "
+            f"< rho_max ({settings['calib_rho_max']})"
+        )
+    ranges = {
+        "wrapper_alpha_max": settings["calib_wrapper_alpha_max"],
+        "tree_alpha_max": settings["calib_tree_alpha_max"],
+        "rho_min": settings["calib_rho_min"], "rho_max": settings["calib_rho_max"],
+        "robust_reg_eps_max": settings["calib_robust_reg_eps_max"],
+        "cp_alpha_max": settings["cs_cp_alpha_max"],
+    }
+    build, strength_to_knob = _method_build_map(
+        method, settings, ranges, model_type, model_params,
+        bootstrap_cache, ensembles_cache,
+    )
+
+    target = settings["alpha"]
     knob, frac = calibrate_strength(
         build, strength_to_knob, sub, calib_contexts, target,
         n_grid=settings["calib_n_grid"], label=method,
@@ -297,7 +355,7 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
 
 def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
                      subsample_frac=None, subsample_seed=None,
-                     write_output=True, tox_ub=None):
+                     write_output=True, tox_ub=None, conservativeness=None):
     settings = _resolve_run_settings(config, args)
     instance = gastric_cancer(
         fixed_constraint_configs=cv_configs if cv_configs else None,
@@ -332,6 +390,9 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
 
     calib_contexts = None
     ensembles_cache = None
+    # A fixed-strength conservativeness sweep bypasses calibration entirely.
+    if conservativeness is not None:
+        calibrate = False
     needs_calib = calibrate and any(
         m in CALIBRATED_METHODS for m in settings["methods_to_run"]
     )
@@ -352,6 +413,12 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
             )
 
     def _resolve_solver(method, sub):
+        if conservativeness is not None:
+            # Fixed-strength sweep: set each method's own knob directly (no calibration).
+            return _solver_at_strength(
+                method, conservativeness, settings, model_type, model_params,
+                coherent_cache, ensembles_cache,
+            )
         if method in ("cp", "nominal") or not calibrate:
             return solvers[method]
         if method in CALIBRATED_METHODS:
@@ -473,35 +540,39 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
     # (scarcity). Either can be a single value (default) or a grid.
     rhs_grid = args.rhs_grid if args.rhs_grid else [None]
     frac_grid = args.frac_grid if args.frac_grid else [args.subsample_frac]
+    cons_grid = args.conservativeness_grid if args.conservativeness_grid else [None]
     sweeping_rhs = args.rhs_grid is not None
     sweeping_frac = args.frac_grid is not None
-    sweeping = sweeping_rhs or sweeping_frac
+    sweeping_cons = args.conservativeness_grid is not None
+    sweeping = sweeping_rhs or sweeping_frac or sweeping_cons
 
     print("=" * 60)
     print(
         f"LABEL-NOISE ROBUSTNESS PROBE: {n_real} realizations, "
-        f"frac_grid={frac_grid}, rhs_grid={rhs_grid}"
+        f"frac_grid={frac_grid}, rhs_grid={rhs_grid}, cons_grid={cons_grid}"
     )
     print("=" * 60)
 
     rows = []
-    for frac in frac_grid:
-        for rhs in rhs_grid:
-            for r in range(n_real):
-                sub_seed = base_seed + 1000 * (r + 1)  # CRN: same across frac & rhs
-                print(f"\n{'#' * 60}\n# frac={frac} rhs={rhs} realization "
-                      f"{r + 1}/{n_real} (subsample_seed={sub_seed})\n{'#' * 60}")
-                df_r = run_chemo_robust(
-                    config, args, cv_configs=cv_configs, gt_configs=gt_configs,
-                    subsample_frac=frac, subsample_seed=sub_seed,
-                    write_output=False, tox_ub=rhs,
-                )
-                df_r = df_r.copy()
-                df_r["realization"] = r
-                df_r["subsample_seed"] = sub_seed
-                df_r["rhs"] = rhs if rhs is not None else "default"
-                df_r["frac"] = frac if frac is not None else "full"
-                rows.append(df_r)
+    for cons in cons_grid:
+        for frac in frac_grid:
+            for rhs in rhs_grid:
+                for r in range(n_real):
+                    sub_seed = base_seed + 1000 * (r + 1)  # CRN: same across all axes
+                    print(f"\n{'#' * 60}\n# strength={cons} frac={frac} rhs={rhs} "
+                          f"realization {r + 1}/{n_real} (subsample_seed={sub_seed})\n{'#' * 60}")
+                    df_r = run_chemo_robust(
+                        config, args, cv_configs=cv_configs, gt_configs=gt_configs,
+                        subsample_frac=frac, subsample_seed=sub_seed,
+                        write_output=False, tox_ub=rhs, conservativeness=cons,
+                    )
+                    df_r = df_r.copy()
+                    df_r["realization"] = r
+                    df_r["subsample_seed"] = sub_seed
+                    df_r["rhs"] = rhs if rhs is not None else "default"
+                    df_r["frac"] = frac if frac is not None else "full"
+                    df_r["strength"] = cons if cons is not None else "calibrated"
+                    rows.append(df_r)
 
     df_long = pd.concat(rows, ignore_index=True)
     os.makedirs("results/gastric", exist_ok=True)
@@ -510,8 +581,9 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
     long_path = f"results/gastric/chemo_robust_realizations{suffix}.csv"
     df_long.to_csv(long_path, index=False)
 
-    group_cols = ([["frac"] if sweeping_frac else []] + [["rhs"] if sweeping_rhs else []])
-    group_cols = [c for sub in group_cols for c in sub] or None
+    group_cols = ((["frac"] if sweeping_frac else [])
+                  + (["rhs"] if sweeping_rhs else [])
+                  + (["strength"] if sweeping_cons else [])) or None
     summary = aggregate_realizations(df_long, extra_group_cols=group_cols)
     summary_path = f"results/gastric/chemo_robust_robustness_summary{suffix}.csv"
     summary.to_csv(summary_path, index=False)
@@ -583,6 +655,20 @@ def main():
             "Subsample fractions to sweep (the scarcity axis), crossed with the "
             "realization loop using common random numbers. Overrides --subsample-frac. "
             "E.g. --frac-grid 0.3 0.4 0.5 0.6 0.7 0.8."
+        ),
+    )
+    parser.add_argument(
+        "--conservativeness-grid",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="S",
+        help=(
+            "Fixed-threshold Pareto sweep: strengths in [0,1] (0=weakest ~nominal, "
+            "1=strongest). Each method's OWN knob is set per strength (no "
+            "calibration): robust_param->rho, cp->alpha, robust_reg->label_eps, "
+            "wrapper->alpha. Traces per-method OS vs worst-case-feasibility frontiers "
+            "to separate robustness from mere conservatism. E.g. 0 0.25 0.5 0.75 1."
         ),
     )
     parser.add_argument(
@@ -674,7 +760,7 @@ def main():
             )
 
     if (args.n_realizations > 1 or args.subsample_frac is not None
-            or args.rhs_grid or args.frac_grid):
+            or args.rhs_grid or args.frac_grid or args.conservativeness_grid):
         run_chemo_robust_realizations(
             config, args, cv_configs=cv_configs, gt_configs=gt_configs
         )

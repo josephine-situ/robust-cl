@@ -43,6 +43,18 @@ calibration:
   rho_max: 0.005           # strongest robust_param rho scanned
   robust_reg_eps_max: 0.3  # strongest label-uncertainty radius scanned (robust_reg)
 
+conservativeness_sweep:
+  # Knob ranges for the fixed-threshold Pareto sweep (--conservativeness-grid):
+  # at rhs fixed, sweep each method's own conservativeness knob to trace its
+  # OS-vs-worst-case-feasibility frontier. strength s in [0,1]: 0 = weakest
+  # (~nominal), 1 = strongest. This separates genuine robustness (frontier
+  # dominance) from mere conservatism (sliding along a shared frontier).
+  robust_param_rho_max: 0.03  # nominal + rho leaf-tightening (conservative nominal); rho = max*s
+                              # (kept modest: larger rho makes the embedded MIP infeasible)
+  cp_alpha_max: 0.3           # cp coverage cap; alpha = max*(1-s)
+  robust_reg_eps_max: 0.5     # label-uncertainty radius; eps = max*s
+  wrapper_alpha_max: 0.5      # wrapper chance budget; alpha = max*(1-s)
+
 methods:
   embedding_mode: "hard"  # "hard" | "tree_violation"
 
