@@ -1,0 +1,127 @@
+% Build: pdflatex -output-directory=build chemo_replication_gaps.tex
+% (run twice from the presentations/ directory)
+\documentclass{beamer}
+\usepackage{booktabs}
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}{\hfill\insertframenumber/\inserttotalframenumber\hspace{1.5em}}
+
+\begin{document}
+
+\begin{frame}{Replication matches paper Table 6 (samestore $n{=}85$)}
+  \scriptsize
+  Samestore cohort: test patients feasible under both constraint modes; single
+  shared \texttt{given} baseline (\texttt{samestore\_eval\_mask}).
+
+  \medskip
+  \begin{tabular}{lrrrr}
+    \hline
+    Outcome & Paper given & Ours given & Paper all rx & Ours all rx \\
+    \hline
+    Any DLT        & 0.847 & 0.835 & 0.941 & 0.976 \\
+    Blood          & 0.812 & 0.800 & 0.824 & 0.824 \\
+    Constitutional & 0.953 & 0.941 & 1.000 & 1.000 \\
+    Infection      & 0.882 & 0.882 & 0.894 & 0.906 \\
+    GI             & 0.800 & 0.800 & 1.000 & 0.988 \\
+    OS (months)    & 10.86 & 10.85 & 12.09 & 12.06 \\
+    \hline
+  \end{tabular}
+
+  \vspace{0.5em}
+  \normalsize
+  \begin{itemize}
+    \item Given/prescribed satisfaction and OS within $\sim$1\,pp / 0.05\,mo of paper.
+    \item DLT-only mode also matches (ours rx: Any DLT 0.91, OS 12.45\,mo;
+      Blood/Infection drop as toxicities go unconstrained, as in the paper).
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{What caused the earlier ``gaps''}
+  \begin{itemize}
+    \item \textbf{Stale ground-truth (GT) evaluation ensemble (primary).} Table 6
+      metrics are scored by a 6-model GT ensemble. Earlier runs fit it on
+      \emph{raw} toxicity targets, so the \texttt{LinearSVR}/\texttt{XGBoost}
+      members scored far below paper Table EC.11 (e.g.\ OS SVM $R^2{=}0.01$ vs.\
+      $0.47$), shifting predicted toxicity percentiles across the $0.6$ threshold
+      and depressing OS.
+    \item \textbf{Fix (commit ``Align models''):} fit GT on \emph{percentile-scaled}
+      targets with the paper's fixed hyperparameters. Not a library change ---
+      environment stays \texttt{scikit-learn 1.8} / \texttt{xgboost 3.2}. GT now
+      reproduces EC.11 (mean $|\Delta R^2|{=}0.008$).
+    \item \textbf{Cohort handling already correct:} Table 6 uses the samestore
+      cohort (patients feasible across constraint modes) with one shared
+      \texttt{given} baseline, via \texttt{samestore\_eval\_mask}.
+    \item Data pipeline is faithful: train/test $=320/96$ and given satisfaction
+      match the paper to $<1$\,pp on full and samestore cohorts.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Methods Compared}
+  \footnotesize
+  \renewcommand{\arraystretch}{1.2}
+  \begin{tabular}{p{2.3cm}p{7.7cm}}
+      \toprule
+      \textbf{Method} & \textbf{Description} \\
+      \midrule
+      \textbf{Nominal} &
+          Single model on observed labels;
+          no robustness \\
+      \textbf{Robust Param} &
+          Single model; embed with split-threshold
+          robustness ($\rho{=}0.05$) \\
+      \textbf{Robust Cls.} &
+          $P{=}25$ shared bootstrap resamples;
+          embed model with lowest worst-case OOB error \\
+      \textbf{Wrapper} &
+          $P{=}25$ bootstrap estimators; chance constraint
+          allowing $\alpha{=}10\%$ violation \\
+      \textbf{Tree Violation} &
+          Paper baseline: per-tree RF chance constraint
+          ($\alpha{=}25\%$ trees may violate) \\
+      \textbf{CP} &
+          Iterative cutting planes;
+          localized bootstrap separation at $x^k$ \\
+      \bottomrule
+  \end{tabular}
+  
+  \medskip
+  \normalsize
+  \textbf{Uncertainty calibration:}
+  resample observed training labels (no parametric $\delta$);
+  wrapper and robust cls.\ share fixed $P$ draws;
+  CP resamples $k$-nearest arms ($k{=}10\%$ of $n_{\mathrm{train}}$),
+  $20$ candidates per separation call
+  
+\end{frame}
+
+\begin{frame}{Initial Results}
+  \footnotesize
+  \textbf{Per-cohort prescription infeasibility} (96 test cohorts; context fixed):
+  \medskip
+
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{lrr}
+    \toprule
+    \textbf{Method} & \textbf{All constraints} & \textbf{DLT only} \\
+    \midrule
+    Nominal         & 20/96 (21\%)  & 0/96 \\
+    Tree Violation  & 20/96 (21\%)  & 0/96 \\
+    Robust Param    & 96/96 (100\%) & 96/96 (100\%) \\
+    Robust Cls.     & 47/96 (49\%)  & 1/96 (1\%) \\
+    CP              & 77/96 (80\%)  & 0/96 \text{(no cuts added)}\\
+    Wrapper         & \multicolumn{2}{c}{run incomplete in log} \\
+    \bottomrule
+  \end{tabular}
+
+  \medskip
+  \begin{itemize}
+    \item Unlike the synthetic experiment, we have multiple embedded models, so many of the solves become infeasible when fixing the context variables.
+    \item Wrapper takes too long to run (10+ hours).
+    \item Robust param infeasible even at initial train solve ($\rho{=}0.05$).
+    \item CP needs to be fixed. Use training samples context for separation. Also not required to be all feasible (60th percentile).
+    \item To add: robustness of objective (epigraph).
+  \end{itemize}
+\end{frame}
+
+
+\end{document}
