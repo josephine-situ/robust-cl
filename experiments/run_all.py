@@ -97,14 +97,16 @@ def run_experiment(config, cv_configs=None):
         solve_nominal, model_type=model_type, model_params=model_params, rho=robust_rho
     )
 
+    robust_reg_cfg = config["methods"].get("robust_reg", {})
     solver_fns["robust_reg"] = partial(
         solve_robust_regression,
         model_type=model_type,
         model_params=model_params,
-        n_bootstrap=n_bootstrap,
+        label_eps=robust_reg_cfg.get("label_eps", 0.1),
+        budget_frac=robust_reg_cfg.get("budget_frac", 0.5),
+        K=robust_reg_cfg.get("K", 5),
         seed=bootstrap_seed,
         rho=0.0,
-        bootstrap_cache=bootstrap_cache,
     )
 
     wrapper_cfg = config["methods"]["wrapper"]

@@ -1,6 +1,7 @@
 \documentclass{beamer}
 \usepackage{booktabs}
 \usepackage{graphicx}
+\usepackage{amsmath}
 \usetheme{default}
 \setbeamertemplate{navigation symbols}{}
 \setbeamertemplate{footline}{\hfill\insertframenumber/\inserttotalframenumber\hspace{1.5em}}
@@ -15,35 +16,79 @@
 \end{frame}
 
 \begin{frame}{Problem setup}
-- Constraint learning: embed a trained model $\hat f(x)\le b$ inside an optimization.
-- Noisy training labels $\Rightarrow$ the ``optimal'' decision can violate the \emph{true} constraint.
-- Goal: make the embedded-constraint decision robust to \textbf{label (y) noise}.
-- Case study: OptiCL gastric-cancer chemotherapy (Maragno et al., Table~6) --- maximize
-  overall survival (OS) s.t.\ five grade 3--4 toxicity constraints $\le$ the 60th percentile.
-\end{frame}
-
-\begin{frame}{Method: Robust Cutting Planes (CP)}
-- \textbf{Robustify the \emph{decision}}, not the model: keep a nominal fit, hedge at the
-  prescription via localized-bootstrap separation of worst-case models around $x^\ast$.
-- Trilevel formulation solved by iteratively adding cuts for the worst sampled scenario;
-  self-regulates via a coverage cap $\alpha$ (no OS-objective robustification, one global master).
-- Contrast --- the baselines instead \textbf{robustify the \emph{model}}:
   \begin{itemize}
-  \item \emph{Nominal}: point estimate, no robustness.
-  \item \emph{Robust Reg.}: label-robust training counterpart (Bertsimas et al.\ 2019), embedded nominally.
-  \item \emph{Wrapper}: joint chance constraint over a bootstrap ensemble.
+  \item Constraint learning: embed a trained model $\hat f(x)\le b$ inside an optimization.
+  \item Noisy training labels $\Rightarrow$ the ``optimal'' decision can violate the \emph{true} constraint.
+  \item Goal: make the embedded-constraint decision robust to \textbf{label ($y$) noise}.
+  \item Case study: OptiCL gastric-cancer chemotherapy (Maragno et al., Table~6) --- maximize
+    overall survival (OS) s.t.\ five grade 3--4 toxicity constraints $\le$ the 60th percentile.
   \end{itemize}
 \end{frame}
 
+\begin{frame}{Method: Robust Cutting Planes (CP)}
+  \begin{itemize}
+  \item \textbf{Robustify the \emph{decision}}, not the model: keep a nominal fit, hedge at the
+    prescription via localized-bootstrap separation of worst-case models around $x^\ast$.
+  \item Trilevel formulation solved by iteratively adding cuts for the worst sampled scenario
+    (no OS-objective robustification, one global master).
+  \item Contrast --- the baselines instead \textbf{robustify the \emph{model}}:
+    \begin{itemize}
+    \item \emph{Nominal}: point estimate, no robustness.
+    \item \emph{Robust Reg.}: label-robust training counterpart (Bertsimas et al.\ 2019), embedded nominally.
+    \item \emph{Wrapper}: joint chance constraint over a bootstrap ensemble.
+    \end{itemize}
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{CP: formulation}
+  Nominal constraint learning embeds a single point estimate:
+  \[
+    \max_{x\in\mathcal{X}}\; c^\top x
+    \quad\text{s.t.}\quad \hat f(x)\le b .
+  \]
+  \textbf{Decision-robust counterpart} --- feasible against every model in a
+  \emph{localized bootstrap ambiguity set} $\mathcal{F}(x)$ near the decision $x$:
+  \[
+    \max_{x\in\mathcal{X}}\; c^\top x
+    \quad\text{s.t.}\quad f(x)\le b \;\;\forall f\in\mathcal{F}(x) .
+  \]
+  Solved by cutting planes --- a relaxed \emph{master} over a finite scenario set $\mathcal{S}_k$:
+  \[
+    \max_{x\in\mathcal{X}}\; c^\top x
+    \quad\text{s.t.}\quad f^{(s)}(x)\le b \;\;\forall s\in\mathcal{S}_k .
+  \]
+  \small
+  Gastric extends this to several toxicity constraints plus an epigraph OS objective, evaluated
+  jointly at representative anchors $x^\ast$ and ranked by \emph{normalized average distance},
+  under a coverage cap $\alpha$ on the fraction of anchors allowed infeasible.
+\end{frame}
+
+\begin{frame}{CP: algorithm}
+  \begin{enumerate}
+  \item Train the nominal fit; build the master with no scenario cuts.
+  \item Solve the master $\rightarrow$ candidate decision $x^\ast$.
+  \item \textbf{Separate:} draw localized bootstrap relabelings around $x^\ast$, retrain, and take the
+    worst scenario $f^{(s)}$ by normalized exceedance of $f^{(s)}(x^\ast)$ over $b$.
+  \item \textbf{Stop} if the worst normalized distance $\le\texttt{dist\_tol}$ (robust enough) or the
+    coverage cap $\alpha$ is reached; otherwise add the cut $f^{(s)}(x)\le b$ and return to step~2.
+  \end{enumerate}
+  \vspace{0.5em}
+  \small
+  \texttt{dist\_tol} is CP's robustness dial: \emph{smaller} $\Rightarrow$ keep cutting until the worst
+  scenario is tight $\Rightarrow$ stronger. It is the axis we sweep to trace CP's frontier.
+\end{frame}
+
 \begin{frame}{Evaluation: measuring label-noise robustness}
-- GT ensemble = fixed oracle: 6 models/outcome (CV-selected), averaged, fit once on the full
-  clean cohort. Feasibility: mean GT prediction $\le$ threshold.
-- A single training draw cannot reveal robustness (feasibility near-saturated). So we probe the
-  \emph{distribution} over draws.
-- \textbf{Label-noise probe}: repeat over $R$ training subsamples (m-out-of-n, without
-  replacement); refit only the constraint/robust models; score against the fixed oracle.
-- Roles separated: oracle fixed; each method keeps its own ambiguity set; outer subsampling is the
-  probe. Report mean, SD, and \textbf{worst-case} feasibility across draws.
+  \begin{itemize}
+  \item GT ensemble = fixed oracle: 6 models/outcome (CV-selected), averaged, fit once on the full
+    clean cohort. Feasibility: mean GT prediction $\le$ threshold.
+  \item A single training draw cannot reveal robustness (feasibility near-saturated). So we probe the
+    \emph{distribution} over draws.
+  \item \textbf{Label-noise probe}: repeat over $R$ training subsamples (m-out-of-n, without
+    replacement); refit only the constraint/robust models; score against the fixed oracle.
+  \item Roles separated: oracle fixed; each method keeps its own ambiguity set; outer subsampling is the
+    probe. Report mean, SD, and \textbf{worst-case} feasibility across draws.
+  \end{itemize}
 \end{frame}
 
 \begin{frame}{Headline: CP dominates at the reference threshold}
@@ -82,13 +127,25 @@
   ($0.7$--$0.8$, where nominal is already stable). OS cost shrinks in parallel.
 \end{frame}
 
+\begin{frame}{Synthetic problem: feasibility under growing noise}
+  \centering
+  \includegraphics[width=\linewidth]{../results/figures/fig_synthetic.pdf}
+
+  \raggedright\small
+  Nonlinear synthetic constraint, single embedded model. As label noise $\sigma$ grows, the
+  model-robust baselines drift infeasible; CP stays feasible by hedging the decision, at a modest
+  objective cost --- the same mechanism as gastric, in a controlled setting.
+\end{frame}
+
 \begin{frame}{Takeaways \& next steps}
-- \textbf{CP delivers tail-robustness exactly where it should}: uncertain estimates (scarce data)
-  and decisions near the boundary (loose constraint); it costs little when robustness isn't needed.
-- Robustifying the \emph{decision} (CP) beats robustifying the \emph{model} (Robust Reg.) for
-  downstream feasibility; wrapper is competitive on worst-case but costs more OS.
-- Next: synthetic problem (CP is the only truly feasible method as noise grows); other ambiguity
-  sets (conformal, Wasserstein-DRO); tractable robust counterparts for linear/SVM.
+  \begin{itemize}
+  \item \textbf{CP delivers tail-robustness exactly where it should}: uncertain estimates (scarce data)
+    and decisions near the boundary (loose constraint); it costs little when robustness isn't needed.
+  \item Robustifying the \emph{decision} (CP) beats robustifying the \emph{model} (Robust Reg.) for
+    downstream feasibility; wrapper is competitive on worst-case but costs more OS.
+  \item Next: other ambiguity sets (conformal, Wasserstein-DRO); tractable robust counterparts for
+    linear/SVM; conservativeness-frontier comparison across methods.
+  \end{itemize}
 \end{frame}
 
 \end{document}

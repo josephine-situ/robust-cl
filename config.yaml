@@ -51,7 +51,11 @@ conservativeness_sweep:
   # dominance) from mere conservatism (sliding along a shared frontier).
   robust_param_rho_max: 0.03  # nominal + rho leaf-tightening (conservative nominal); rho = max*s
                               # (kept modest: larger rho makes the embedded MIP infeasible)
-  cp_alpha_max: 0.3           # cp coverage cap; alpha = max*(1-s)
+  cp_dist_tol_max: 0.2        # cp robustness dial: dist_tol = max*(1-s) (s=1 -> 0 = cut until
+                              # the worst scenario is tight = strongest; s=0 -> max ~ nominal).
+                              # dist_tol (not the coverage cap) is CP's monotone knob; the
+                              # coverage cap is held fixed at uncertainty.alpha during the sweep.
+  cp_alpha_max: 0.3           # (unused as the CP sweep knob; retained for reference only)
   robust_reg_eps_max: 0.5     # label-uncertainty radius; eps = max*s
   wrapper_alpha_max: 0.5      # wrapper chance budget; alpha = max*(1-s)
 

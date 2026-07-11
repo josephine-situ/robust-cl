@@ -145,6 +145,7 @@ def _resolve_run_settings(config, args):
     cs_cfg = config.get("conservativeness_sweep", {})
     settings["cs_robust_param_rho_max"] = cs_cfg.get("robust_param_rho_max", 0.1)
     settings["cs_cp_alpha_max"] = cs_cfg.get("cp_alpha_max", 0.3)
+    settings["cs_cp_dist_tol_max"] = cs_cfg.get("cp_dist_tol_max", 0.2)
     settings["cs_robust_reg_eps_max"] = cs_cfg.get("robust_reg_eps_max", 0.5)
     settings["cs_wrapper_alpha_max"] = cs_cfg.get("wrapper_alpha_max", 0.5)
     return settings
@@ -212,9 +213,13 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
     return solvers
 
 
-def _cp_solver(settings, model_type, model_params, cp_alpha):
-    """Build the CP solver partial with a given coverage cap ``cp_alpha`` (lower =
-    more conservative). Shared by the default build and the conservativeness sweep."""
+def _cp_solver(settings, model_type, model_params, cp_alpha, cp_dist_tol_override=None):
+    """Build the CP solver partial with a given coverage cap ``cp_alpha``. The
+    conservativeness sweep varies robustness through ``cp_dist_tol_override``
+    (smaller distance tolerance = keep cutting = stronger), NOT through ``cp_alpha``
+    (a coverage cap that is usually non-binding); it holds ``cp_alpha`` fixed."""
+    cp_dist_tol = (settings["cp_dist_tol"] if cp_dist_tol_override is None
+                   else cp_dist_tol_override)
     return partial(
         solve_cp, model_type=model_type, model_params=model_params, rho=0.0,
         max_iterations=settings["cp_max_iterations"],
@@ -222,7 +227,7 @@ def _cp_solver(settings, model_type, model_params, cp_alpha):
         cp_k_neighbors_min=settings["cp_k_neighbors_min"],
         cp_n_candidates=settings["cp_n_candidates"],
         seed=settings["bootstrap_seed"], cp_alpha=cp_alpha,
-        cp_dist_tol=settings["cp_dist_tol"],
+        cp_dist_tol=cp_dist_tol,
         cp_anchor_source=settings["cp_anchor_source"],
         cp_n_anchors=settings["cp_n_anchors"],
         cp_anchor_method=settings["cp_anchor_method"],
@@ -293,9 +298,15 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
             embedding_mode=em, rf_alpha=rf_alpha,
         )
     elif method == "cp":
-        amax = ranges["cp_alpha_max"]
-        strength_to_knob = lambda s: amax * (1.0 - s)   # s=1 strongest -> alpha=0
-        build = lambda knob: _cp_solver(settings, model_type, model_params, knob)
+        # dist_tol is CP's monotone robustness dial (smaller -> keep cutting until
+        # the worst scenario is tight -> stronger). The coverage cap is held fixed at
+        # the shared alpha so it never confounds the sweep.
+        dmax = ranges["cp_dist_tol_max"]
+        strength_to_knob = lambda s: dmax * (1.0 - s)   # s=1 strongest -> dist_tol=0
+        build = lambda knob: _cp_solver(
+            settings, model_type, model_params, settings["alpha"],
+            cp_dist_tol_override=knob,
+        )
     else:
         raise ValueError(f"Unknown method for knob map: {method}")
     return build, strength_to_knob
@@ -311,6 +322,7 @@ def _solver_at_strength(method, strength, settings, model_type, model_params,
         "rho_min": 0.0, "rho_max": settings["cs_robust_param_rho_max"],
         "robust_reg_eps_max": settings["cs_robust_reg_eps_max"],
         "cp_alpha_max": settings["cs_cp_alpha_max"],
+        "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
     }
     build, s2k = _method_build_map(
         method, settings, ranges, model_type, model_params,
@@ -334,6 +346,7 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
         "rho_min": settings["calib_rho_min"], "rho_max": settings["calib_rho_max"],
         "robust_reg_eps_max": settings["calib_robust_reg_eps_max"],
         "cp_alpha_max": settings["cs_cp_alpha_max"],
+        "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
     }
     build, strength_to_knob = _method_build_map(
         method, settings, ranges, model_type, model_params,
@@ -353,9 +366,47 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
     return build(knob)
 
 
+def build_table6_df(instance, collected, per_mode_mask, per_mode_given,
+                    methods, modes, n_test):
+    """Build the Table-6 DataFrame from already-collected outcomes on a supplied
+    per-mode evaluation cohort. Factored out of ``run_chemo_robust`` pass 2 so the
+    conservativeness sweep can score every (method, strength) cell on ONE shared
+    samestore cohort instead of a cohort recomputed per cell."""
+    all_rows = []
+    for method in methods:
+        for constraint_mode in modes:
+            key = (method, constraint_mode)
+            if key not in collected:
+                continue
+            if constraint_mode not in per_mode_mask:
+                continue
+            res = collected[key]
+            mode_mask = per_mode_mask[constraint_mode]
+            n_eval = int(mode_mask.sum())
+            prescribed = subset_table6_outcomes(res["full_outcomes"], mode_mask)
+            rows = build_table6_rows(
+                instance,
+                constraint_mode=constraint_mode,
+                given_values=per_mode_given[constraint_mode],
+                prescribed_values=prescribed,
+                n_test=n_test,
+                n_prescribed=n_eval,
+                mean_solve_time=res["mean_time"],
+                solve_time_sd=res["sd_time"],
+            )
+            for row in rows:
+                row_dict = row.__dict__.copy()
+                row_dict["method"] = method
+                row_dict["n_method_feasible"] = res["n_method_feasible"]
+                all_rows.append(row_dict)
+    import pandas as pd
+    return pd.DataFrame(all_rows)
+
+
 def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
                      subsample_frac=None, subsample_seed=None,
-                     write_output=True, tox_ub=None, conservativeness=None):
+                     write_output=True, tox_ub=None, conservativeness=None,
+                     collect_only=False):
     settings = _resolve_run_settings(config, args)
     instance = gastric_cancer(
         fixed_constraint_configs=cv_configs if cv_configs else None,
@@ -461,6 +512,12 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
             }
             mode_masks[constraint_mode].append(feasible_mask)
 
+    # The conservativeness sweep computes ONE shared samestore across all
+    # (method, strength) cells, so return the raw collected outcomes + per-method
+    # masks and let the caller intersect + build rows (no per-cell cohort).
+    if collect_only:
+        return instance, collected, mode_masks, n_test
+
     # Per-mode samestore: patients feasible across all methods for that mode only.
     # This allows each table to use a larger, mode-appropriate evaluation cohort.
     per_mode_mask: dict[str, object] = {}
@@ -477,36 +534,10 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
         per_mode_given[constraint_mode] = evaluate_given_table6(instance, mask)
 
     # Pass 2: build Table 6 rows on the per-mode samestore cohort.
-    all_rows = []
-    for method in settings["methods_to_run"]:
-        for constraint_mode in settings["constraint_modes"]:
-            key = (method, constraint_mode)
-            if key not in collected:
-                continue
-            if constraint_mode not in per_mode_mask:
-                continue
-            res = collected[key]
-            mode_mask = per_mode_mask[constraint_mode]
-            n_eval = int(mode_mask.sum())
-            prescribed = subset_table6_outcomes(res["full_outcomes"], mode_mask)
-            rows = build_table6_rows(
-                instance,
-                constraint_mode=constraint_mode,
-                given_values=per_mode_given[constraint_mode],
-                prescribed_values=prescribed,
-                n_test=n_test,
-                n_prescribed=n_eval,
-                mean_solve_time=res["mean_time"],
-                solve_time_sd=res["sd_time"],
-            )
-            for row in rows:
-                row_dict = row.__dict__.copy()
-                row_dict["method"] = method
-                row_dict["n_method_feasible"] = res["n_method_feasible"]
-                all_rows.append(row_dict)
-
-    import pandas as pd
-    df = pd.DataFrame(all_rows)
+    df = build_table6_df(
+        instance, collected, per_mode_mask, per_mode_given,
+        settings["methods_to_run"], settings["constraint_modes"], n_test,
+    )
     if write_output:
         os.makedirs("results/gastric", exist_ok=True)
         df.to_csv(settings["output_path"], index=False)
@@ -532,6 +563,7 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
     import pandas as pd
     from src.evaluation.chemo_metrics import aggregate_realizations
 
+    settings = _resolve_run_settings(config, args)  # for shared-cohort row building
     n_real = args.n_realizations
     base_seed = config["uncertainty"].get("bootstrap_seed", 42)
     # Two sweep axes, both with common random numbers -- the subsample seed depends
@@ -553,26 +585,72 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
     )
     print("=" * 60)
 
+    def _tag(df_r, r, sub_seed, rhs, frac, cons):
+        df_r = df_r.copy()
+        df_r["realization"] = r
+        df_r["subsample_seed"] = sub_seed
+        df_r["rhs"] = rhs if rhs is not None else "default"
+        df_r["frac"] = frac if frac is not None else "full"
+        df_r["strength"] = cons if cons is not None else "calibrated"
+        return df_r
+
     rows = []
-    for cons in cons_grid:
-        for frac in frac_grid:
-            for rhs in rhs_grid:
-                for r in range(n_real):
-                    sub_seed = base_seed + 1000 * (r + 1)  # CRN: same across all axes
-                    print(f"\n{'#' * 60}\n# strength={cons} frac={frac} rhs={rhs} "
-                          f"realization {r + 1}/{n_real} (subsample_seed={sub_seed})\n{'#' * 60}")
+    for frac in frac_grid:
+        for rhs in rhs_grid:
+            for r in range(n_real):
+                sub_seed = base_seed + 1000 * (r + 1)  # CRN: same across all axes
+                if sweeping_cons:
+                    # Two passes so every (method, strength) cell is scored on ONE
+                    # shared samestore cohort (intersection over all method x strength
+                    # cells): equal strength is NOT the same frontier point, so a
+                    # per-cell cohort would make the frontiers incomparable.
+                    stash = {}  # cons -> (instance, collected, mode_masks, n_test)
+                    for cons in cons_grid:
+                        print(f"\n{'#' * 60}\n# [collect] strength={cons} frac={frac} "
+                              f"rhs={rhs} realization {r + 1}/{n_real} "
+                              f"(subsample_seed={sub_seed})\n{'#' * 60}")
+                        stash[cons] = run_chemo_robust(
+                            config, args, cv_configs=cv_configs, gt_configs=gt_configs,
+                            subsample_frac=frac, subsample_seed=sub_seed,
+                            write_output=False, tox_ub=rhs, conservativeness=cons,
+                            collect_only=True,
+                        )
+                    instance0, _, _, n_test0 = stash[cons_grid[0]]
+                    modes = settings["constraint_modes"]
+                    per_mode_mask, per_mode_given = {}, {}
+                    for mode in modes:
+                        all_masks = []
+                        for cons in cons_grid:
+                            all_masks.extend(stash[cons][2].get(mode, []))
+                        if not all_masks:
+                            continue
+                        shared = samestore_eval_mask(*all_masks)
+                        n_eval = int(shared.sum())
+                        print(f"Shared samestore cohort ({mode}, across all "
+                              f"strengths): {n_eval}/{n_test0} test rows")
+                        if n_eval == 0:
+                            print("  WARNING: empty shared cohort; skipping this "
+                                  "mode for this realization.")
+                            continue
+                        per_mode_mask[mode] = shared
+                        per_mode_given[mode] = evaluate_given_table6(instance0, shared)
+                    for cons in cons_grid:
+                        inst_c, collected_c, _, n_test_c = stash[cons]
+                        df_c = build_table6_df(
+                            inst_c, collected_c, per_mode_mask, per_mode_given,
+                            settings["methods_to_run"], modes, n_test_c,
+                        )
+                        rows.append(_tag(df_c, r, sub_seed, rhs, frac, cons))
+                else:
+                    print(f"\n{'#' * 60}\n# frac={frac} rhs={rhs} "
+                          f"realization {r + 1}/{n_real} "
+                          f"(subsample_seed={sub_seed})\n{'#' * 60}")
                     df_r = run_chemo_robust(
                         config, args, cv_configs=cv_configs, gt_configs=gt_configs,
                         subsample_frac=frac, subsample_seed=sub_seed,
-                        write_output=False, tox_ub=rhs, conservativeness=cons,
+                        write_output=False, tox_ub=rhs, conservativeness=None,
                     )
-                    df_r = df_r.copy()
-                    df_r["realization"] = r
-                    df_r["subsample_seed"] = sub_seed
-                    df_r["rhs"] = rhs if rhs is not None else "default"
-                    df_r["frac"] = frac if frac is not None else "full"
-                    df_r["strength"] = cons if cons is not None else "calibrated"
-                    rows.append(df_r)
+                    rows.append(_tag(df_r, r, sub_seed, rhs, frac, None))
 
     df_long = pd.concat(rows, ignore_index=True)
     os.makedirs("results/gastric", exist_ok=True)

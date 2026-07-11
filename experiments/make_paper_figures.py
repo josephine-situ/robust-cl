@@ -182,11 +182,43 @@ def fig_pareto(tag="final_pareto"):
     _save(fig, "fig_pareto")
 
 
+# ------------------------------------------------------------- synthetic ---
+def fig_synthetic(csv="results/synthetic/noise_sweep_results.csv"):
+    """Synthetic noise sweep: held-out feasibility and objective vs label noise sigma.
+    The controlled analog of the gastric story -- model-robust baselines drift
+    infeasible as noise grows while CP (decision-robust) stays feasible."""
+    if not os.path.exists(csv):
+        print(f"  (skip fig_synthetic: {csv} not found)")
+        return
+    df = pd.read_csv(csv)
+    methods = [m for m in METHODS if m in df.method.unique()]
+    fig, axes = plt.subplots(1, 2, figsize=(9.2, 4.2))
+    for m in methods:
+        s = df[df.method == m].sort_values("noise_std")
+        axes[0].plot(s["noise_std"], s["feasibility_rate"], marker=MARKER[m],
+                     color=COLOR[m], lw=2, ms=7, mec="white", mew=1,
+                     label=LABEL[m], zorder=3)
+        so = s[s["objective"] < 1e6]
+        axes[1].plot(so["noise_std"], so["objective"], marker=MARKER[m],
+                     color=COLOR[m], lw=2, ms=7, mec="white", mew=1,
+                     label=LABEL[m], zorder=3)
+    axes[0].set_ylabel("Held-out feasibility rate"); axes[0].set_ylim(-0.03, 1.03)
+    axes[0].set_title("Feasibility vs noise")
+    axes[1].set_ylabel("Objective $c^{\\top}x$"); axes[1].set_title("Objective vs noise")
+    for ax in axes:
+        ax.set_xlabel("Label noise $\\sigma$")
+    axes[0].legend(loc="best", fontsize=9)
+    fig.suptitle("Synthetic problem: CP stays feasible as label noise grows "
+                 "(model-robust baselines drift infeasible)", y=1.02, fontsize=11)
+    _save(fig, "fig_synthetic")
+
+
 def main():
     print("Generating paper figures ->", OUT)
     fig_headline()
     fig_tradeoff()
     fig_pareto()
+    fig_synthetic()
     _frontier("final_rhs", "rhs", "Toxicity upper bound (percentile)", "fig_rhs_frontier",
               "Frontier vs constraint tightness (frac=0.5): CP protects the tail where nominal is fragile")
     _frontier("final_frac", "frac", "Fraction of training data", "fig_frac_frontier",

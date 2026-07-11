@@ -152,18 +152,28 @@ def plot_noise_sweep(csv_path="results/synthetic/noise_sweep_results.csv",
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
 
-    # --- True feasibility vs noise ---
+    # --- True feasibility vs noise (only if the column exists) ---
     ax = axes[0]
-    for method in methods:
-        sub = df[df["method"] == method]
-        if sub["true_feasible"].notna().any():
-            ax.plot(sub["noise_std"],
-                    sub["true_feasible"].astype(float),
+    if "true_feasible" in df.columns:
+        for method in methods:
+            sub = df[df["method"] == method]
+            if sub["true_feasible"].notna().any():
+                ax.plot(sub["noise_std"],
+                        sub["true_feasible"].astype(float),
+                        "o-", label=method, color=method_colors[method])
+        ax.set_ylabel("True feasibility")
+        ax.set_title("Ground Truth Feasibility vs. Noise")
+        ax.legend(fontsize=8)
+    else:
+        # Fall back to worst-case violation when no separate GT feasibility column.
+        for method in methods:
+            sub = df[df["method"] == method]
+            ax.plot(sub["noise_std"], sub["worst_violation"].astype(float),
                     "o-", label=method, color=method_colors[method])
+        ax.set_ylabel("Worst-case violation")
+        ax.set_title("Worst-case Violation vs. Noise")
+        ax.legend(fontsize=8)
     ax.set_xlabel("Label noise $\\sigma$")
-    ax.set_ylabel("True feasibility")
-    ax.set_title("Ground Truth Feasibility vs. Noise")
-    ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 
     # --- Held-out feasibility vs noise ---
