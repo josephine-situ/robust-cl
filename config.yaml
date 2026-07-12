@@ -61,7 +61,10 @@ conservativeness_sweep:
   cp_dist_tol_max: 0.05       # s=0 (weakest ~ nominal: too loose to cut)
   cp_dist_tol_min: 0.005      # s=1 (strongest; positive floor, never 0)
   cp_alpha_max: 0.3           # (unused as the CP sweep knob; retained for reference only)
-  robust_reg_eps_max: 0.5     # label-uncertainty radius; eps = max*s
+  robust_reg_eps_max: 1.0     # label-uncertainty radius; eps = max*s. Widened from 0.5
+                              # so robust_reg's frontier is traced to its limit (it
+                              # topped out ~0.27/0.48 worst-feas at 0.5); larger eps
+                              # over-regularizes, which is the point -- trace until OS drops.
   wrapper_alpha_max: 0.5      # wrapper chance budget; alpha = max*(1-s)
 
 methods:
