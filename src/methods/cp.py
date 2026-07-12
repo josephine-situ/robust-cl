@@ -617,8 +617,14 @@ def _resolve_distance(cp_distance, instance):
 
 
 def _finalize(instance, master, ctx_bounds, history, status, total_start,
-              cp_trace_path, last_x=None, last_obj=np.inf, anchors=None):
-    """Restore context-free bounds, do a tight final solve, persist trace."""
+              cp_trace_path, last_x=None, last_obj=np.inf, anchors=None,
+              incumbent_x=None, incumbent_obj=np.inf):
+    """Restore context-free bounds, do a tight final solve, persist trace.
+
+    ``incumbent_x`` (best feasible iterate) is supplied only by the basic path
+    when it exits WITHOUT converging: the accumulated cuts can leave the final
+    master over-constrained/degenerate, so we return the best feasible decision
+    actually found during iteration rather than that unreliable final solve."""
     d = instance.n_features
     print("Re-solving with default MIP gap...")
     _restore_context_bounds(master, ctx_bounds)
@@ -627,7 +633,11 @@ def _finalize(instance, master, ctx_bounds, history, status, total_start,
     master.opt.Params.MIPGap = 1e-4
     x_final, obj_final = master.solve()
     _restore_context_bounds(master, ctx_bounds)
-    if x_final is not None:
+    if incumbent_x is not None:
+        # Non-converged basic path: prefer the best feasible incumbent over the
+        # (possibly infeasible/degenerate) over-cut final master solve.
+        x_opt, obj_value = incumbent_x, incumbent_obj
+    elif x_final is not None:
         x_opt, obj_value = x_final, obj_final
     elif last_x is not None:
         x_opt, obj_value = last_x, last_obj
@@ -1159,6 +1169,11 @@ def _run_cp_loop(instance: ProblemInstance,
     )
 
     last_x, last_obj = None, np.inf
+    # Best feasible incumbent (basic path only): the iterate with the smallest
+    # worst-case violation, used as a safeguard when the loop exhausts its
+    # iterations without converging (the over-cut final master is unreliable).
+    is_basic = isinstance(strategy, _BasicSeparation)
+    best_x, best_obj, best_viol = None, np.inf, np.inf
     status = "max_iterations"
     for iteration in range(max_iterations):
         res = strategy.step(env, iteration)
@@ -1174,13 +1189,25 @@ def _run_cp_loop(instance: ProblemInstance,
         if res.obj is not None or res.violation is not None:
             history.iterations = iteration + 1
 
+        if (is_basic and res.x is not None and res.violation is not None
+                and res.violation < best_viol):
+            best_viol = res.violation
+            best_x = res.x
+            best_obj = res.obj if res.obj is not None else np.inf
+
         if res.stop:
             status = res.status
             break
 
+    # Only fall back to the incumbent for a non-converged basic run; a converged
+    # ("optimal") run's tight final solve is trustworthy, and the coherent path
+    # (gastric) never sets an incumbent.
+    incumbent_x = best_x if (is_basic and status != "optimal") else None
+    incumbent_obj = best_obj if incumbent_x is not None else np.inf
     return _finalize(
         instance, master, ctx_bounds, history, status,
         total_start, cp_trace_path, last_x, last_obj, anchors=anchors,
+        incumbent_x=incumbent_x, incumbent_obj=incumbent_obj,
     )
 
 

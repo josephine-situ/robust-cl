@@ -145,7 +145,8 @@ def _resolve_run_settings(config, args):
     cs_cfg = config.get("conservativeness_sweep", {})
     settings["cs_robust_param_rho_max"] = cs_cfg.get("robust_param_rho_max", 0.1)
     settings["cs_cp_alpha_max"] = cs_cfg.get("cp_alpha_max", 0.3)
-    settings["cs_cp_dist_tol_max"] = cs_cfg.get("cp_dist_tol_max", 0.2)
+    settings["cs_cp_dist_tol_max"] = cs_cfg.get("cp_dist_tol_max", 0.05)
+    settings["cs_cp_dist_tol_min"] = cs_cfg.get("cp_dist_tol_min", 0.005)
     settings["cs_robust_reg_eps_max"] = cs_cfg.get("robust_reg_eps_max", 0.5)
     settings["cs_wrapper_alpha_max"] = cs_cfg.get("wrapper_alpha_max", 0.5)
     return settings
@@ -299,10 +300,13 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
         )
     elif method == "cp":
         # dist_tol is CP's monotone robustness dial (smaller -> keep cutting until
-        # the worst scenario is tight -> stronger). The coverage cap is held fixed at
-        # the shared alpha so it never confounds the sweep.
+        # the worst scenario is tight -> stronger). Interpolate max -> min with a
+        # positive floor: dist_tol=0 over-cuts into coverage-cap rollback (degenerate)
+        # and loose values trigger no cut. The coverage cap is held fixed at the
+        # shared alpha so it never confounds the sweep.
         dmax = ranges["cp_dist_tol_max"]
-        strength_to_knob = lambda s: dmax * (1.0 - s)   # s=1 strongest -> dist_tol=0
+        dmin = ranges.get("cp_dist_tol_min", 0.005)
+        strength_to_knob = lambda s: dmax * (1.0 - s) + dmin * s  # s=1 -> dmin (strongest)
         build = lambda knob: _cp_solver(
             settings, model_type, model_params, settings["alpha"],
             cp_dist_tol_override=knob,
@@ -323,6 +327,7 @@ def _solver_at_strength(method, strength, settings, model_type, model_params,
         "robust_reg_eps_max": settings["cs_robust_reg_eps_max"],
         "cp_alpha_max": settings["cs_cp_alpha_max"],
         "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
+        "cp_dist_tol_min": settings["cs_cp_dist_tol_min"],
     }
     build, s2k = _method_build_map(
         method, settings, ranges, model_type, model_params,
@@ -347,6 +352,7 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
         "robust_reg_eps_max": settings["calib_robust_reg_eps_max"],
         "cp_alpha_max": settings["cs_cp_alpha_max"],
         "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
+        "cp_dist_tol_min": settings["cs_cp_dist_tol_min"],
     }
     build, strength_to_knob = _method_build_map(
         method, settings, ranges, model_type, model_params,
