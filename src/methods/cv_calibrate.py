@@ -138,10 +138,11 @@ def make_cv_oracle(instance: ProblemInstance, gt_specs: Optional[dict] = None):
 # Fold instances + scoring
 # ---------------------------------------------------------------------------
 def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
-                   val_rows: np.ndarray) -> ProblemInstance:
+                   val_rows: Optional[np.ndarray]) -> ProblemInstance:
     """Base instance with each constraint's fit data subset to ``train_idx`` (the
-    fold varies which rows are fit; percentile scale stays full-train) and
-    ``X_test`` set to the fold-val rows. Mirrors ``train_subsample_frac``."""
+    fold varies which rows are fit; percentile scale stays full-train). For
+    contextual problems ``X_test`` is set to the fold-val rows; for single-decision
+    (synthetic, ``X_train`` is None) it is left unchanged. Mirrors ``train_subsample_frac``."""
     new_constraints = []
     for c in base.constraints:
         new_mds = [
@@ -158,8 +159,8 @@ def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
     return dataclasses.replace(
         base,
         constraints=new_constraints,
-        X_test=val_rows,
-        X_train=base.X_train[train_idx],
+        X_test=val_rows if val_rows is not None else base.X_test,
+        X_train=(base.X_train[train_idx] if base.X_train is not None else None),
         trust_region_points=(tr_pts[train_idx] if tr_pts is not None else None),
     )
 
@@ -177,7 +178,7 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
     solver_fn = build_solver(knob)
     fold_feas, fold_obj = [], []
     for train_idx, val_idx in folds:
-        val_rows = base.X_train[val_idx]
+        val_rows = base.X_train[val_idx] if (contextual and base.X_train is not None) else None
         fi = _fold_instance(base, train_idx, val_rows)
         if constraint_names is not None:
             fi = filter_constraints(fi, constraint_names)
@@ -227,12 +228,16 @@ def select_knob_cv(build_solver: Callable[[float], Callable], knob_grid: Sequenc
         rows.append((knob, feas, obj))
         log(f"    [cv] {method}: knob={knob:.4g} feas={feas:.3f} obj={obj:.3f}", flush=True)
 
+    # Budget is an ADDITIVE tolerance of os_tol_frac * |nominal| in the worse
+    # direction (additive handles negative objectives, e.g. synthetic cost c'x < 0;
+    # for a positive objective it equals the multiplicative nominal*(1-+tol)).
     sense = oracle.objective_sense
+    margin = os_tol_frac * abs(nominal_obj)
     if sense == "max":
-        thresh = nominal_obj * (1.0 - os_tol_frac)
+        thresh = nominal_obj - margin
         ok = lambda o: np.isfinite(o) and o >= thresh - 1e-9
     else:
-        thresh = nominal_obj * (1.0 + os_tol_frac)
+        thresh = nominal_obj + margin
         ok = lambda o: np.isfinite(o) and o <= thresh + 1e-9
 
     passing = [(i, k, f, o) for i, (k, f, o) in enumerate(rows)

@@ -213,12 +213,39 @@ def fig_synthetic(csv="results/synthetic/noise_sweep_results.csv"):
     _save(fig, "fig_synthetic")
 
 
+def fig_synthetic_pareto(csv="results/synthetic/synthetic_pareto.csv"):
+    """Synthetic CV-centered Pareto: worst-case feasibility vs objective as each
+    method sweeps knob = theta* x factor (nominal = single point)."""
+    if not os.path.exists(csv):
+        print(f"  (skip fig_synthetic_pareto: {csv} not found)")
+        return
+    df = pd.read_csv(csv)
+    swept = [m for m in ["robust_reg", "wrapper", "cp"] if m in df.method.unique()]
+    fig, ax = plt.subplots(figsize=(5.4, 4.4))
+    for m in swept:
+        s = df[df.method == m].sort_values("knob")
+        ax.plot(s["worst_case_feas"], s["objective"], marker=MARKER.get(m, "o"),
+                color=COLOR.get(m, "#333"), lw=2, ms=7, mec="white", mew=1,
+                label=LABEL.get(m, m), zorder=3)
+    if "nominal" in df.method.unique():
+        n = df[df.method == "nominal"]
+        ax.scatter(n["worst_case_feas"].mean(), n["objective"].mean(), s=150,
+                   color=COLOR["nominal"], marker=MARKER["nominal"], edgecolor="white",
+                   linewidth=1.3, zorder=4, label="Nominal (no knob)")
+    ax.set_xlabel("Worst-case feasibility (across noise draws)")
+    ax.set_ylabel("Objective $c^{\\top}x$ (lower = better)")
+    ax.set_title("Synthetic: CV-centered robustness frontier")
+    ax.legend(loc="best", fontsize=9)
+    _save(fig, "fig_synthetic_pareto")
+
+
 def main():
     print("Generating paper figures ->", OUT)
     fig_headline()
     fig_tradeoff()
     fig_pareto()
     fig_synthetic()
+    fig_synthetic_pareto()
     _frontier("final_rhs", "rhs", "Toxicity upper bound (percentile)", "fig_rhs_frontier",
               "Frontier vs constraint tightness (frac=0.5): CP protects the tail where nominal is fragile")
     _frontier("final_frac", "frac", "Fraction of training data", "fig_frac_frontier",
