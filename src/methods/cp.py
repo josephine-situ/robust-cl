@@ -699,10 +699,16 @@ class _BasicSeparation:
     pinned before each solve so only treatment variables are optimized.
     """
 
-    def __init__(self, k_neighbors_frac, n_candidates, k_neighbors_min=1):
+    def __init__(self, k_neighbors_frac, n_candidates, k_neighbors_min=1,
+                 dist_tol_rel=None):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_candidates = n_candidates
         self.k_neighbors_min = k_neighbors_min
+        # Same problem-agnostic knob as the coherent path: tolerance = tau * d0,
+        # with d0 = the iteration-0 worst violation. Without it this path cut every
+        # violation > 1e-6, i.e. it had no robustness lever at all.
+        self.dist_tol_rel = dist_tol_rel
+        self._tol = None
 
     def step(self, env: _SepEnv, iteration: int) -> _StepResult:
         iter_start = time.time()
@@ -717,7 +723,7 @@ class _BasicSeparation:
 
         sep_cache = {}
         max_violation = -np.inf
-        scenarios_to_add = []
+        candidate_cuts = []  # (violation, c_idx, models, rhs) -- filtered by _tol below
         for c_idx, constraint in enumerate(inst.constraints):
             if not _is_constraint_constraint(constraint):
                 continue
@@ -747,8 +753,22 @@ class _BasicSeparation:
 
             violation = constraint_val - constraint.rhs
             max_violation = max(max_violation, violation)
-            if violation > 1e-6:
-                scenarios_to_add.append((c_idx, worst_case_models, constraint.rhs))
+            candidate_cuts.append((violation, c_idx, worst_case_models, constraint.rhs))
+
+        # Resolve the effective tolerance once from this problem's own iteration-0
+        # worst violation (d0), then cut only what exceeds it. tau=1 stops at iter 0
+        # (~nominal); tau->0 approaches the legacy "cut everything > 1e-6".
+        if self._tol is None:
+            if self.dist_tol_rel is not None and np.isfinite(max_violation):
+                self._tol = max(float(self.dist_tol_rel) * float(max_violation), 1e-6)
+                print(
+                    f"    [cp] d0={max_violation:.4f} (iter-0 worst violation); "
+                    f"tau={self.dist_tol_rel:g} -> tol={self._tol:.6f}",
+                    flush=True,
+                )
+            else:
+                self._tol = 1e-6
+        scenarios_to_add = [(c, m, r) for (v, c, m, r) in candidate_cuts if v > self._tol]
 
         print(
             f"Iter {iteration}: Obj={obj_star:.4f} "
@@ -835,12 +855,20 @@ class _CoherentSeparation:
     """
 
     def __init__(self, k_neighbors_frac, n_scenarios, alpha, single_point, dist_tol,
-                 k_neighbors_min=1, cut_eviction="reject", base_scenario_ids=None):
+                 k_neighbors_min=1, cut_eviction="reject", base_scenario_ids=None,
+                 dist_tol_rel=None):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_scenarios = n_scenarios
         self.alpha = alpha               # coverage cap: max fraction of x* infeasible
         self.single_point = single_point
         self.dist_tol = dist_tol         # stop once worst normalized distance <= this
+        # Problem-agnostic knob: when set, the stopping tolerance is tau * d0, where
+        # d0 is THIS problem's iteration-0 worst distance (measured before any cut).
+        # tau=1 stops immediately (~nominal); tau->0 cuts maximally. Absolute
+        # dist_tol values don't transfer across datasets because d0 varies with the
+        # data's noise scale; tau does. Resolved once, at iteration 0.
+        self.dist_tol_rel = dist_tol_rel
+        self._tol = None                 # effective absolute tolerance (set at iter 0)
         self.k_neighbors_min = k_neighbors_min
         # "evict_slack": on infeasibility keep the (relevant) new cut and evict the
         # most-slack ACTIVE non-base scenario until feasible; "reject": drop the new
@@ -1044,6 +1072,19 @@ class _CoherentSeparation:
         # Scale next iteration's pruning threshold by the worst raw cut.
         self.prev_max_exceed = candidates[0][1] if candidates else 0.0
 
+        # Resolve the effective tolerance once, from THIS problem's own iteration-0
+        # worst distance (d0), so a single tau grid transfers across datasets.
+        if self._tol is None:
+            if self.dist_tol_rel is not None:
+                self._tol = float(self.dist_tol_rel) * float(best_dist)
+                print(
+                    f"    [cp] d0={best_dist:.4f} (iter-0 worst distance); "
+                    f"tau={self.dist_tol_rel:g} -> dist_tol={self._tol:.5f}",
+                    flush=True,
+                )
+            else:
+                self._tol = self.dist_tol
+
         print(
             f"Iter {iteration}: {'Obj' if self.single_point else 'AvgObj'}={last_obj:.4f} "
             f"WorstScenarioNormDist={best_dist:.4f} "
@@ -1056,7 +1097,7 @@ class _CoherentSeparation:
 
         # Terminate (1): even the worst sampled relabeling leaves the normalized
         # total distance within the allowance -- robust enough.
-        if best_dist <= self.dist_tol:
+        if best_dist <= self._tol:
             return _StepResult(stop=True, status="optimal", obj=last_obj, violation=history_viol)
 
         # Single-lever CP: the "budget" is the current baseline of infeasible anchors,
@@ -1142,6 +1183,7 @@ def _run_cp_loop(instance: ProblemInstance,
                  anchors: list,
                  cp_k_neighbors_min: int = 1,
                  cp_cut_eviction: str = "reject",
+                 cp_dist_tol_rel: float = None,
                  cp_trace_path: Optional[str] = None) -> tuple[SolutionResult, CPHistory]:
     """Run the CP cut loop for a fixed anchor set (one or many contexts)."""
     total_start = time.time()
@@ -1191,6 +1233,7 @@ def _run_cp_loop(instance: ProblemInstance,
     if use_basic:
         strategy = _BasicSeparation(
             cp_k_neighbors_frac, cp_n_candidates, cp_k_neighbors_min,
+            dist_tol_rel=cp_dist_tol_rel,
         )
         mode = "basic"
     else:
@@ -1198,6 +1241,7 @@ def _run_cp_loop(instance: ProblemInstance,
             cp_k_neighbors_frac, cp_n_candidates, cp_alpha,
             single_point, cp_dist_tol, cp_k_neighbors_min,
             cut_eviction=cp_cut_eviction, base_scenario_ids=base_scenario_ids,
+            dist_tol_rel=cp_dist_tol_rel,
         )
         mode = "coherent (single x*)" if single_point else "coherent (multi x*)"
 
@@ -1279,6 +1323,7 @@ def solve_cp(instance: ProblemInstance,
              cp_eval_mode: str = "global",
              cp_nearest_distance: str = "context",
              cp_cut_eviction: str = "reject",
+             cp_dist_tol_rel: Optional[float] = None,
              ) -> tuple:
     """Cutting Planes for robust constraint learning (one driver, auto-selected oracle).
 
@@ -1315,6 +1360,7 @@ def solve_cp(instance: ProblemInstance,
         cp_alpha=cp_alpha,
         cp_distance=cp_distance,
         cp_dist_tol=cp_dist_tol,
+        cp_dist_tol_rel=cp_dist_tol_rel,
         cp_robustify_objective=cp_robustify_objective,
         cp_cut_eviction=cp_cut_eviction,
     )

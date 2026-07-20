@@ -149,8 +149,9 @@ def _resolve_run_settings(config, args):
     cs_cfg = config.get("conservativeness_sweep", {})
     settings["cs_robust_param_rho_max"] = cs_cfg.get("robust_param_rho_max", 0.1)
     settings["cs_cp_alpha_max"] = cs_cfg.get("cp_alpha_max", 0.3)
-    settings["cs_cp_dist_tol_max"] = cs_cfg.get("cp_dist_tol_max", 0.05)
-    settings["cs_cp_dist_tol_min"] = cs_cfg.get("cp_dist_tol_min", 0.005)
+    # CP knob is now RELATIVE (tau = fraction of the problem's iter-0 distance d0).
+    settings["cs_cp_dist_tol_rel_max"] = cs_cfg.get("cp_dist_tol_rel_max", 1.0)
+    settings["cs_cp_dist_tol_rel_min"] = cs_cfg.get("cp_dist_tol_rel_min", 0.1)
     settings["cs_robust_reg_eps_max"] = cs_cfg.get("robust_reg_eps_max", 0.5)
     settings["cs_wrapper_alpha_max"] = cs_cfg.get("wrapper_alpha_max", 0.5)
     return settings
@@ -218,11 +219,16 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
     return solvers
 
 
-def _cp_solver(settings, model_type, model_params, cp_alpha=0.0, cp_dist_tol_override=None):
+def _cp_solver(settings, model_type, model_params, cp_alpha=0.0,
+               cp_dist_tol_override=None, cp_dist_tol_rel=None):
     """Build the CP solver partial. Single-lever CP: ``cp_alpha`` is pinned at 0 (the
     coverage cap is not a tunable) -- cuts that would break a training anchor are
     evicted/rolled back (``cut_eviction``), keeping the training set feasible, so
-    ``dist_tol`` is the ONLY robustness knob. ``cp_dist_tol_override`` sets it."""
+    the distance tolerance is the ONLY robustness knob.
+
+    Prefer ``cp_dist_tol_rel`` (tau): the tolerance becomes tau * d0, where d0 is the
+    problem's own iteration-0 worst distance, so ONE tau grid transfers across
+    datasets/problems. ``cp_dist_tol_override`` sets the absolute value instead."""
     cp_dist_tol = (settings["cp_dist_tol"] if cp_dist_tol_override is None
                    else cp_dist_tol_override)
     return partial(
@@ -232,7 +238,7 @@ def _cp_solver(settings, model_type, model_params, cp_alpha=0.0, cp_dist_tol_ove
         cp_k_neighbors_min=settings["cp_k_neighbors_min"],
         cp_n_candidates=settings["cp_n_candidates"],
         seed=settings["bootstrap_seed"], cp_alpha=0.0,  # single-lever: pinned
-        cp_dist_tol=cp_dist_tol,
+        cp_dist_tol=cp_dist_tol, cp_dist_tol_rel=cp_dist_tol_rel,
         cp_anchor_source=settings["cp_anchor_source"],
         cp_n_anchors=settings["cp_n_anchors"],
         cp_anchor_method=settings["cp_anchor_method"],
@@ -304,17 +310,17 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
             embedding_mode=em, rf_alpha=rf_alpha,
         )
     elif method == "cp":
-        # dist_tol is CP's monotone robustness dial (smaller -> keep cutting until
-        # the worst scenario is tight -> stronger). Interpolate max -> min with a
-        # positive floor: dist_tol=0 over-cuts into coverage-cap rollback (degenerate)
-        # and loose values trigger no cut. The coverage cap is held fixed at the
-        # shared alpha so it never confounds the sweep.
-        dmax = ranges["cp_dist_tol_max"]
-        dmin = ranges.get("cp_dist_tol_min", 0.005)
-        strength_to_knob = lambda s: dmax * (1.0 - s) + dmin * s  # s=1 -> dmin (strongest)
+        # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, with
+        # d0 the problem's own iteration-0 worst distance. tau=1 stops at iteration 0
+        # (~nominal, the weak end); tau->0 cuts maximally. Relative units make one grid
+        # valid across datasets -- absolute dist_tol does not transfer, because
+        # anything above d0 (~0.017 on gastric) is a silent no-op that ties nominal.
+        tmax = ranges.get("cp_dist_tol_rel_max", 1.0)
+        tmin = ranges.get("cp_dist_tol_rel_min", 0.1)
+        strength_to_knob = lambda s: tmax * (1.0 - s) + tmin * s  # s=1 -> tmin (strongest)
         build = lambda knob: _cp_solver(
             settings, model_type, model_params, settings["alpha"],
-            cp_dist_tol_override=knob,
+            cp_dist_tol_rel=knob,
         )
     else:
         raise ValueError(f"Unknown method for knob map: {method}")
@@ -331,8 +337,8 @@ def _solver_at_strength(method, strength, settings, model_type, model_params,
         "rho_min": 0.0, "rho_max": settings["cs_robust_param_rho_max"],
         "robust_reg_eps_max": settings["cs_robust_reg_eps_max"],
         "cp_alpha_max": settings["cs_cp_alpha_max"],
-        "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
-        "cp_dist_tol_min": settings["cs_cp_dist_tol_min"],
+        "cp_dist_tol_rel_max": settings["cs_cp_dist_tol_rel_max"],
+        "cp_dist_tol_rel_min": settings["cs_cp_dist_tol_rel_min"],
     }
     build, s2k = _method_build_map(
         method, settings, ranges, model_type, model_params,
@@ -351,8 +357,8 @@ def _solver_at_knob(method, knob, settings, model_type, model_params,
         "rho_min": 0.0, "rho_max": settings["cs_robust_param_rho_max"],
         "robust_reg_eps_max": settings["cs_robust_reg_eps_max"],
         "cp_alpha_max": settings["cs_cp_alpha_max"],
-        "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
-        "cp_dist_tol_min": settings["cs_cp_dist_tol_min"],
+        "cp_dist_tol_rel_max": settings["cs_cp_dist_tol_rel_max"],
+        "cp_dist_tol_rel_min": settings["cs_cp_dist_tol_rel_min"],
     }
     build, _ = _method_build_map(
         method, settings, ranges, model_type, model_params,
@@ -376,8 +382,8 @@ def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
         "rho_min": settings["calib_rho_min"], "rho_max": settings["calib_rho_max"],
         "robust_reg_eps_max": settings["calib_robust_reg_eps_max"],
         "cp_alpha_max": settings["cs_cp_alpha_max"],
-        "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
-        "cp_dist_tol_min": settings["cs_cp_dist_tol_min"],
+        "cp_dist_tol_rel_max": settings["cs_cp_dist_tol_rel_max"],
+        "cp_dist_tol_rel_min": settings["cs_cp_dist_tol_rel_min"],
     }
     build, strength_to_knob = _method_build_map(
         method, settings, ranges, model_type, model_params,
@@ -745,8 +751,8 @@ def _cs_ranges(settings):
         "rho_min": 0.0, "rho_max": settings["cs_robust_param_rho_max"],
         "robust_reg_eps_max": settings["cs_robust_reg_eps_max"],
         "cp_alpha_max": settings["cs_cp_alpha_max"],
-        "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
-        "cp_dist_tol_min": settings["cs_cp_dist_tol_min"],
+        "cp_dist_tol_rel_max": settings["cs_cp_dist_tol_rel_max"],
+        "cp_dist_tol_rel_min": settings["cs_cp_dist_tol_rel_min"],
     }
 
 

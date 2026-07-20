@@ -61,7 +61,13 @@ cv_calibration:
   n_kfold: 4                          # synthetic KFold splits (no time)
   os_tolerance_frac: 0.1              # objective budget: keep obj within 10% of nominal
   knob_grids:                         # native-unit robustness knob per method (strongest last)
-    cp:         [0.05, 0.03, 0.02, 0.01, 0.005]   # dist_tol (smaller = stronger)
+    # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, where d0
+    # is the problem's own iteration-0 worst distance (logged per solve as "[cp] d0=").
+    # tau=1 stops at iteration 0 (~nominal); tau->0 cuts maximally. Relative units make
+    # this ONE grid valid for gastric, synthetic, and any new dataset -- absolute
+    # dist_tol does not transfer (on gastric d0~0.017, so 0.05/0.03/0.02 were silent
+    # no-ops that tied nominal exactly, leaving an effective 2-point grid).
+    cp:         [1.0, 0.75, 0.5, 0.25, 0.1]        # tau (smaller = stronger)
     robust_reg: [0.1, 0.25, 0.5, 0.75, 1.0]        # label_eps (larger = stronger)
     wrapper:    [0.4, 0.3, 0.2, 0.1, 0.0]          # chance alpha (smaller = stronger)
   pareto_center_factors: [0.5, 0.75, 1.0, 1.5, 2.0]  # knob = theta* * factor for the centered Pareto
@@ -81,8 +87,8 @@ conservativeness_sweep:
   # the joint all_constraints problem (degenerate), so we floor at a small positive
   # value rather than 0. The calibrated production CP uses dist_tol=0.01, which
   # this range brackets. The coverage cap is held fixed at uncertainty.alpha.
-  cp_dist_tol_max: 0.05       # s=0 (weakest ~ nominal: too loose to cut)
-  cp_dist_tol_min: 0.005      # s=1 (strongest; positive floor, never 0)
+  cp_dist_tol_rel_max: 1.0    # s=0 (weakest: tau=1 stops at iter 0 == nominal)
+  cp_dist_tol_rel_min: 0.1    # s=1 (strongest: cut until 10% of the iter-0 distance)
   cp_alpha_max: 0.3           # (unused as the CP sweep knob; retained for reference only)
   robust_reg_eps_max: 1.0     # label-uncertainty radius; eps = max*s. Widened from 0.5
                               # so robust_reg's frontier is traced to its limit (it

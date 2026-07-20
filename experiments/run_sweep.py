@@ -52,7 +52,11 @@ def _synth_build(method, config, model_type, model_params, seed):
             cp_k_neighbors_frac=unc.get("cp_k_neighbors_frac", 0.1),
             cp_k_neighbors_min=unc.get("cp_k_neighbors_min", 1),
             cp_n_candidates=unc.get("cp_n_candidates", 20), seed=seed,
-            cp_alpha=0.0, cp_dist_tol=knob,
+            # Relative knob (tau): tolerance = tau * d0 from this problem's own
+            # iter-0 worst violation, so the SAME grid works here and on gastric.
+            # (The basic path previously ignored dist_tol entirely -- it cut every
+            # violation > 1e-6 -- so synthetic CP had no robustness lever at all.)
+            cp_alpha=0.0, cp_dist_tol_rel=knob,
             cp_cut_eviction=cp.get("cut_eviction", "evict_slack"))
     raise ValueError(f"unknown synthetic method {method}")
 
