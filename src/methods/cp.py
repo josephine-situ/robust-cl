@@ -835,24 +835,59 @@ class _CoherentSeparation:
     """
 
     def __init__(self, k_neighbors_frac, n_scenarios, alpha, single_point, dist_tol,
-                 k_neighbors_min=1):
+                 k_neighbors_min=1, cut_eviction="reject", base_scenario_ids=None):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_scenarios = n_scenarios
         self.alpha = alpha               # coverage cap: max fraction of x* infeasible
         self.single_point = single_point
         self.dist_tol = dist_tol         # stop once worst normalized distance <= this
         self.k_neighbors_min = k_neighbors_min
+        # "evict_slack": on infeasibility keep the (relevant) new cut and evict the
+        # most-slack ACTIVE non-base scenario until feasible; "reject": drop the new
+        # cut (legacy). Under evict_slack the working set is non-monotone, so the
+        # no-deterioration obj bound is disabled.
+        self.cut_eviction = cut_eviction
+        self.base_scenario_ids = set(base_scenario_ids or ())  # nominal cuts, never evicted
         self.obj_bound = {}          # a_idx -> best (max) objective seen so far
         self.prev_max_exceed = 0.0   # scale for the dynamic pruning threshold (raw)
         self.last_added_ids: List[int] = []  # scenario ids from the last accepted cut
+
+    def _evict_to_fit(self, master, inst, anchors, added_ids, min_slack, baseline_infeas):
+        """Evict the most-slack ACTIVE non-base scenario (keeping the just-added,
+        current-x*-relevant cut and the nominal base) until the infeasible-anchor
+        count is back to ``baseline_infeas`` (no NEW infeasibility). Returns
+        ``(fits, evicted_ids)``. Uses full anchor re-solves because eviction relaxes
+        the master (the monotone early-exit of ``_p_infeas_after_cuts`` is invalid
+        once cuts are removed)."""
+        protected = self.base_scenario_ids | set(added_ids)
+        n = len(anchors)
+        evicted: List[int] = []
+        while True:
+            _, p_infeas = _solve_all_anchors(master, inst, anchors)
+            if p_infeas * n <= baseline_infeas + 1e-9:
+                return True, evicted
+            cand = [s for s, c in enumerate(master.scenario_constrs)
+                    if c is not None and s not in protected]
+            if not cand:
+                return False, evicted           # only nominal base left, still worse
+            victim = max(cand, key=lambda s: min_slack.get(s, np.inf))  # most stale
+            master.remove_scenario(victim)
+            master.opt.update()
+            evicted.append(victim)
+            print(f"      [cp] evicted stale scenario {victim} "
+                  f"(slack={min_slack.get(victim, float('inf')):.3f}) to admit new cut",
+                  flush=True)
 
     def step(self, env: _SepEnv, iteration: int) -> _StepResult:
         iter_start = time.time()
         inst, master = env.instance, env.master
 
+        # Under eviction the working set is non-monotone (cuts can be removed), so the
+        # no-deterioration objective bound is invalid -- an anchor's optimum may improve.
+        evicting = self.cut_eviction == "evict_slack"
         feasible, p_infeas, min_slack = _solve_all_anchors(
             master, inst, env.anchors,
-            obj_bounds=self.obj_bound, collect_slack=True,
+            obj_bounds=None if evicting else self.obj_bound, collect_slack=True,
         )
         if not feasible:
             if iteration > 0 and self.last_added_ids:
@@ -871,9 +906,11 @@ class _CoherentSeparation:
 
         # Per-anchor no-deterioration bound: each context's optimum only rises as
         # cuts are added, so store its best objective to warm-start later solves.
-        for a_idx, _, obj_q in feasible:
-            if obj_q > self.obj_bound.get(a_idx, -np.inf):
-                self.obj_bound[a_idx] = obj_q
+        # Skipped under eviction (working set non-monotone -> bound would be wrong).
+        if not evicting:
+            for a_idx, _, obj_q in feasible:
+                if obj_q > self.obj_bound.get(a_idx, -np.inf):
+                    self.obj_bound[a_idx] = obj_q
 
         # Multi-anchor pruning: drop cuts that are slack at *every* x* (globally
         # inactive). Threshold scales with the previous iteration's worst cut, as
@@ -1022,19 +1059,14 @@ class _CoherentSeparation:
         if best_dist <= self.dist_tol:
             return _StepResult(stop=True, status="optimal", obj=last_obj, violation=history_viol)
 
-        # Add the most adversarial scenario we can afford (worst-first). Single
-        # x* uses alpha=0: every cut must keep the anchor solve feasible.
-        feas_alpha = 0.0 if self.single_point else self.alpha
+        # Single-lever CP: the "budget" is the current baseline of infeasible anchors,
+        # i.e. a cut may not make any currently-FEASIBLE anchor infeasible, but
+        # anchors already infeasible under the nominal fit are tolerated (nominal is
+        # not guaranteed feasible for every context). No pre-check stop -- the
+        # baseline is trivially within its own budget; eviction/rollback enforces
+        # "no new infeasibility".
         n_infeas_base = len(env.anchors) - len(feasible)
-        if n_infeas_base > (feas_alpha + 1e-12) * len(env.anchors):
-            cap_label = "feasibility" if self.single_point else "coverage"
-            print(
-                f"Iter {iteration}: {cap_label} cap hit before adding any cuts "
-                f"(p_infeas={p_infeas*100:.1f}% > alpha {feas_alpha*100:.1f}%); stopping.",
-                flush=True,
-            )
-            return _StepResult(stop=True, status="coverage_cap", obj=last_obj,
-                               violation=history_viol)
+        feas_alpha = n_infeas_base / len(env.anchors)
 
         for cand_rank, (_dist, _mx, cuts) in enumerate(candidates):
             added_ids = []
@@ -1044,17 +1076,26 @@ class _CoherentSeparation:
             p_infeas_after, fits = _p_infeas_after_cuts(
                 master, inst, env.anchors, feasible, n_infeas_base, feas_alpha
             )
+            # evict_slack: keep the relevant new cut and evict stale scenarios to
+            # restore feasibility instead of rejecting the new cut outright.
+            evicted = []
+            if not fits and evicting:
+                fits, evicted = self._evict_to_fit(
+                    master, inst, env.anchors, added_ids, min_slack, n_infeas_base
+                )
             if fits:
                 self.last_added_ids = added_ids
+                n_active = sum(1 for c in master.scenario_constrs if c is not None)
                 cap_note = (
-                    "feasible"
-                    if self.single_point
+                    "feasible" if self.single_point
                     else f"p_infeas={p_infeas_after*100:.1f}%"
                 )
+                evict_note = f", evicted {evicted}" if evicted else ""
                 print(
                     f"Iter {iteration}: Added scenario(s) {added_ids} "
                     f"(candidate rank {cand_rank + 1}/{len(candidates)}, "
-                    f"norm_dist={_dist:.4f}); {cap_note}",
+                    f"norm_dist={_dist:.4f}); {cap_note}{evict_note}; "
+                    f"working-set={n_active} active cuts",
                     flush=True,
                 )
                 return _StepResult(stop=False, status="running", obj=last_obj,
@@ -1067,10 +1108,11 @@ class _CoherentSeparation:
                 if self.single_point
                 else f"p_infeas_after={p_infeas_after*100:.1f}% > alpha {feas_alpha*100:.1f}%"
             )
+            evict_note = f" (also evicted {evicted}, kept removed)" if evicted else ""
             print(
                 f"Iter {iteration}: Rolled back scenario(s) {added_ids} "
                 f"(candidate rank {cand_rank + 1}/{len(candidates)}, "
-                f"norm_dist={_dist:.4f}); {reject_msg}",
+                f"norm_dist={_dist:.4f}); {reject_msg}{evict_note}",
                 flush=True,
             )
 
@@ -1099,6 +1141,7 @@ def _run_cp_loop(instance: ProblemInstance,
                  cp_robustify_objective: bool,
                  anchors: list,
                  cp_k_neighbors_min: int = 1,
+                 cp_cut_eviction: str = "reject",
                  cp_trace_path: Optional[str] = None) -> tuple[SolutionResult, CPHistory]:
     """Run the CP cut loop for a fixed anchor set (one or many contexts)."""
     total_start = time.time()
@@ -1109,6 +1152,9 @@ def _run_cp_loop(instance: ProblemInstance,
         instance, model_type, model_params, rho,
         robustify_objective=cp_robustify_objective,
     )
+    # Scenarios added during the build are the NOMINAL (point-estimate) cuts; they are
+    # the feasible base and must never be evicted.
+    base_scenario_ids = set(range(master.n_models))
     if not instance.context_var_indices:
         ctx_bounds = {}
     else:
@@ -1151,6 +1197,7 @@ def _run_cp_loop(instance: ProblemInstance,
         strategy = _CoherentSeparation(
             cp_k_neighbors_frac, cp_n_candidates, cp_alpha,
             single_point, cp_dist_tol, cp_k_neighbors_min,
+            cut_eviction=cp_cut_eviction, base_scenario_ids=base_scenario_ids,
         )
         mode = "coherent (single x*)" if single_point else "coherent (multi x*)"
 
@@ -1231,6 +1278,7 @@ def solve_cp(instance: ProblemInstance,
              cp_robustify_objective: bool = True,
              cp_eval_mode: str = "global",
              cp_nearest_distance: str = "context",
+             cp_cut_eviction: str = "reject",
              ) -> tuple:
     """Cutting Planes for robust constraint learning (one driver, auto-selected oracle).
 
@@ -1268,6 +1316,7 @@ def solve_cp(instance: ProblemInstance,
         cp_distance=cp_distance,
         cp_dist_tol=cp_dist_tol,
         cp_robustify_objective=cp_robustify_objective,
+        cp_cut_eviction=cp_cut_eviction,
     )
 
     if cp_eval_mode == "per_anchor_nearest":

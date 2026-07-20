@@ -110,6 +110,7 @@ def _resolve_run_settings(config, args):
     settings["cp_robustify_objective"] = cp_cfg.get("robustify_objective", True)
     settings["cp_eval_mode"] = cp_cfg.get("eval_mode", "global")
     settings["cp_nearest_distance"] = cp_cfg.get("nearest_distance", "context")
+    settings["cp_cut_eviction"] = cp_cfg.get("cut_eviction", "reject")
 
     if args.max_test_rows is not None:
         settings["max_test_rows"] = args.max_test_rows
@@ -214,11 +215,11 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
     return solvers
 
 
-def _cp_solver(settings, model_type, model_params, cp_alpha, cp_dist_tol_override=None):
-    """Build the CP solver partial with a given coverage cap ``cp_alpha``. The
-    conservativeness sweep varies robustness through ``cp_dist_tol_override``
-    (smaller distance tolerance = keep cutting = stronger), NOT through ``cp_alpha``
-    (a coverage cap that is usually non-binding); it holds ``cp_alpha`` fixed."""
+def _cp_solver(settings, model_type, model_params, cp_alpha=0.0, cp_dist_tol_override=None):
+    """Build the CP solver partial. Single-lever CP: ``cp_alpha`` is pinned at 0 (the
+    coverage cap is not a tunable) -- cuts that would break a training anchor are
+    evicted/rolled back (``cut_eviction``), keeping the training set feasible, so
+    ``dist_tol`` is the ONLY robustness knob. ``cp_dist_tol_override`` sets it."""
     cp_dist_tol = (settings["cp_dist_tol"] if cp_dist_tol_override is None
                    else cp_dist_tol_override)
     return partial(
@@ -227,7 +228,7 @@ def _cp_solver(settings, model_type, model_params, cp_alpha, cp_dist_tol_overrid
         cp_k_neighbors_frac=settings["cp_k_neighbors_frac"],
         cp_k_neighbors_min=settings["cp_k_neighbors_min"],
         cp_n_candidates=settings["cp_n_candidates"],
-        seed=settings["bootstrap_seed"], cp_alpha=cp_alpha,
+        seed=settings["bootstrap_seed"], cp_alpha=0.0,  # single-lever: pinned
         cp_dist_tol=cp_dist_tol,
         cp_anchor_source=settings["cp_anchor_source"],
         cp_n_anchors=settings["cp_n_anchors"],
@@ -237,6 +238,7 @@ def _cp_solver(settings, model_type, model_params, cp_alpha, cp_dist_tol_overrid
         cp_robustify_objective=settings["cp_robustify_objective"],
         cp_eval_mode=settings["cp_eval_mode"],
         cp_nearest_distance=settings["cp_nearest_distance"],
+        cp_cut_eviction=settings["cp_cut_eviction"],
     )
 
 
