@@ -687,6 +687,99 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
     return summary
 
 
+def _cs_ranges(settings):
+    """Knob-range dict for ``_method_build_map`` (only ``build(knob)`` is used in CV;
+    the ranges just need to exist so construction doesn't KeyError)."""
+    return {
+        "wrapper_alpha_max": settings["cs_wrapper_alpha_max"],
+        "tree_alpha_max": settings["calib_tree_alpha_max"],
+        "rho_min": 0.0, "rho_max": settings["cs_robust_param_rho_max"],
+        "robust_reg_eps_max": settings["cs_robust_reg_eps_max"],
+        "cp_alpha_max": settings["cs_cp_alpha_max"],
+        "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
+        "cp_dist_tol_min": settings["cs_cp_dist_tol_min"],
+    }
+
+
+def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
+    """Stage 1: select each method's single robustness knob by held-out CV (temporal
+    folds for gastric, KFold for synthetic), writing ``*_robustness_knobs.json`` +
+    a resumable scores checkpoint. See ``src/methods/cv_calibrate``."""
+    from src.methods.cv_calibrate import (
+        make_folds, make_cv_oracle, cv_score_knob, select_knob_cv,
+        load_score_checkpoint, append_score, write_knobs,
+    )
+    settings = _resolve_run_settings(config, args)
+    cvc = config.get("cv_calibration", {})
+    # run_chemo_robust.py is the gastric script (it always builds gastric, regardless
+    # of config.data.type); the synthetic robustness-parameter CV lives in run_sweep.py.
+    prefix = "gastric"
+    scores_path = f"results/cv/{prefix}_robustness_cv_scores.csv"
+    knobs_path = f"results/cv/{prefix}_robustness_knobs.json"
+    if getattr(args, "refresh_cv", False):
+        for p in (scores_path, knobs_path):
+            if os.path.exists(p):
+                os.remove(p)
+                print(f"[cv] removed {p} (--refresh-cv)")
+
+    instance = gastric_cancer(
+        fixed_constraint_configs=cv_configs, fixed_gt_ensemble_configs=gt_configs,
+    )
+    model_type = config["model"]["type"]
+    model_params = config["model"]["params"]
+
+    folds = make_folds(
+        instance, cvc.get("fold_scheme", "auto"),
+        tuple(cvc.get("fold_cutoffs", (2004, 2005, 2006, 2007))),
+        int(cvc.get("n_kfold", 4)), settings["bootstrap_seed"],
+    )
+    oracle = make_cv_oracle(instance, gt_specs=gt_configs)
+    contextual = bool(instance.context_var_indices)
+    constraint_names = ALL_CONSTRAINTS if contextual else None
+    os_tol = float(cvc.get("os_tolerance_frac", 0.1))
+    ranges = _cs_ranges(settings)
+    print(f"\n[cv] problem={prefix}, folds={len(folds)}, contextual={contextual}, "
+          f"os_tolerance_frac={os_tol}, oracle_sense={oracle.objective_sense}", flush=True)
+
+    ckpt = load_score_checkpoint(scores_path)
+
+    def make_scorer(method, build):
+        def _score(knob):
+            key = (method, float(knob))
+            if key in ckpt:
+                return ckpt[key]
+            feas, obj = cv_score_knob(build, knob, folds, oracle, instance,
+                                      constraint_names, contextual)
+            append_score(scores_path, method, knob, feas, obj)
+            ckpt[key] = (feas, obj)
+            return feas, obj
+        return _score
+
+    # Nominal CV baseline (no robustness knob) -> objective budget reference.
+    nom_build, _ = _method_build_map("nominal", settings, ranges, model_type,
+                                     model_params, None, None)
+    nom_feas, nom_obj = make_scorer("nominal", nom_build)(0.0)
+    print(f"[cv] nominal: feas={nom_feas:.3f} obj={nom_obj:.3f}", flush=True)
+
+    knobs = {"nominal": 0.0}
+    grids = cvc.get("knob_grids", {})
+    # CP first (slowest / most likely to fail), then the rest.
+    order = [m for m in ("cp", "robust_reg", "wrapper")
+             if m in settings["methods_to_run"] and m in grids]
+    for method in order:
+        build, _ = _method_build_map(method, settings, ranges, model_type,
+                                     model_params, None, None)
+        theta, _rows = select_knob_cv(
+            build, grids[method], folds, oracle, instance, os_tol, nom_obj,
+            constraint_names=constraint_names, contextual=contextual, method=method,
+            score_fn=make_scorer(method, build),
+        )
+        knobs[method] = float(theta)
+
+    write_knobs(knobs_path, knobs)
+    return knobs
+
+
 _DEFAULT_CV_CONFIGS = "results/cv/gastric_selected_configs.json"
 _DEFAULT_GT_CONFIGS = "results/cv/gastric_gt_ensemble_configs.json"
 
@@ -777,6 +870,28 @@ def main():
         help="Suffix for realization/summary output filenames (keeps ablation variants separate).",
     )
     parser.add_argument(
+        "--calibrate-cv",
+        action="store_true",
+        help=(
+            "Stage 1: select each method's robustness knob by held-out CV (temporal "
+            "folds gastric / KFold synthetic) and write results/cv/*_robustness_knobs.json "
+            "+ a resumable scores checkpoint. Does not run the Table 6 comparison."
+        ),
+    )
+    parser.add_argument(
+        "--refresh-cv",
+        action="store_true",
+        help="With --calibrate-cv, delete the scores checkpoint + knobs JSON first (clean recompute).",
+    )
+    parser.add_argument(
+        "--pareto-center-cv",
+        action="store_true",
+        help=(
+            "Stage 2 Pareto: center each method's knob grid on its CV-selected theta* "
+            "(results/cv/*_robustness_knobs.json), scaled by cv_calibration.pareto_center_factors."
+        ),
+    )
+    parser.add_argument(
         "--cv-configs",
         type=str,
         default=None,
@@ -845,7 +960,9 @@ def main():
                 "Run experiments/run_cv.py --ensemble to generate them."
             )
 
-    if (args.n_realizations > 1 or args.subsample_frac is not None
+    if args.calibrate_cv:
+        run_cv_calibration(config, args, cv_configs=cv_configs, gt_configs=gt_configs)
+    elif (args.n_realizations > 1 or args.subsample_frac is not None
             or args.rhs_grid or args.frac_grid or args.conservativeness_grid):
         run_chemo_robust_realizations(
             config, args, cv_configs=cv_configs, gt_configs=gt_configs

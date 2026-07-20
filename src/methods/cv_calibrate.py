@@ -43,7 +43,10 @@ def make_folds(instance: ProblemInstance, scheme: str = "auto",
     """
     years = instance.train_pub_years
     use_temporal = scheme == "temporal" or (scheme == "auto" and years is not None)
-    n = instance.X_train.shape[0]
+    # n_train from X_train when present, else from the first constraint's fit data
+    # (synthetic instances may not carry a contextual X_train).
+    n = (instance.X_train.shape[0] if instance.X_train is not None
+         else instance.constraints[0].models_data[0].X_train.shape[0])
     if use_temporal:
         if years is None:
             raise ValueError("temporal folds requested but train_pub_years is None")
