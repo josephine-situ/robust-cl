@@ -183,6 +183,12 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
         if constraint_names is not None:
             fi = filter_constraints(fi, constraint_names)
         result = solver_fn(fi)
+        # solve_cp returns (SolutionResult, history); the baselines return a bare
+        # SolutionResult. Unwrap as calibrate.infeasible_fraction does -- otherwise
+        # the contextual path raises (tuple has no .x) and the single-decision path
+        # silently scores NaN via getattr(result, "x_opt", None).
+        if isinstance(result, tuple):
+            result = result[0]
         if contextual:
             feas_vals, obj_vals = [], []
             for row in val_rows:
