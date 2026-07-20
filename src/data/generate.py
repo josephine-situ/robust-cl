@@ -94,6 +94,10 @@ class ProblemInstance:
     # Ordered feature names for X_train / X_test (context + treatment columns)
     feature_names: Optional[List[str]] = None
 
+    # Publication year per X_train row (gastric), for temporal CV folds. None for
+    # synthetic (no time) -> the robustness-parameter CV falls back to KFold.
+    train_pub_years: Optional[np.ndarray] = None
+
 
 # Non-standard combined ECOG buckets (Bertsimas A.1: mark unavailable unless a
 # standard breakdown is available via ECOG_0..4 or ECOG_01).
@@ -423,6 +427,8 @@ def gastric_cancer(seed: int = 42,
     print(f'Step 2: v11 cohort after inner joins. Observations: {len(df_cohort)}')
 
     df_train, df_test, t_cols = split_gastric_v11(df_cohort)
+    # Publication year per training row (aligned to X_train row order), for temporal CV folds.
+    train_years_full = df_train["Pub_Year"].to_numpy(dtype=float)
     print(
         f'Step 3: Train/Test split complete. '
         f'Train observations: {len(df_train)}, Test observations: {len(df_test)}'
@@ -723,6 +729,7 @@ def gastric_cancer(seed: int = 42,
         gt_eval_data=gt_eval_data,
         binary_var_indices=binary_var_indices,
         feature_names=feature_names,
+        train_pub_years=_sub(train_years_full),
     )
 
 

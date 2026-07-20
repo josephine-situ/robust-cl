@@ -30,6 +30,12 @@ uncertainty:
                  # baselines are tuned to it on the training set (see `calibration`).
 
 calibration:
+  # method: "cv" (held-out robustness-parameter CV; default) or "alpha" (legacy
+  # training-infeasible-fraction heuristic below). CV selects each method's knob by
+  # max held-out feasibility s.t. held-out objective within os_tolerance_frac of
+  # nominal, on temporal (gastric) / KFold (synthetic) folds -- see cv_calibration.
+  method: "cv"
+  # --- legacy alpha calibration (method: "alpha") ---
   # Tune each baseline's single robustness knob to the strongest setting whose
   # fraction of infeasible training contexts is <= uncertainty.alpha. CP and
   # nominal are exempt (CP self-regulates; nominal has no knob).
@@ -42,6 +48,23 @@ calibration:
   rho_min: 0.001           # weakest robust_param rho (never nominal)
   rho_max: 0.005           # strongest robust_param rho scanned
   robust_reg_eps_max: 0.3  # strongest label-uncertainty radius scanned (robust_reg)
+
+cv_calibration:
+  # Held-out robustness-parameter CV (calibration.method: "cv"). Run AFTER the
+  # model-selection CVs (run_cv.py, which fix model *types*); this selects only the
+  # robustness knob per method. For each knob in knob_grids, fit on each fold-train,
+  # score (feasibility, objective) under a TRAIN-only proxy oracle on the fold-val,
+  # average over folds; pick theta* = max feasibility s.t. objective within
+  # os_tolerance_frac of nominal (worse direction). Writes results/cv/*_robustness_knobs.json.
+  fold_scheme: "auto"                 # auto -> temporal if Pub_Year present else kfold
+  fold_cutoffs: [2004, 2005, 2006, 2007]  # gastric temporal forward-chaining (val = cutoff+1)
+  n_kfold: 4                          # synthetic KFold splits (no time)
+  os_tolerance_frac: 0.1              # objective budget: keep obj within 10% of nominal
+  knob_grids:                         # native-unit robustness knob per method (strongest last)
+    cp:         [0.05, 0.03, 0.02, 0.01, 0.005]   # dist_tol (smaller = stronger)
+    robust_reg: [0.1, 0.25, 0.5, 0.75, 1.0]        # label_eps (larger = stronger)
+    wrapper:    [0.4, 0.3, 0.2, 0.1, 0.0]          # chance alpha (smaller = stronger)
+  pareto_center_factors: [0.5, 0.75, 1.0, 1.5, 2.0]  # knob = theta* * factor for the centered Pareto
 
 conservativeness_sweep:
   # Knob ranges for the fixed-threshold Pareto sweep (--conservativeness-grid):
@@ -111,6 +134,15 @@ methods:
     robustify_objective: false  # false = nominal embedded OS, no epigraph cuts
     eval_mode: "global"         # "global" | "per_anchor_nearest"
     nearest_distance: "context" # anchor assignment at prescribe: "context" | "full"
+    # Single-lever CP: the coverage cap alpha is pinned at 0 (cuts that break a
+    # training anchor are rolled back / evicted, keeping the training set feasible),
+    # so dist_tol is CP's ONLY robustness knob -- symmetric with the one-knob baselines.
+    cut_eviction: "evict_slack" # on infeasibility, evict the most-slack ACTIVE scenario
+                                # cut (keep the current-x*-relevant new cut) then retry;
+                                # "reject" = drop the new cut instead (legacy behavior).
+                                # Nominal constraints are never evicted. Under evict_slack
+                                # the no-deterioration objective bounds are disabled (the
+                                # working set is non-monotone).
 
   chemo:
     methods_to_run:
