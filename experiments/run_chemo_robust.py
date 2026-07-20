@@ -111,6 +111,9 @@ def _resolve_run_settings(config, args):
     settings["cp_eval_mode"] = cp_cfg.get("eval_mode", "global")
     settings["cp_nearest_distance"] = cp_cfg.get("nearest_distance", "context")
     settings["cp_cut_eviction"] = cp_cfg.get("cut_eviction", "reject")
+    settings["calibration_method"] = config.get("calibration", {}).get("method", "alpha")
+    settings["pareto_center_factors"] = config.get("cv_calibration", {}).get(
+        "pareto_center_factors", [0.5, 0.75, 1.0, 1.5, 2.0])
 
     if args.max_test_rows is not None:
         settings["max_test_rows"] = args.max_test_rows
@@ -338,6 +341,26 @@ def _solver_at_strength(method, strength, settings, model_type, model_params,
     return build(s2k(strength))
 
 
+def _solver_at_knob(method, knob, settings, model_type, model_params,
+                    bootstrap_cache, ensembles_cache):
+    """Build a solver at a fixed NATIVE robustness knob (CV theta*, or theta*xfactor
+    for the centered Pareto). nominal ignores the knob."""
+    ranges = {
+        "wrapper_alpha_max": settings["cs_wrapper_alpha_max"],
+        "tree_alpha_max": settings["calib_tree_alpha_max"],
+        "rho_min": 0.0, "rho_max": settings["cs_robust_param_rho_max"],
+        "robust_reg_eps_max": settings["cs_robust_reg_eps_max"],
+        "cp_alpha_max": settings["cs_cp_alpha_max"],
+        "cp_dist_tol_max": settings["cs_cp_dist_tol_max"],
+        "cp_dist_tol_min": settings["cs_cp_dist_tol_min"],
+    }
+    build, _ = _method_build_map(
+        method, settings, ranges, model_type, model_params,
+        bootstrap_cache, ensembles_cache,
+    )
+    return build(knob)
+
+
 def _make_calibrated_solver(method, sub, settings, calib_contexts, model_type,
                             model_params, bootstrap_cache, ensembles_cache):
     """Calibrate a baseline's robustness knob on ``sub`` training contexts and
@@ -414,7 +437,7 @@ def build_table6_df(instance, collected, per_mode_mask, per_mode_given,
 def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
                      subsample_frac=None, subsample_seed=None,
                      write_output=True, tox_ub=None, conservativeness=None,
-                     collect_only=False):
+                     collect_only=False, cv_knobs=None, pareto_center_cv=False):
     settings = _resolve_run_settings(config, args)
     instance = gastric_cancer(
         fixed_constraint_configs=cv_configs if cv_configs else None,
@@ -473,11 +496,27 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
 
     def _resolve_solver(method, sub):
         if conservativeness is not None:
+            if pareto_center_cv and cv_knobs is not None:
+                # Centered Pareto: knob = CV theta* x factor (nominal has no knob).
+                theta = cv_knobs.get(method, 0.0)
+                return _solver_at_knob(
+                    method, theta * conservativeness, settings, model_type,
+                    model_params, coherent_cache, ensembles_cache,
+                )
             # Fixed-strength sweep: set each method's own knob directly (no calibration).
             return _solver_at_strength(
                 method, conservativeness, settings, model_type, model_params,
                 coherent_cache, ensembles_cache,
             )
+        # CV-calibrated comparison: build each method at its CV-selected theta*.
+        if settings["calibration_method"] == "cv" and cv_knobs is not None:
+            if method == "nominal":
+                return solvers[method]
+            if method in cv_knobs:
+                return _solver_at_knob(
+                    method, cv_knobs[method], settings, model_type, model_params,
+                    coherent_cache, ensembles_cache,
+                )
         if method in ("cp", "nominal") or not calibrate:
             return solvers[method]
         if method in CALIBRATED_METHODS:
@@ -558,7 +597,8 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
     return df
 
 
-def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None):
+def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None,
+                                  cv_knobs=None):
     """Label-noise robustness probe: repeat the whole prescribe/evaluate pipeline
     over R independent training subsamples (m-out-of-n, without replacement) and
     report the *distribution* of GT-feasibility per method.
@@ -580,10 +620,17 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
     # (scarcity). Either can be a single value (default) or a grid.
     rhs_grid = args.rhs_grid if args.rhs_grid else [None]
     frac_grid = args.frac_grid if args.frac_grid else [args.subsample_frac]
-    cons_grid = args.conservativeness_grid if args.conservativeness_grid else [None]
+    # Centered Pareto: the "conservativeness" axis is a set of multiplicative factors
+    # applied to each method's CV theta* (knob = theta* x factor), instead of the
+    # shared [0,1] strength grid. Reuses the shared-samestore cons-sweep machinery.
+    center_cv = getattr(args, "pareto_center_cv", False) and cv_knobs is not None
+    if center_cv:
+        cons_grid = settings["pareto_center_factors"]
+    else:
+        cons_grid = args.conservativeness_grid if args.conservativeness_grid else [None]
     sweeping_rhs = args.rhs_grid is not None
     sweeping_frac = args.frac_grid is not None
-    sweeping_cons = args.conservativeness_grid is not None
+    sweeping_cons = args.conservativeness_grid is not None or center_cv
     sweeping = sweeping_rhs or sweeping_frac or sweeping_cons
 
     print("=" * 60)
@@ -621,7 +668,8 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
                             config, args, cv_configs=cv_configs, gt_configs=gt_configs,
                             subsample_frac=frac, subsample_seed=sub_seed,
                             write_output=False, tox_ub=rhs, conservativeness=cons,
-                            collect_only=True,
+                            collect_only=True, cv_knobs=cv_knobs,
+                            pareto_center_cv=center_cv,
                         )
                     instance0, _, _, n_test0 = stash[cons_grid[0]]
                     modes = settings["constraint_modes"]
@@ -657,6 +705,7 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
                         config, args, cv_configs=cv_configs, gt_configs=gt_configs,
                         subsample_frac=frac, subsample_seed=sub_seed,
                         write_output=False, tox_ub=rhs, conservativeness=None,
+                        cv_knobs=cv_knobs,
                     )
                     rows.append(_tag(df_r, r, sub_seed, rhs, frac, None))
 
@@ -960,15 +1009,25 @@ def main():
                 "Run experiments/run_cv.py --ensemble to generate them."
             )
 
+    # --- Auto-load CV-selected robustness knobs (stage 2 consumes them) ---
+    cv_knobs = None
+    _knobs_path = "results/cv/gastric_robustness_knobs.json"
+    if os.path.exists(_knobs_path):
+        with open(_knobs_path) as f:
+            cv_knobs = json.load(f)
+        print(f"Auto-loaded CV robustness knobs from {_knobs_path}: {cv_knobs}")
+
     if args.calibrate_cv:
         run_cv_calibration(config, args, cv_configs=cv_configs, gt_configs=gt_configs)
     elif (args.n_realizations > 1 or args.subsample_frac is not None
-            or args.rhs_grid or args.frac_grid or args.conservativeness_grid):
+            or args.rhs_grid or args.frac_grid or args.conservativeness_grid
+            or args.pareto_center_cv):
         run_chemo_robust_realizations(
-            config, args, cv_configs=cv_configs, gt_configs=gt_configs
+            config, args, cv_configs=cv_configs, gt_configs=gt_configs, cv_knobs=cv_knobs,
         )
     else:
-        run_chemo_robust(config, args, cv_configs=cv_configs, gt_configs=gt_configs)
+        run_chemo_robust(config, args, cv_configs=cv_configs, gt_configs=gt_configs,
+                         cv_knobs=cv_knobs)
 
 
 if __name__ == "__main__":
