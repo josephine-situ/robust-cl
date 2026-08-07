@@ -1,7 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=synth
 #SBATCH --partition=mit_normal
-#SBATCH --time=04:00:00
+# 12h, not the 4h this started at. Synthetic is "one LP" but the wrapper embeds
+# P=20 RF models (~375s/solve, 76% of a run) and CP separates over B=200, so one
+# run_experiment is ~8 min. The noise sweep is 5 sigmas x N_REAL and the Pareto is
+# 5 factors x N_REAL x 4 methods -- at N_REAL=10 that is ~14h of work, so both
+# stages checkpoint and resume. Lower N_REAL if you want it inside one slot.
+#SBATCH --time=12:00:00
 #SBATCH --mem=32G
 #SBATCH --cpus-per-task=8
 #SBATCH --output=logs/synth_%j.out
