@@ -21,6 +21,19 @@ optimization:
 uncertainty:
   n_bootstrap: 20  # P — shared fixed resamples for wrapper + robust_reg
   bootstrap_seed: 42
+  # --- the SHARED uncertainty set D (src/methods/uncertainty.py) ---------------
+  # D_c = {|dy_i| <= eps_c, ||dy||_1 <= budget_frac * n * eps_c}, eps_c = eps_0 *
+  # scale(y_c). Shape is shared by cp / wrapper / robust_reg; each keeps its own
+  # ONE conservatism dial (tau / alpha / label_eps). eps_0 is deliberately NOT
+  # pinned to robust_reg's calibrated eps*: pinning would force stage-1 CV to run
+  # sequentially and would conflate D's definition with one method's tuning.
+  eps_0: 1.0          # radius in units of scale(y). Sensitivity: {0.5, 1.0, 2.0}
+  budget_frac: 0.5    # rows the adversary may move (m = frac * n). A constant, not a knob
+  coherent: true      # true = one shared draw across outcomes; false = independent per outcome
+  scale_stat: "sd"    # "sd" (default; model-free, label-space) | "oof_quantile" (ablation)
+  # cp_k_neighbors_* and cp_n_candidates apply ONLY to the legacy localized
+  # bootstrap path (methods.cp.scenario_source: "bootstrap"). Kept so prior
+  # results stay reproducible; unused when scenario_source is "noise".
   cp_k_neighbors_frac: 0.1  # fraction of n_train for CP localized pool
   cp_k_neighbors_min: 100      # floor on pool size: k = max(min, round(frac * n_train))
   cp_n_candidates: 20  # bootstrap candidates per CP separation call
