@@ -60,15 +60,27 @@ returns a `SolutionResult`.
 All three uncertainty-aware methods face **one** set and differ only in what they
 do with it (cut lazily / chance-constrain / robustify the fit):
 
-$$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget\_frac}\cdot n\,\varepsilon_c\},\quad \varepsilon_c = \texttt{eps\_0}\cdot \mathrm{sd}(y_c)$$
+$$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget\_frac}\cdot n\,\varepsilon_c\},\quad \varepsilon_c = \texttt{eps\_0}\cdot \mathrm{scale}(y_c)$$
 
-- **`sd(y)`, not residuals.** δ is added to labels *before* training and the model
-  is retrained, so the radius is a label-space quantity. A residual-based radius
-  would make D depend on model class — circular, since robust_reg's own model
-  would define the set it is robust to. `stat="oof_quantile"` is an ablation only;
-  **no coverage claim** is made. On gastric `sd(y)` is 0.288 for all five
-  percentile toxicities and 2.62 for OS — and the OOF numbers are just as flat, so
-  the residual estimator buys no discrimination.
+- **The scale is the out-of-fold residual sd** (`scale_stat: "oof_sd"`), so
+  `eps_0 = 1` means *one unexplained standard deviation* — a unit whose meaning,
+  not merely whose units, transfers across problems. δ is added to labels *before*
+  training and the model is retrained, so the radius must be a label-space
+  quantity; both `oof_sd` and marginal `sd(y)` are, and they differ in what they
+  measure.
+- **Not marginal `sd(y)`** (kept as the `"sd"` ablation): it is mostly *signal*
+  wherever the model fits. On synthetic `sd(y) = 0.545` against a true noise of
+  0.100, so `eps_0 = 1` there corrupts labels 4× harder than the data supports and
+  **CP could not converge against it** in 20 iterations. Under `oof_sd` the same
+  `eps_0 = 1` gives 0.128 — it nearly recovers the DGP without being told it.
+- The model dependence is bounded and deliberate: `run_cv.py` freezes the model
+  class *before* any robustness and all three methods embed that same frozen
+  model, so D comes from a shared pre-committed choice, not one method's tuning.
+  It does conflate label noise with misspecification — on gastric the models
+  explain almost nothing (unexplained ratio 0.78–1.02, one outcome above 1.0), so
+  D stays nearly as wide as `sd(y)` there. That is the honest answer when the fit
+  is that poor. Folds follow the problem's own scheme (temporal on gastric, so the
+  estimate cannot leak future information). **No coverage claim** is made.
 - **`ScenarioBank`** draws B **vertices** of D (±eps on `budget_frac`·n rows, 0
   elsewhere — matching robust_reg's adversary; interior draws would be a weaker
   adversary at the same D) and trains one model per draw per outcome, with
@@ -203,15 +215,16 @@ which cells run; synthetic stays single-cell (coherence is vacuous there).
   **outer m-out-of-n subsampling without replacement** of training rows, with
   the GT ensemble as a fixed oracle — this is uncertainty over *training draws*,
   distinct from the inner bootstrap the methods use.
-- Uncertainty is the **shared set D** (`src/methods/uncertainty.py`), scaled by
-  `sd(y)` per outcome. The older data-driven bootstrap resampling survives as the
-  `scenario_source: "bootstrap"` ablation.
-- **`eps_0 = 1.0` is not a viable default** — that is a 29-percentile-rank shift
-  on half the gastric arms and 6× the true noise on synthetic; CP could not
-  converge against it. The default `0.1` comes from the label radius robust_reg
-  has always used, chosen from repo precedent rather than either problem's
-  data-generating process (setting it from synthetic's known `noise_std` would be
-  circular and CP would win by construction).
+- Uncertainty is the **shared set D** (`src/methods/uncertainty.py`), scaled per
+  outcome by the out-of-fold residual sd. The older data-driven bootstrap
+  resampling survives as the `scenario_source: "bootstrap"` ablation.
+- **`eps_0` is in units of the scale, so it interacts with `scale_stat`.**
+  `eps_0 = 1` under `oof_sd` is the intended operating point; `eps_0 = 1` under
+  marginal `"sd"` is 4× too wide on synthetic and CP will not converge. If you
+  switch `scale_stat`, re-check `eps_0`.
+- Never set the radius from synthetic's known `noise_std` — that calibrates D to
+  the data-generating process and CP wins by construction. `oof_sd` arriving near
+  `noise_std` is a *validation* of the estimator, not an input to it.
 - `trust_region.py` / `add_trust_region` constrains decisions to the convex hull
   of observed treatment vectors (gastric).
 - Parameter robustness (`methods.robust_param.rho`) shrinks decision-tree leaf

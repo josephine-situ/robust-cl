@@ -42,7 +42,7 @@ from src.methods.nominal import (
     resolve_constraint_config,
 )
 from src.models.train import train_model, retrain_on_perturbed
-from src.methods.uncertainty import label_scale
+from src.methods.uncertainty import label_scale, instance_folds
 from src.utils.perturbations import worst_case_label_shift
 
 
@@ -118,11 +118,12 @@ def _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K):
 
 
 def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K,
-                              scale_stat="sd"):
+                              scale_stat="oof_sd", folds=None):
     """One label-robust model for a single outcome; dispatch on model class."""
     y = np.asarray(y, dtype=float)
     n = len(y)
-    scale = label_scale(y, stat=scale_stat)
+    scale = label_scale(y, stat=scale_stat, X=X, model_type=m_type,
+                        model_params=m_params, folds=folds)
     eps_abs = label_eps * scale                        # per-outcome radius (unitless knob)
     gamma = budget_frac * n * eps_abs
     if label_eps <= 0 or scale == 0.0:
@@ -132,7 +133,8 @@ def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K,
     return _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K)
 
 
-def _train_coherent_label_robust(specs, label_eps, budget_frac, K, scale_stat="sd"):
+def _train_coherent_label_robust(specs, label_eps, budget_frac, K,
+                                 scale_stat="oof_sd", folds=None):
     """Label-robust models for ALL outcomes against one **shared** row set.
 
     The incoherent default (``solve_robust_regression``'s per-outcome loop) lets
@@ -156,7 +158,9 @@ def _train_coherent_label_robust(specs, label_eps, budget_frac, K, scale_stat="s
     if any(len(y) != n for y in ys):
         raise ValueError("coherent robust regression needs one shared row set: "
                          "all outcomes must have the same number of training rows")
-    scales = [label_scale(y, stat=scale_stat) for y in ys]
+    scales = [label_scale(y, stat=scale_stat, X=X, model_type=mt, model_params=mp,
+                          folds=folds)
+              for (X, _, mt, mp), y in zip(specs, ys)]
     models = [train_model(X, y, mt, mp) for (X, _, mt, mp), y in zip(specs, ys)]
     if label_eps <= 0 or not any(s > 0 for s in scales):
         return models
@@ -212,7 +216,10 @@ def solve_robust_regression(
     if coherent is None:
         coherent = bool(getattr(uncertainty_set, "coherent", False))
     if scale_stat is None:
-        scale_stat = str(getattr(uncertainty_set, "scale_stat", "sd"))
+        scale_stat = str(getattr(uncertainty_set, "scale_stat", "oof_sd"))
+    # Out-of-fold scales need a fold scheme; use the problem's own (temporal on
+    # gastric) so the scale estimate cannot leak future information.
+    folds = None if scale_stat == "sd" else instance_folds(instance, seed)
     print(
         f"    [robust_reg] Training label-robust models "
         f"(label_eps={label_eps:.3f}, budget_frac={budget_frac}, K={K}, "
@@ -236,7 +243,7 @@ def solve_robust_regression(
                 config_idx += 1
             layout.append(row)
         models = _train_coherent_label_robust(
-            specs, label_eps, budget_frac, K, scale_stat=scale_stat
+            specs, label_eps, budget_frac, K, scale_stat=scale_stat, folds=folds
         )
         it = iter(models)
         trained_constraints = [
@@ -252,7 +259,7 @@ def solve_robust_regression(
                 model = _train_label_robust_model(
                     model_data.X_train, model_data.y_train,
                     m_type, m_params, label_eps, budget_frac, K,
-                    scale_stat=scale_stat,
+                    scale_stat=scale_stat, folds=folds,
                 )
                 row.append((model_data.weight, model, model_data.obj_weight))
                 config_idx += 1

@@ -27,17 +27,25 @@ uncertainty:
   # ONE conservatism dial (tau / alpha / label_eps). eps_0 is deliberately NOT
   # pinned to robust_reg's calibrated eps*: pinning would force stage-1 CV to run
   # sequentially and would conflate D's definition with one method's tuning.
-  # Radius in units of scale(y). 0.1 = the label radius robust_reg has always used
-  # (methods.robust_reg.label_eps) and the weak end of its CV grid, so it is chosen
-  # from the codebase's own precedent rather than from either problem's DGP --
-  # setting it from synthetic's known noise_std would be circular. Sensitivity
-  # ablation: rerun CP's headline cell at eps_0 in {0.05, 0.1, 0.2}.
-  # NOT 1.0: that is a 29-percentile-rank shift on gastric and 6x the true noise on
-  # synthetic, and CP could not converge against it in 20 iterations.
-  eps_0: 0.1
+  # eps_0 = 1.0 means ONE UNEXPLAINED STANDARD DEVIATION -- a unit whose meaning,
+  # not merely whose units, transfers across problems. Sanity check: on synthetic
+  # (true noise 0.100) the out-of-fold residual sd is 0.128, so eps_0=1 nearly
+  # recovers the data-generating process without being told it.
+  eps_0: 1.0
   budget_frac: 0.5    # rows the adversary may move (m = frac * n). A constant, not a knob
   coherent: true      # true = one shared draw across outcomes; false = independent per outcome
-  scale_stat: "sd"    # "sd" (default; model-free, label-space) | "oof_quantile" (ablation)
+  # "oof_sd" = sd of out-of-fold residuals: the UNEXPLAINED label spread. Preferred
+  # over marginal "sd", which is mostly signal wherever the model fits -- on
+  # synthetic sd(y)=0.545 vs a true noise of 0.100, so eps_0=1 under "sd" corrupts
+  # labels 4x harder than the data supports and CP could not converge against it.
+  # Model dependence is bounded and deliberate: run_cv.py freezes the model class
+  # BEFORE any robustness and all three methods embed that same frozen model, so D
+  # comes from a shared pre-committed choice, not from one method's tuning. It does
+  # conflate label noise with misspecification -- on gastric the models explain
+  # almost nothing (unexplained ratio 0.78-1.02), so D stays nearly as wide as
+  # sd(y) there, which is the honest answer when the fit is that poor.
+  # Folds follow the problem's own scheme (temporal on gastric -> no leakage).
+  scale_stat: "oof_sd"   # "oof_sd" | "oof_quantile" | "sd" (marginal; ablation)
   # cp_k_neighbors_* and cp_n_candidates apply ONLY to the legacy localized
   # bootstrap path (methods.cp.scenario_source: "bootstrap"). Kept so prior
   # results stay reproducible; unused when scenario_source is "noise".

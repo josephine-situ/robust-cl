@@ -52,7 +52,7 @@
   \[
     \mathcal D_c = \{\delta: |\delta_i|\le\varepsilon_c,\ \lVert\delta\rVert_1 \le
       \texttt{budget\_frac}\cdot n\,\varepsilon_c\},
-    \qquad \varepsilon_c = \varepsilon_0\cdot\mathrm{sd}(y_c)
+    \qquad \varepsilon_c = \varepsilon_0\cdot\mathrm{scale}(y_c)
   \]
   \begin{center}\small
   \begin{tabular}{@{}lll@{}}
@@ -74,36 +74,41 @@
 \end{frame}
 
 % ---------------------------------------------------------------------------
-\begin{frame}{Why $\mathrm{sd}(y)$, and not a residual-based radius}
+\begin{frame}{What sets the radius: unexplained, not marginal, spread}
   \small
-  $\delta$ is added to labels \textbf{before} training and the model is retrained.
-  It is not a post-hoc perturbation of predictions --- so the radius belongs in
-  \emph{label space}.
+  $\delta$ is added to labels \textbf{before} training and the model is retrained
+  --- not a post-hoc perturbation of predictions --- so the radius belongs in
+  \emph{label space}. Both candidates do; they differ in \emph{what they measure}.
+  \begin{center}\small
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    & $\mathrm{sd}(y)$ & OOF residual sd & unexplained \\
+    \midrule
+    Gastric toxicities & 0.288 & 0.249--0.293 & 0.78--1.02 \\
+    Synthetic ($\sigma_{\text{true}}=0.100$) & 0.545 & \textbf{0.128} & 0.235 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
   \begin{itemize}
-    \item $\mathrm{sd}(y)$ is model-free, computable before any fit, and identical
-      for all three methods.
-    \item An out-of-fold \emph{residual} radius would make $\mathcal D$ depend on
-      model class and hyperparameters --- circular, since Robust Reg.'s own model
-      would define the set it is robust to, and $\mathcal D$ would silently move
-      whenever model selection was re-run.
+    \item $\mathrm{sd}(y)$ is the \emph{marginal} spread --- mostly signal wherever
+      the model fits. $\varepsilon_0=1$ under it corrupts synthetic labels
+      $4\times$ harder than the data supports; \textbf{CP could not converge}
+      against that set in 20 iterations.
+    \item $\Rightarrow$ scale by the \emph{unexplained} spread. $\varepsilon_0=1$
+      then means \textbf{one unexplained standard deviation} --- a unit whose
+      \emph{meaning}, not just its units, transfers. On synthetic it lands at
+      $0.128$ against a true noise of $0.100$, \emph{without being told the DGP}.
   \end{itemize}
   \medskip
-  \textbf{Consequence, stated plainly.} Gastric toxicity labels are percentile
-  ranks, so $\mathrm{sd}(y)$ is $0.2882$--$0.2887$ across all five --- measured, not
-  assumed --- against $2.617$ for OS in months. That is a \emph{feature}:
-  $\varepsilon_c=\varepsilon_0\,\mathrm{sd}(y_c)$ is then the same \emph{rank}
-  shift in every outcome, which is what makes a shared coherent draw a coherent
-  statement. OS, in raw months, gets its own scale.
-  \medskip
-
-  \textbf{And the residual estimator buys nothing here.} Measured out-of-fold on
-  the five toxicities: $\mathrm{sd}$ $0.249$--$0.293$, $q_{0.9}$ $0.398$--$0.441$
-  --- just as flat across outcomes as $\mathrm{sd}(y)$ is. It would add model
-  dependence for no discrimination. Retained as a one-flag ablation; both logged.
-  \medskip
-
-  \textbf{No coverage claim} is made anywhere. This is a calibrated scale, not a
-  conformal guarantee; the deliverable is \emph{comparability}.
+  \footnotesize
+  \textbf{Model dependence is bounded and deliberate}: the model class is frozen
+  \emph{before} any robustness and all three methods embed that same model, so
+  $\mathcal D$ comes from a shared pre-committed choice, not one method's tuning.
+  It does conflate noise with misspecification --- gastric models explain almost
+  nothing, so $\mathcal D$ stays nearly as wide as $\mathrm{sd}(y)$ there, which is
+  the honest answer when the fit is that poor. Folds are the problem's own
+  (temporal on gastric $\Rightarrow$ no leakage). \textbf{No coverage claim.}
 \end{frame}
 
 % ---------------------------------------------------------------------------
@@ -396,9 +401,9 @@
   \small
   \textbf{What changed}
   \begin{enumerate}
-    \item \textbf{One shared uncertainty set.} $\mathrm{sd}(y)$-scaled
-      box$\cap$L1, vertex draws, one coherence flag --- so a difference between
-      methods is a difference in \emph{method}.
+    \item \textbf{One shared uncertainty set.} Box$\cap$L1 at one unexplained sd,
+      vertex draws, one coherence flag --- so a difference between methods is a
+      difference in \emph{method}.
     \item \textbf{CP's scenario bank is fixed.} The oscillating trace was a
       fresh-sample-vs-frozen-$d_0$ mismatch; $\tau$ was inert below $0.5$ and now
       is not.
@@ -418,20 +423,17 @@
 
 \begin{frame}{Open questions}
   \small
-  \textbf{1. Is $\varepsilon_0$ well-chosen?} \emph{The live question.}
+  \textbf{1. Does the residual scale hold up on gastric?}
   \begin{itemize}
-    \item $\varepsilon_0=0.1$, taken from the label radius Robust Reg.\ has always
-      used (\texttt{label\_eps}) and the weak end of its CV grid --- i.e.\ from the
-      codebase's own precedent, not from either problem's DGP. Setting it from
-      synthetic's known $\sigma$ is off the table (circular).
-    \item \textbf{$\varepsilon_0=1$ was tried first and is not viable}: a
-      29-percentile-rank shift on half the gastric arms, and $6\times$ the true
-      noise on synthetic. CP could not converge against it in 20 iterations.
-    \item Note $\mathrm{sd}(y)$ tracks the \emph{signal} spread on synthetic, not
-      the noise --- so the same $\varepsilon_0$ is a relatively wider set there
-      than on gastric. Sensitivity ablation over
-      $\varepsilon_0\in\{0.05,0.1,0.2\}$; the claim to establish is that
-      $\tau^\ast$, not $\varepsilon_0$, drives CP.
+    \item $\varepsilon_0=1$ = one unexplained sd. Validated on synthetic, where it
+      nearly recovers the true noise.
+    \item But gastric models explain almost nothing (unexplained ratio up to
+      $1.02$ --- one outcome fits \emph{worse} than the mean), so there
+      ``unexplained'' $\approx$ ``all of it'' and $\mathcal D$ is very wide. Is
+      that honest robustness, or a symptom of a bad fit that should be fixed
+      upstream in model selection?
+    \item Sensitivity ablation over $\varepsilon_0\in\{0.5,1,2\}$; the claim to
+      establish is that $\tau^\ast$, not $\varepsilon_0$, drives CP.
   \end{itemize}
   \medskip
   \textbf{2. Cutting planes per test point, or once over all anchors?}

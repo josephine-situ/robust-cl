@@ -14,22 +14,39 @@ move together -- is shared, so a difference between methods is a difference in
 
 Two design points worth keeping straight:
 
-**Why sd(y), not a residual-based scale.** delta is added to labels *before*
-training and the model is retrained (:func:`retrain_on_perturbed`) -- this is not
-a post-hoc perturbation of predictions. The radius therefore belongs in label
-space, and sd(y) is the natural scale there: model-free, computable before any
-fit, identical for all three methods. An out-of-fold residual radius would make D
-depend on model class and hyperparameters, which is circular -- robust_reg's own
-model would define the set robust_reg is robust to -- and would silently move D
-whenever ``run_cv.py`` re-selected a model type. The residual estimator is kept
-as ``stat="oof_quantile"`` for ablation, and :func:`label_scale_report` logs both
-either way. **No coverage claim is made or implied**; this is a calibrated scale.
+**Why the scale is the out-of-fold residual sd.** delta is added to labels
+*before* training and the model is retrained (:func:`retrain_on_perturbed`) --
+this is not a post-hoc perturbation of predictions -- so the radius belongs in
+**label space**. Both candidate statistics live there; they differ in what they
+measure:
 
-On gastric that means sd(y) ~ 0.289 for all five toxicity outcomes, since
-``train_percentile_scores`` makes them percentile ranks. That is a feature, not a
-degeneracy: ``eps_c = eps_0 * sd(y_c)`` is then the same *rank* shift in every
-outcome, which is exactly what makes a shared coherent draw a coherent statement.
-OS, in raw months, gets its own scale.
+- ``sd(y)`` is the *marginal* spread of the labels. Most of it is signal the
+  features explain, so ``eps_0 = 1`` corrupts labels far harder than the data
+  supports wherever the model fits well. Measured: on synthetic (true noise 0.100)
+  ``sd(y) = 0.545`` against an out-of-fold residual of ``0.128`` -- a factor of
+  four. CP could not converge against that set in 20 iterations.
+- ``oof_sd`` (the default) is the *unexplained* spread -- how much of a label the
+  frozen model cannot account for. ``eps_0 = 1`` then means "one unexplained
+  standard deviation", a unit whose **meaning** transfers across problems rather
+  than merely its units. On synthetic it recovers 0.128 against a true noise of
+  0.100 without ever being told the data-generating process.
+
+The model dependence is bounded and deliberate: ``run_cv.py`` freezes the model
+class *before* any robustness and all three methods embed that same frozen model,
+so D is defined by a shared, pre-committed choice rather than by any one method's
+tuning. What the residual does conflate is label noise with model
+misspecification: on gastric the models explain almost nothing (one outcome's
+residual exceeds ``sd(y)``), so D there stays nearly as wide as the marginal
+spread -- which is the honest answer when the fit is that poor.
+
+``stat="sd"`` (marginal) and ``stat="oof_quantile"`` remain as ablations, and
+:func:`label_scale_report` logs all three. **No coverage claim is made or
+implied**; this is a calibrated scale, not a conformal guarantee.
+
+Note the percentile transform makes ``sd(y) ~ 0.289`` for all five gastric
+toxicities. Under either statistic the per-outcome scaling
+``delta^c = eps_c * u`` keeps a shared coherent draw meaning the same *relative*
+shift in every outcome; OS, in raw months, gets its own scale.
 
 **Why draws are vertices, not interior points.** ``sample_random_perturbation``
 draws uniform then L1-projects, spreading mass thinly over all n rows.
@@ -53,7 +70,7 @@ from src.models.train import retrain_on_perturbed, train_model
 # Label scale
 # ---------------------------------------------------------------------------
 def label_scale(y: np.ndarray,
-                stat: str = "sd",
+                stat: str = "oof_sd",
                 X: Optional[np.ndarray] = None,
                 model_type: Optional[str] = None,
                 model_params: Optional[dict] = None,
@@ -61,22 +78,61 @@ def label_scale(y: np.ndarray,
                 level: float = 0.9) -> float:
     """Scale of the label-uncertainty radius for one outcome.
 
-    ``stat="sd"`` (default) is ``np.std(y)`` -- model-free, and what
-    ``robust_regression`` has always used. ``stat="oof_quantile"`` is the
-    ``level`` quantile of out-of-fold absolute residuals, an ablation that needs
-    ``X`` / ``model_type`` / ``folds``. In-sample residuals are deliberately not
-    an option: XGB with ``n_estimators=20`` on a few hundred arms drives them
-    toward 0 and would collapse D.
+    - ``"oof_sd"`` (default): standard deviation of out-of-fold residuals -- the
+      *unexplained* label spread, so ``eps_0 = 1`` is one unexplained sd.
+    - ``"oof_quantile"``: the ``level`` quantile of ``|residual|``, a
+      heavier-tailed variant.
+    - ``"sd"``: ``np.std(y)``, the *marginal* spread. Model-free but mostly
+      signal wherever the model fits (see the module docstring).
+
+    The out-of-fold variants need ``X`` / ``model_type``; ``folds`` defaults to a
+    4-fold KFold over the rows. In-sample residuals are deliberately not an
+    option: XGB with ``n_estimators=20`` on a few hundred arms drives them toward
+    0 and would collapse D.
     """
     y = np.asarray(y, dtype=float)
     if stat == "sd":
         return float(np.std(y))
-    if stat != "oof_quantile":
-        raise ValueError(f"unknown label scale stat {stat!r} (sd | oof_quantile)")
-    if X is None or model_type is None or folds is None:
-        raise ValueError("stat='oof_quantile' needs X, model_type and folds")
+    if stat not in ("oof_sd", "oof_quantile"):
+        raise ValueError(
+            f"unknown label scale stat {stat!r} (oof_sd | oof_quantile | sd)")
+    if X is None or model_type is None:
+        raise ValueError(f"stat={stat!r} needs X and model_type")
+    if folds is None:
+        folds = default_folds(len(y))
     resid = _oof_residuals(X, y, model_type, model_params, folds)
+    if stat == "oof_sd":
+        return float(np.std(resid))
     return float(np.quantile(np.abs(resid), level))
+
+
+def default_folds(n: int, n_splits: int = 4, seed: int = 42):
+    """Plain KFold row indices, used when the caller supplies no fold scheme.
+
+    Callers holding a :class:`ProblemInstance` should prefer
+    :func:`instance_folds`, which picks the problem's own scheme (temporal
+    forward-chaining on gastric, KFold on synthetic).
+    """
+    from sklearn.model_selection import KFold
+    n_splits = max(2, min(int(n_splits), int(n)))
+    kf = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    return list(kf.split(np.arange(int(n))))
+
+
+def instance_folds(instance: ProblemInstance, seed: int = 42):
+    """The problem's own fold scheme, for estimating the label scale.
+
+    Temporal forward-chaining on gastric (``Pub_Year`` is a feature, so random
+    folds would leak future information into the scale estimate) and KFold on
+    synthetic. Falls back to :func:`default_folds` if the instance cannot supply
+    folds -- the scale is a nuisance parameter, not worth failing a solve over.
+    """
+    try:
+        from src.methods.cv_calibrate import make_folds
+        return make_folds(instance, "auto", seed=seed)
+    except (ImportError, ValueError, AttributeError, IndexError):
+        n = len(instance.constraints[0].models_data[0].y_train)
+        return default_folds(n, seed=seed)
 
 
 def _oof_residuals(X, y, model_type, model_params, folds) -> np.ndarray:
@@ -95,9 +151,8 @@ def _oof_residuals(X, y, model_type, model_params, folds) -> np.ndarray:
 def label_scale_report(y, X=None, model_type=None, model_params=None,
                        folds=None, level: float = 0.9) -> dict:
     """``{sd, oof_sd, oof_quantile}`` for one outcome -- the diagnostic behind the
-    choice of ``stat``. The out-of-fold entries are ``None`` when no folds are
-    available. Cheap enough to log once per run; if the OOF numbers turn out as
-    flat across outcomes as sd(y) is, the residual estimator buys nothing."""
+    choice of ``stat``, and the evidence for how much of the label spread the
+    frozen model actually explains. Logged once per bank build."""
     out = {"sd": float(np.std(np.asarray(y, dtype=float))),
            "oof_sd": None, "oof_quantile": None}
     if X is not None and model_type is not None and folds is not None:
@@ -122,7 +177,7 @@ class UncertaintySet:
     eps_0: float = 1.0
     budget_frac: float = 0.5
     coherent: bool = True
-    scale_stat: str = "sd"
+    scale_stat: str = "oof_sd"
 
     def eps(self, scale: float) -> float:
         return float(self.eps_0) * float(scale)
@@ -138,7 +193,7 @@ def uncertainty_set_from_config(config: dict, coherent: Optional[bool] = None) -
         eps_0=float(unc.get("eps_0", 1.0)),
         budget_frac=float(unc.get("budget_frac", 0.5)),
         coherent=bool(unc.get("coherent", True)) if coherent is None else bool(coherent),
-        scale_stat=str(unc.get("scale_stat", "sd")),
+        scale_stat=str(unc.get("scale_stat", "oof_sd")),
     )
 
 
@@ -204,6 +259,10 @@ class ScenarioBank:
                     self._mds.append(md)
 
         stat = scale_stat or uset.scale_stat
+        # Out-of-fold scales need a fold scheme; use the problem's own (temporal on
+        # gastric, so the scale estimate cannot leak future information).
+        if folds is None and stat != "sd":
+            folds = instance_folds(instance, seed)
         self.scales: Dict[int, float] = {}
         self.reports: Dict[int, dict] = {}
         for md in self._mds:
@@ -238,12 +297,14 @@ class ScenarioBank:
         for c in self.instance.constraints:
             for md in c.models_data:
                 r = self.reports.get(id(md), {})
-                oof_sd = r.get("oof_sd")
-                oof_q = r.get("oof_quantile")
+                sd, oof_sd, oof_q = r.get("sd"), r.get("oof_sd"), r.get("oof_quantile")
                 extra = ""
                 if oof_sd is not None:
-                    extra = f"  oof_sd={oof_sd:.4f} oof_q90={oof_q:.4f}"
-                print(f"    [bank]   {c.name}: sd(y)={r.get('sd', float('nan')):.4f}"
+                    # explained/unexplained ratio: near 1 means the model accounts
+                    # for almost none of the label spread, so D stays wide.
+                    extra = (f"  oof_sd={oof_sd:.4f} oof_q90={oof_q:.4f}"
+                             f"  unexplained={oof_sd / sd:.2f}" if sd else "")
+                print(f"    [bank]   {c.name}: sd(y)={sd:.4f}"
                       f"  eps={self.uset.eps(self.scales[id(md)]):.4f}{extra}", flush=True)
 
     def extend(self, n_total: int, verbose: bool = False) -> "ScenarioBank":
