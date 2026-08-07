@@ -163,9 +163,11 @@ methods:
       - nominal
       # - tree_violation # like paper - only different if RF used. Often infeasible.
       - robust_reg
-      # - wrapper # too slow
+      - wrapper
+    # all_constraints ONLY. Per-mode samestore means the all_constraints numbers do
+    # not depend on whether dlt_only also ran, so dropping it halves the runtime and
+    # changes nothing. Re-add "dlt_only" here to restore the two-panel figures.
     constraint_modes:
-      - dlt_only
       - all_constraints
     quick:
       max_test_rows: 5

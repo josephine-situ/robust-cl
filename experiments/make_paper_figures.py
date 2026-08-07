@@ -31,8 +31,21 @@ GASTRIC_METHODS = ["nominal", "robust_reg", "cp"]
 LABEL = {"nominal": "Nominal", "robust_reg": "Robust Reg.", "wrapper": "Wrapper", "cp": "CP (ours)"}
 COLOR = {"nominal": "#595959", "robust_reg": "#E69F00", "wrapper": "#009E73", "cp": "#0072B2"}
 MARKER = {"nominal": "o", "robust_reg": "s", "wrapper": "^", "cp": "D"}
-MODES = ["all_constraints", "dlt_only"]
+# all_constraints only (config.yaml methods.chemo.constraint_modes). Every gastric
+# figure sizes its panel grid from len(MODES), so putting "dlt_only" back here (and
+# in the config) restores the two-panel layout with no other edit. That also retires
+# the mode-blind `_feas` bug below: it selected the `all_constraints` OUTCOME row
+# regardless of mode, so the dlt_only panel never showed DLT-only joint feasibility.
+MODES = ["all_constraints"]
 MODE_TITLE = {"all_constraints": "All toxicity constraints", "dlt_only": "DLT only"}
+
+
+def _panels(nrow=1, height=4.2, width=4.7, **kw):
+    """Panel grid sized from MODES; always returns a 2-D axes array."""
+    fig, axes = plt.subplots(nrow, len(MODES),
+                             figsize=(width * len(MODES) + 0.5, height * nrow),
+                             squeeze=False, **kw)
+    return fig, axes
 
 plt.rcParams.update({
     "figure.dpi": 140, "savefig.dpi": 300, "font.size": 11,
@@ -65,8 +78,8 @@ def _save(fig, name):
 # ---------------------------------------------------------------- headline ---
 def fig_headline():
     allm = _load("final_confirm")
-    fig, axes = plt.subplots(1, 2, figsize=(9, 4.2), sharey=True)
-    for ax, mode in zip(axes, MODES):
+    fig, axes = _panels(sharey=True)
+    for ax, mode in zip(axes[0], MODES):
         f = _feas(allm, mode).set_index("method")
         xs = np.arange(len(GASTRIC_METHODS))
         for i, m in enumerate(GASTRIC_METHODS):
@@ -78,7 +91,7 @@ def fig_headline():
         ax.set_xticks(xs)
         ax.set_xticklabels([LABEL[m] for m in GASTRIC_METHODS], rotation=20, ha="right")
         ax.set_title(MODE_TITLE[mode]); ax.set_ylim(0, 1.02)
-    axes[0].set_ylabel("Joint feasibility across draws\n(bar = worst-case, marker = mean)")
+    axes[0][0].set_ylabel("Joint feasibility across draws\n(bar = worst-case, marker = mean)")
     fig.suptitle("Joint toxicity feasibility at the reference threshold "
                  "(rhs=0.6, frac=0.5, CV-calibrated, 30 draws)", y=1.02, fontsize=12)
     _save(fig, "fig_headline")
@@ -90,8 +103,8 @@ def fig_tradeoff():
     # per-method label offsets (points) to avoid collisions when markers are close
     OFF = {"nominal": (-8, -15), "robust_reg": (8, 7), "cp": (9, 4)}
     HA = {"nominal": "right", "robust_reg": "left", "cp": "left"}
-    fig, axes = plt.subplots(1, 2, figsize=(9, 4.2))
-    for ax, mode in zip(axes, MODES):
+    fig, axes = _panels()
+    for ax, mode in zip(axes[0], MODES):
         f = _feas(allm, mode).set_index("method"); o = _os(allm, mode).set_index("method")
         for m in GASTRIC_METHODS:
             ax.scatter(f.loc[m, "worst_case"], o.loc[m, "prescribed_mean"],
@@ -102,7 +115,7 @@ def fig_tradeoff():
                         fontsize=9.5, color=COLOR[m], zorder=4)
         ax.set_title(MODE_TITLE[mode]); ax.set_xlabel("Worst-case joint feasibility")
         ax.margins(0.24)
-    axes[0].set_ylabel("Overall survival (months)")
+    axes[0][0].set_ylabel("Overall survival (months)")
     fig.suptitle("Robustness–survival trade-off (rhs=0.6, frac=0.5): right = more robust, up = "
                  "higher survival\nCP trades survival for tail feasibility in both modes; "
                  "the gain is far larger under all constraints",
@@ -117,7 +130,7 @@ def _frontier(tag, xcol, xlabel, fname, title, fixed=None):
         col, val = fixed
         df = df[np.isclose(pd.to_numeric(df[col], errors="coerce"), val)]
     methods = [m for m in ["nominal", "robust_reg", "cp"] if m in df.method.unique()]
-    fig, axes = plt.subplots(2, 2, figsize=(9.2, 7), sharex="col")
+    fig, axes = _panels(nrow=2, height=3.5, sharex="col")
     for col, mode in enumerate(MODES):
         for row, (getter, ylab, ylim) in enumerate([
             (_feas, "Worst-case joint feasibility", (0, 1.02)),
@@ -139,7 +152,7 @@ def _frontier(tag, xcol, xlabel, fname, title, fixed=None):
                 ax.set_xlabel(xlabel)
             if col == 0:
                 ax.set_ylabel(ylab)
-    axes[0][1].legend(loc="best", fontsize=9)
+    axes[0][-1].legend(loc="best", fontsize=9)
     fig.suptitle(title, y=1.01, fontsize=12)
     _save(fig, fname)
 
@@ -155,8 +168,8 @@ def fig_pareto(tag="final_pareto"):
         return
     df = pd.read_csv(path)
     swept = [m for m in ["robust_reg", "wrapper", "cp"] if m in df.method.unique()]
-    fig, axes = plt.subplots(1, 2, figsize=(9.4, 4.4))
-    for ax, mode in zip(axes, MODES):
+    fig, axes = _panels(height=4.4)
+    for ax, mode in zip(axes[0], MODES):
         f = _feas(df, mode); o = _os(df, mode)
         for m in swept:                                       # robust methods: frontier line
             fm = f[f.method == m].copy(); om = o[o.method == m].copy()
@@ -178,8 +191,8 @@ def fig_pareto(tag="final_pareto"):
                        edgecolor="white", linewidth=1.3, zorder=4, label="Nominal (no knob)")
         ax.set_title(MODE_TITLE[mode]); ax.set_xlabel("Worst-case joint feasibility")
         ax.margins(0.12)
-    axes[0].set_ylabel("Overall survival (months)")
-    axes[0].legend(loc="best", fontsize=9)
+    axes[0][0].set_ylabel("Overall survival (months)")
+    axes[0][0].legend(loc="best", fontsize=9)
     fig.suptitle("Conservativeness frontier (rhs=0.6, frac=0.5): up-right dominates.\n"
                  "A higher/right frontier $\\Rightarrow$ more efficient robustness (feasibility per unit OS)",
                  y=1.06, fontsize=11)
