@@ -91,11 +91,10 @@ def run_experiment(config, cv_configs=None):
         solve_nominal, model_type=model_type, model_params=model_params, rho=0.0
     )
 
-    robust_param_cfg = config["methods"].get("robust_param", {})
-    robust_rho = robust_param_cfg.get("rho", 0.0)
-    solver_fns["robust_param"] = partial(
-        solve_nominal, model_type=model_type, model_params=model_params, rho=robust_rho
-    )
+    # robust_param is intentionally NOT run: it is commented out of the gastric
+    # methods_to_run (config.yaml) and absent from make_paper_figures.METHODS, so
+    # its rows were computed and then silently dropped from every figure.
+    # methods.robust_param.rho is still read by run_chemo_robust.py.
 
     robust_reg_cfg = config["methods"].get("robust_reg", {})
     solver_fns["robust_reg"] = partial(
@@ -132,6 +131,12 @@ def run_experiment(config, cv_configs=None):
         cp_k_neighbors_min=cp_k_neighbors_min,
         cp_n_candidates=cp_n_candidates,
         seed=bootstrap_seed,
+        # Relative distance tolerance tau -- CP's robustness knob on the basic
+        # (synthetic) path too. Without it the basic separation cuts every
+        # violation > 1e-6, so CP has no lever and over-cuts to no solution.
+        cp_dist_tol_rel=cp_cfg.get("dist_tol_rel"),
+        cp_alpha=0.0,
+        cp_cut_eviction=cp_cfg.get("cut_eviction", "evict_slack"),
     )
 
     print("\n[Evaluating all methods prescriptively...]")
@@ -148,6 +153,11 @@ def run_experiment(config, cv_configs=None):
             "feasibility_rate": ev.feasibility_rate,
             "constraint_violation_rates": ev.constraint_violation_rates,
             "worst_violation": ev.worst_case_violation,
+            # Raw f_true(x*). The signed margin is this minus the constraint rhs;
+            # unlike worst_violation it is NOT clipped at 0, so it retains slack on
+            # feasible points. metrics.py only fills it for the single-x* case
+            # (n_obs == 1), i.e. non-contextual synthetic -- None on gastric.
+            "true_constraint_value": ev.true_constraint_value,
         }
         if ev.mean_obj_value_train is not None:
             row["objective_train"] = ev.mean_obj_value_train

@@ -134,6 +134,12 @@ methods:
     # average distance (mean relative exceedance over all x* x outcomes) is at
     # or below this. Range 0-1; 0 = stop only when nothing violates.
     dist_tol: 0.01
+    # RELATIVE distance tolerance tau (the transferable knob): tolerance = tau * d0,
+    # with d0 the problem's own iteration-0 worst distance. Used by BOTH separation
+    # paths and by the synthetic runner (run_all.py / run_sweep.py). Left unset the
+    # basic path cuts every violation > 1e-6, i.e. no robustness lever at all.
+    # 0.1 = the CV-selected tau* on gastric, and the strongest point of the shared grid.
+    dist_tol_rel: 0.1
     # Ablation (rhs=0.6, frac=0.5) showed the robustness comes from the toxicity
     # cuts; robustifying the OS objective and per-anchor masters both hurt (lower
     # feasibility + OS, higher variance). Best config: objective off, global master.

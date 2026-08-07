@@ -24,8 +24,8 @@ goes through `gurobipy`).
 
 ```bash
 uv sync                                          # install deps into .venv
-uv run python experiments/run_chemo_robust.py --quick   # gastric smoke test (5 cohorts, 3 methods)
-uv run python experiments/run_chemo_robust.py           # full gastric run (long; use SLURM)
+uv run python experiments/run_chemo_robust.py --quick   # gastric smoke test (5 cohorts, 4 methods, all_constraints only)
+uv run python experiments/run_chemo_robust.py           # full gastric run, 3 methods (long; use SLURM)
 uv run python experiments/run_all.py                    # synthetic single run, all methods
 uv run python experiments/run_cv.py                     # cross-validate model types/hyperparams
 uv run python experiments/summarize_table6.py           # post-process Table 6 CSV -> .csv/.tex
@@ -63,9 +63,11 @@ separate → add cuts → terminate* — and **auto-selects** the separation str
 from the problem shape (number of learned constraints × number of optimal
 solutions). **There is no separation flag.**
 
-- **basic** — single LP, single learned constraint (synthetic). Worst-case (max)
-  separation over the localized bootstrap ensemble at $x^*$, ranked by the
-  *actual* constraint model (not a CART proxy).
+- **basic** — single LP, single learned constraint (synthetic). Retrain each
+  localized bootstrap resample, score all *candidates* at $x^*$, and cut the
+  single worst — ranked by the *actual* constraint model (not a CART proxy).
+  The candidates are a separation pool, not an embedded ensemble: only the argmax
+  becomes a cut. ("Ensemble" in this repo means the GT evaluator; see below.)
 - **coherent** — multiple constraints / multiple $x^*$ / learned objective
   (gastric). A *scenario* is one **shared** localized bootstrap relabeling used
   to train every constraint (and the epigraph objective) jointly. Each iteration
