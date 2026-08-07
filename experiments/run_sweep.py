@@ -198,18 +198,39 @@ def run_gamma_sweep(gamma_values=None):
     return combined
 
 
-def run_noise_sweep(noise_values=None):
+def run_noise_sweep(noise_values=None, refresh=False):
     """
     Sweep over label noise levels sigma.
     Shows how each method degrades as noise increases.
+
+    Written INCREMENTALLY: the CSV is rewritten after each sigma, and sigmas
+    already present are skipped on re-entry (pass ``refresh=True`` to start over).
+    A single end-of-run write loses the whole sweep if the process is killed
+    partway -- which it was.
     """
     if noise_values is None:
         noise_values = [0.0, 0.05, 0.1, 0.2, 0.5]
 
     config = load_config()
-    all_rows = []
+    os.makedirs("results/synthetic", exist_ok=True)
+    out_path = "results/synthetic/noise_sweep_results.csv"
+
+    all_rows, done = [], set()
+    if refresh and os.path.exists(out_path):
+        os.remove(out_path)
+    elif os.path.exists(out_path):
+        prev = pd.read_csv(out_path)
+        # Only resume from a CSV matching the current method set; a stale run with
+        # different methods must not be silently spliced into the new one.
+        if "noise_std" in prev.columns and len(prev):
+            all_rows.append(prev)
+            done = set(prev["noise_std"].astype(float).unique())
+            print(f"[noise-sweep] resuming; already have sigma={sorted(done)}", flush=True)
 
     for sigma in noise_values:
+        if float(sigma) in done:
+            print(f"[noise-sweep] skip sigma={sigma} (already in {out_path})", flush=True)
+            continue
         print(f"\n{'#' * 60}")
         print(f"# NOISE_STD = {sigma}")
         print(f"{'#' * 60}")
@@ -219,10 +240,12 @@ def run_noise_sweep(noise_values=None):
         df["noise_std"] = sigma
         all_rows.append(df)
 
+        pd.concat(all_rows, ignore_index=True).to_csv(out_path, index=False)
+        print(f"[noise-sweep] checkpointed sigma={sigma} -> {out_path}", flush=True)
+
     combined = pd.concat(all_rows, ignore_index=True)
-    os.makedirs("results/synthetic", exist_ok=True)
-    combined.to_csv("results/synthetic/noise_sweep_results.csv", index=False)
-    print(f"\nSaved noise sweep to results/synthetic/noise_sweep_results.csv")
+    combined.to_csv(out_path, index=False)
+    print(f"\nSaved noise sweep to {out_path}")
 
     return combined
 
@@ -375,6 +398,8 @@ if __name__ == "__main__":
                         default="all")
     parser.add_argument("--plot-only", action="store_true",
                         help="Only plot from existing CSVs")
+    parser.add_argument("--refresh-sweep", action="store_true",
+                        help="Discard an existing noise_sweep_results.csv instead of resuming it")
     parser.add_argument("--calibrate-cv", action="store_true",
                         help="Synthetic robustness-parameter CV (KFold) -> synthetic_robustness_knobs.json")
     parser.add_argument("--refresh-cv", action="store_true",
@@ -401,5 +426,5 @@ if __name__ == "__main__":
             run_gamma_sweep()
             plot_gamma_sweep()
         if args.sweep in ["noise", "all"]:
-            run_noise_sweep()
+            run_noise_sweep(refresh=args.refresh_sweep)
             plot_noise_sweep()
