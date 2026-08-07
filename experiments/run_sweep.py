@@ -41,7 +41,7 @@ def _synth_build(method, config, model_type, model_params, seed):
         return lambda knob: partial(
             solve_robust_regression, model_type=model_type, model_params=model_params,
             label_eps=knob, budget_frac=rr.get("budget_frac", 0.5), K=rr.get("K", 5),
-            seed=seed, rho=0.0)
+            seed=seed, rho=0.0, uncertainty_set=uncertainty_set_from_config(config))
     if method == "wrapper":
         return lambda knob: partial(
             solve_wrapper, model_type=model_type, model_params=model_params,

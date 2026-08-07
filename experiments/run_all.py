@@ -107,6 +107,7 @@ def run_experiment(config, cv_configs=None):
         K=robust_reg_cfg.get("K", 5),
         seed=bootstrap_seed,
         rho=0.0,
+        uncertainty_set=uncertainty_set_from_config(config),
     )
 
     wrapper_cfg = config["methods"]["wrapper"]

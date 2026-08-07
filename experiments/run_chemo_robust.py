@@ -215,6 +215,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             rho=0.0,
             embedding_mode=embedding_mode,
             rf_alpha=rf_alpha,
+            uncertainty_set=settings["uncertainty_set"],
         ),
         "wrapper": partial(
             solve_wrapper,
@@ -333,6 +334,7 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
             label_eps=knob, budget_frac=settings["robust_reg_budget_frac"],
             K=settings["robust_reg_K"], seed=seed, rho=0.0,
             embedding_mode=em, rf_alpha=rf_alpha,
+            uncertainty_set=settings["uncertainty_set"],
         )
     elif method == "cp":
         # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, with

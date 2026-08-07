@@ -154,8 +154,13 @@ def solve_wrapper(instance: ProblemInstance,
 
     if scenario_source == "noise":
         if bank is None:
+            import dataclasses
             from src.methods.uncertainty import ScenarioBank, UncertaintySet
             uset = uncertainty_set if uncertainty_set is not None else UncertaintySet()
+            # One coherence flag: it must drive the DRAWS as well as the indicator
+            # structure, or an "incoherent" wrapper would still face coherent
+            # relabelings and only the z's would differ.
+            uset = dataclasses.replace(uset, coherent=coherent)
             model_config_map = {
                 id(md): resolve_constraint_config(instance, i, model_type, model_params)
                 for i, md in enumerate(

@@ -42,6 +42,7 @@ from src.methods.nominal import (
     resolve_constraint_config,
 )
 from src.models.train import train_model, retrain_on_perturbed
+from src.methods.uncertainty import label_scale
 from src.utils.perturbations import worst_case_label_shift
 
 
@@ -116,11 +117,12 @@ def _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K):
     return model
 
 
-def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K):
+def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K,
+                              scale_stat="sd"):
     """One label-robust model for a single outcome; dispatch on model class."""
     y = np.asarray(y, dtype=float)
     n = len(y)
-    scale = float(np.std(y))
+    scale = label_scale(y, stat=scale_stat)
     eps_abs = label_eps * scale                        # per-outcome radius (unitless knob)
     gamma = budget_frac * n * eps_abs
     if label_eps <= 0 or scale == 0.0:
@@ -128,6 +130,59 @@ def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K)
     if m_type == "linear":
         return _label_robust_linear(X, y, m_params or {}, eps_abs, gamma)
     return _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K)
+
+
+def _train_coherent_label_robust(specs, label_eps, budget_frac, K, scale_stat="sd"):
+    """Label-robust models for ALL outcomes against one **shared** row set.
+
+    The incoherent default (``solve_robust_regression``'s per-outcome loop) lets
+    each outcome pick its own worst rows, so the realized adversary is a different
+    relabeling per constraint. Coherent instead picks a single row set S once per
+    iteration -- by mean normalized |residual| across outcomes -- and shifts every
+    outcome's labels on S in its own worst direction. That is the same coherence
+    the scenario bank and the wrapper's shared ``z[p]`` express: one plausible
+    relabeling of the trial, moving all outcomes together.
+
+    Trade-off, stated rather than hidden: with delta chosen jointly the exact QP
+    counterpart (:func:`_label_robust_linear`) no longer applies -- its inner max
+    assumes the adversary optimizes that outcome alone -- so every model class
+    retrains on shifted labels here. Coherence is a crossed factor, so the exact
+    linear result stays available from the incoherent arm.
+
+    ``specs`` is ``[(X, y, m_type, m_params), ...]``; returns models in that order.
+    """
+    ys = [np.asarray(y, dtype=float) for _, y, _, _ in specs]
+    n = len(ys[0])
+    if any(len(y) != n for y in ys):
+        raise ValueError("coherent robust regression needs one shared row set: "
+                         "all outcomes must have the same number of training rows")
+    scales = [label_scale(y, stat=scale_stat) for y in ys]
+    models = [train_model(X, y, mt, mp) for (X, _, mt, mp), y in zip(specs, ys)]
+    if label_eps <= 0 or not any(s > 0 for s in scales):
+        return models
+
+    m = max(1, min(n, int(round(budget_frac * n))))
+    prev = None
+    for _ in range(K):
+        # Rank rows by mean NORMALIZED |residual| so no single large-scale outcome
+        # (OS in months vs percentile toxicities) decides the shared row set.
+        norm = np.zeros(n)
+        resid = []
+        for (X, _, _, _), y, model, s in zip(specs, ys, models, scales):
+            r = y - model.predict(X)
+            resid.append(r)
+            norm += np.abs(r) / (s if s > 0 else 1.0)
+        S = np.argsort(-norm / len(specs))[:m]
+        if prev is not None and np.array_equal(np.sort(S), prev):
+            break
+        prev = np.sort(S)
+        models = []
+        for (X, _, mt, mp), y, r, s in zip(specs, ys, resid, scales):
+            delta = np.zeros(n)
+            # Each outcome moves in ITS OWN worst direction on the shared rows.
+            delta[S] = (label_eps * s) * np.where(r[S] >= 0, 1.0, -1.0)
+            models.append(retrain_on_perturbed(X, y, delta, mt, mp))
+    return models
 
 
 def solve_robust_regression(
@@ -141,31 +196,67 @@ def solve_robust_regression(
         embedding_mode: str = "hard",
         rf_alpha: float = 0.25,
         seed: int = 42,
+        coherent: bool = None,
+        uncertainty_set=None,
+        scale_stat: str = None,
         **_ignored) -> SolutionResult:
     """Train a label-robust model per outcome (Bertsimas et al. counterpart), embed
-    them nominally, and solve the constraint-learning MIP."""
+    them nominally, and solve the constraint-learning MIP.
+
+    ``coherent`` (default: D's setting) makes the adversary pick ONE shared row
+    set across outcomes instead of a separate worst set per outcome -- the same
+    coherence flag the scenario bank and the wrapper take. ``label_eps`` remains a
+    multiplier on ``scale(y)`` either way, so the CV knob grid is unchanged.
+    """
     start = time.time()
+    if coherent is None:
+        coherent = bool(getattr(uncertainty_set, "coherent", False))
+    if scale_stat is None:
+        scale_stat = str(getattr(uncertainty_set, "scale_stat", "sd"))
     print(
         f"    [robust_reg] Training label-robust models "
-        f"(label_eps={label_eps:.3f}, budget_frac={budget_frac}, K={K})...",
+        f"(label_eps={label_eps:.3f}, budget_frac={budget_frac}, K={K}, "
+        f"coherent={coherent})...",
         flush=True,
     )
 
     trained_constraints = []
     config_idx = 0
-    for constraint in instance.constraints:
-        row = []
-        for model_data in constraint.models_data:
-            m_type, m_params = resolve_constraint_config(
-                instance, config_idx, model_type, model_params
-            )
-            model = _train_label_robust_model(
-                model_data.X_train, model_data.y_train,
-                m_type, m_params, label_eps, budget_frac, K,
-            )
-            row.append((model_data.weight, model, model_data.obj_weight))
-            config_idx += 1
-        trained_constraints.append(row)
+    if coherent:
+        # One shared adversary over every outcome; see _train_coherent_label_robust.
+        specs, layout = [], []
+        for constraint in instance.constraints:
+            row = []
+            for model_data in constraint.models_data:
+                m_type, m_params = resolve_constraint_config(
+                    instance, config_idx, model_type, model_params
+                )
+                specs.append((model_data.X_train, model_data.y_train, m_type, m_params))
+                row.append(model_data)
+                config_idx += 1
+            layout.append(row)
+        models = _train_coherent_label_robust(
+            specs, label_eps, budget_frac, K, scale_stat=scale_stat
+        )
+        it = iter(models)
+        trained_constraints = [
+            [(md.weight, next(it), md.obj_weight) for md in row] for row in layout
+        ]
+    else:
+        for constraint in instance.constraints:
+            row = []
+            for model_data in constraint.models_data:
+                m_type, m_params = resolve_constraint_config(
+                    instance, config_idx, model_type, model_params
+                )
+                model = _train_label_robust_model(
+                    model_data.X_train, model_data.y_train,
+                    m_type, m_params, label_eps, budget_frac, K,
+                    scale_stat=scale_stat,
+                )
+                row.append((model_data.weight, model, model_data.obj_weight))
+                config_idx += 1
+            trained_constraints.append(row)
 
     opt = gp.Model("robust_regression")
     opt.Params.OutputFlag = 0
