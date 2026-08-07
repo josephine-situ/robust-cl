@@ -23,6 +23,7 @@ from src.methods.nominal import solve_nominal
 from src.methods.robust_regression import solve_robust_regression
 from src.methods.wrapper import solve_wrapper, _get_shared_bootstrap_indices
 from src.methods.cp import solve_cp
+from src.methods.uncertainty import uncertainty_set_from_config
 from src.evaluation.metrics import evaluate_all
 
 
@@ -137,6 +138,12 @@ def run_experiment(config, cv_configs=None):
         cp_dist_tol_rel=cp_cfg.get("dist_tol_rel"),
         cp_alpha=0.0,
         cp_cut_eviction=cp_cfg.get("cut_eviction", "evict_slack"),
+        # Separate over a FIXED bank of draws from the shared uncertainty set D,
+        # so the worst violation over the bank is monotone across iterations.
+        cp_scenario_source=cp_cfg.get("scenario_source", "noise"),
+        cp_n_scenarios=cp_cfg.get("n_scenarios", 200),
+        cp_d0_quantile=cp_cfg.get("d0_quantile", 0.9),
+        cp_uncertainty=uncertainty_set_from_config(config),
     )
 
     print("\n[Evaluating all methods prescriptively...]")

@@ -153,6 +153,19 @@ methods:
     # basic path cuts every violation > 1e-6, i.e. no robustness lever at all.
     # 0.1 = the CV-selected tau* on gastric, and the strongest point of the shared grid.
     dist_tol_rel: 0.1
+    # Where separation scenarios come from. "noise" = a FIXED bank of draws from the
+    # shared uncertainty set D (uncertainty.eps_0 etc). Fixed draws make the worst
+    # violation over the bank monotone across iterations, which is what gives tau a
+    # stable meaning; redrawing each iteration (the "bootstrap" ablation) compared
+    # iteration-k's sample against iteration-0's d0 and merely oscillated.
+    scenario_source: "noise"   # "noise" | "bootstrap" (legacy localized resample)
+    # B. CP embeds only ONE extra scenario per iteration and evicts/prunes cuts, so
+    # its master stays small at a B the wrapper (which embeds all P) could not take.
+    n_scenarios: 200
+    # d0 = this quantile of the iteration-0 scenario distances, NOT their max: the
+    # max grows with B, so a max-based d0 would stop tau transferring across bank
+    # sizes -- and CP and the wrapper deliberately run at different B.
+    d0_quantile: 0.9
     # Ablation (rhs=0.6, frac=0.5) showed the robustness comes from the toxicity
     # cuts; robustifying the OS objective and per-anchor masters both hurt (lower
     # feasibility + OS, higher variance). Best config: objective off, global master.
@@ -189,6 +202,7 @@ methods:
       n_bootstrap: 5
       cp_max_iterations: 5
       cp_n_candidates: 5
+      cp_n_scenarios: 10
       cp_k_neighbors_frac: 0.05
       cp_n_anchors: 4
       alpha: 0.1

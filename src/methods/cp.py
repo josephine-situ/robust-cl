@@ -672,6 +672,46 @@ class _SepEnv:
     rho: float
     seed: int
     k_neighbors_min: int = 1
+    # Fixed scenario bank drawn from the shared uncertainty set D
+    # (src/methods/uncertainty.ScenarioBank). When present, separation is a lookup
+    # over pre-trained models instead of a per-iteration resample-and-retrain --
+    # which is what makes the worst-violation trace monotone and tau meaningful.
+    # None restores the legacy localized-bootstrap path.
+    bank: Optional[object] = None
+    d0_quantile: float = 0.9
+
+
+def _scenario_models(inst: ProblemInstance, model_map: dict, obj_specs: list):
+    """Split one scenario's ``{md_id -> model}`` into per-constraint model lists and
+    objective terms, in the shape the scoring loop expects. Shared by the bank and
+    the legacy bootstrap paths so they are scored identically."""
+    per_constraint = {}
+    for c_idx, constraint in enumerate(inst.constraints):
+        if not _is_constraint_constraint(constraint):
+            continue
+        models = [
+            (md.weight, model_map[id(md)])
+            for md in constraint.models_data if md.obj_weight == 0.0
+        ]
+        per_constraint[c_idx] = (models, constraint.rhs)
+    obj_models = [(w, model_map[id(md)]) for w, md in obj_specs]
+    return per_constraint, obj_models
+
+
+def _resolve_d0(distances, quantile: float) -> float:
+    """``d0`` = a high quantile of the iteration-0 scenario distances, not their max.
+
+    The max over B draws grows with B, so a max-based ``d0`` would stop tau from
+    transferring across bank sizes -- and CP and the wrapper run at different B by
+    design. A quantile is stable in B.
+    """
+    d = np.asarray([v for v in distances if np.isfinite(v)], dtype=float)
+    if d.size == 0:
+        return 0.0
+    # The basic path scores signed violations, so a bank where nothing violates
+    # yields a negative quantile. A negative distance is not a distance: clamp to
+    # 0 so the tolerance collapses to its floor rather than going negative.
+    return max(0.0, float(np.quantile(d, float(quantile))))
 
 
 @dataclass
@@ -709,6 +749,7 @@ class _BasicSeparation:
         # violation > 1e-6, i.e. it had no robustness lever at all.
         self.dist_tol_rel = dist_tol_rel
         self._tol = None
+        self.cut_draws: dict = {}   # scenario id -> bank draw (see _CoherentSeparation)
 
     def step(self, env: _SepEnv, iteration: int) -> _StepResult:
         iter_start = time.time()
@@ -720,6 +761,9 @@ class _BasicSeparation:
         x_star, obj_star = master.solve()
         if x_star is None:
             return _StepResult(stop=True, status="infeasible")
+
+        if env.bank is not None:
+            return self._step_bank(env, iteration, x_star, obj_star, iter_start)
 
         sep_cache = {}
         max_violation = -np.inf
@@ -802,6 +846,86 @@ class _BasicSeparation:
             violation=viol_metric,
         )
 
+    def _step_bank(self, env, iteration, x_star, obj_star, iter_start) -> _StepResult:
+        """One separation step over the fixed scenario bank.
+
+        Scores every draw not currently embedded as an active cut at ``x*``, and
+        cuts the single worst. The bank is a separation *pool*, not an embedded
+        ensemble: only the argmax becomes a cut, which is why CP's master stays
+        small at bank sizes the wrapper could never embed.
+        """
+        inst, master = env.instance, env.master
+        xs2d = np.atleast_2d(x_star)
+
+        active = {
+            b for sid, b in self.cut_draws.items()
+            if sid < len(master.scenario_constrs)
+            and master.scenario_constrs[sid] is not None
+        }
+        draws = [b for b in range(len(env.bank)) if b not in active]
+
+        best = None          # (violation, c_idx, models, rhs, draw)
+        all_viol = []
+        for b in draws:
+            model_map = env.bank.models_for(b)
+            for c_idx, constraint in enumerate(inst.constraints):
+                if not _is_constraint_constraint(constraint):
+                    continue
+                models = [(md.weight, model_map[id(md)])
+                          for md in constraint.models_data if md.obj_weight == 0.0]
+                val = sum(w * th.predict(xs2d)[0] for w, th in models)
+                violation = val - constraint.rhs
+                all_viol.append(violation)
+                if best is None or violation > best[0]:
+                    best = (violation, c_idx, models, constraint.rhs, b)
+
+        max_violation = best[0] if best is not None else -np.inf
+
+        # tolerance = tau * d0, with d0 a high QUANTILE of the iteration-0 draws --
+        # stable in bank size, unlike the max.
+        if self._tol is None:
+            if self.dist_tol_rel is not None and all_viol:
+                d0 = _resolve_d0(all_viol, env.d0_quantile)
+                self._tol = max(float(self.dist_tol_rel) * d0, 1e-6)
+                print(
+                    f"    [cp] d0={d0:.4f} (q{env.d0_quantile:g} of {len(all_viol)} "
+                    f"iter-0 scenario violations; max={max_violation:.4f}); "
+                    f"tau={self.dist_tol_rel:g} -> tol={self._tol:.6f}",
+                    flush=True,
+                )
+            else:
+                self._tol = 1e-6
+
+        print(
+            f"Iter {iteration}: Obj={obj_star:.4f} Max Violation={max_violation:.4f} "
+            f"scanned={len(draws)}/{len(env.bank)} Time={time.time()-iter_start:.2f}s",
+            flush=True,
+        )
+
+        if iteration > 0:
+            pruned_count, total_active = prune_inactive_scenarios(
+                master, slack_threshold=max(0.1, max_violation)
+            )
+            if pruned_count > 0:
+                print(f"Iter {iteration}: Pruned {pruned_count}/{total_active} "
+                      f"inactive scenarios")
+        if master.t_obj is not None:
+            master.add_objective_cut(obj_star, iteration)
+
+        add_cut = best is not None and max_violation > self._tol
+        if add_cut:
+            _viol, c_idx, models, rhs, draw = best
+            master.add_scenario(c_idx, models, rhs, rho=env.rho)
+            self.cut_draws[master.n_models - 1] = draw
+
+        return _StepResult(
+            stop=not add_cut,
+            status="optimal" if not add_cut else "running",
+            obj=obj_star,
+            x=x_star.copy(),
+            violation=max_violation if np.isfinite(max_violation) else np.inf,
+        )
+
 
 class _CoherentSeparation:
     """Simultaneous worst-case across all constraints via shared scenarios.
@@ -879,6 +1003,10 @@ class _CoherentSeparation:
         self.obj_bound = {}          # a_idx -> best (max) objective seen so far
         self.prev_max_exceed = 0.0   # scale for the dynamic pruning threshold (raw)
         self.last_added_ids: List[int] = []  # scenario ids from the last accepted cut
+        # scenario id -> bank draw it came from. The exclusion set is derived from
+        # the entries whose cut is still ACTIVE, never from "ever cut": eviction and
+        # pruning retire cuts, and a retired scenario must stay re-separable.
+        self.cut_draws: dict = {}
 
     def _evict_to_fit(self, master, inst, anchors, added_ids, min_slack, baseline_infeas):
         """Evict the most-slack ACTIVE non-base scenario (keeping the just-added,
@@ -987,17 +1115,34 @@ class _CoherentSeparation:
             points.append((x_q, t_val))
         n_points = len(points)
 
-        # Shared, decision-dependent localized pool -> B coherent scenarios.
-        pool = _union_neighbor_pool(
-            ref_md.X_train, x_stars, self.k_neighbors_frac,
-            env.distance_feature_indices,
-            k_neighbors_min=env.k_neighbors_min,
-        )
-        pool_frac = len(pool) / n_train
-        rng = np.random.RandomState(env.seed + iteration)
-        scenarios = [
-            rng.choice(pool, size=n_train, replace=True) for _ in range(self.n_scenarios)
-        ]
+        # Scenario source. With a bank, the draws are FIXED: theta(delta_b) no
+        # longer depends on x*, so the worst violation over the bank is monotone
+        # across iterations. Redrawing every iteration (the legacy path below) is
+        # what made the trace oscillate -- iteration k's sample was compared
+        # against iteration 0's d0, with sampling noise the size of the signal.
+        # Draws that are ALREADY an active cut are excluded; "already cut" would be
+        # wrong, since eviction and pruning retire cuts and an evicted scenario
+        # must remain re-separable.
+        if env.bank is not None:
+            active = {
+                b for sid, b in self.cut_draws.items()
+                if sid < len(master.scenario_constrs)
+                and master.scenario_constrs[sid] is not None
+            }
+            scenarios = [b for b in range(len(env.bank)) if b not in active]
+            pool_frac = float("nan")
+        else:
+            # Legacy: shared, decision-dependent localized pool -> B coherent scenarios.
+            pool = _union_neighbor_pool(
+                ref_md.X_train, x_stars, self.k_neighbors_frac,
+                env.distance_feature_indices,
+                k_neighbors_min=env.k_neighbors_min,
+            )
+            pool_frac = len(pool) / n_train
+            rng = np.random.RandomState(env.seed + iteration)
+            scenarios = [
+                rng.choice(pool, size=n_train, replace=True) for _ in range(self.n_scenarios)
+            ]
 
         # Evaluate every sampled scenario; keep *all* that produce a cut so we can
         # fall back to a less aggressive adversary if the worst one over-tightens.
@@ -1005,30 +1150,23 @@ class _CoherentSeparation:
         # exceedance is divided by its own scale (so no single large-scale outcome
         # dominates) then averaged over all (x*, outcome) cells (so the metric is
         # 0-1 regardless of the number of constraints or patients).
-        candidates = []   # (total_dist, raw_max_exceed, cuts)
-        for idx in scenarios:
-            per_constraint_models = {}
-            for c_idx, constraint in enumerate(inst.constraints):
-                if not _is_constraint_constraint(constraint):
-                    continue
-                models = []
-                for model_data in constraint.models_data:
-                    if model_data.obj_weight != 0.0:
-                        continue
-                    m_type, m_params = env.model_config_map[id(model_data)]
-                    theta = retrain_on_bootstrap(
-                        model_data.X_train, model_data.y_train, idx, m_type, m_params
-                    )
-                    models.append((model_data.weight, theta))
-                per_constraint_models[c_idx] = (models, constraint.rhs)
-
-            obj_models = []
-            for obj_weight, md in obj_specs:
-                m_type, m_params = env.model_config_map[id(md)]
-                theta = retrain_on_bootstrap(
-                    md.X_train, md.y_train, idx, m_type, m_params
-                )
-                obj_models.append((obj_weight, theta))
+        candidates = []   # (total_dist, raw_max_exceed, cuts, scenario_key)
+        all_dists = []    # EVERY scanned scenario, including the non-violating ones,
+                          # so d0's quantile describes the bank and not just its tail
+        for scenario in scenarios:
+            if env.bank is not None:
+                model_map = env.bank.models_for(scenario)
+            else:
+                model_map = {}
+                for constraint in inst.constraints:
+                    for md in constraint.models_data:
+                        m_type, m_params = env.model_config_map[id(md)]
+                        model_map[id(md)] = retrain_on_bootstrap(
+                            md.X_train, md.y_train, scenario, m_type, m_params
+                        )
+            per_constraint_models, obj_models = _scenario_models(
+                inst, model_map, obj_specs
+            )
 
             sum_norm_exceed = 0.0   # sum of normalized exceedances (for averaging)
             raw_max_exceed = 0.0    # largest raw exceedance (pruning-threshold scale)
@@ -1063,8 +1201,9 @@ class _CoherentSeparation:
             # floor t_obj to this scenario's (worse) objective.
             if obj_violated:
                 cuts.append((obj_c_idx, obj_models, master.t_obj))
+            all_dists.append(total_dist)
             if cuts:
-                candidates.append((total_dist, raw_max_exceed, cuts))
+                candidates.append((total_dist, raw_max_exceed, cuts, scenario))
 
         # Rank adversaries worst-first by normalized average distance.
         candidates.sort(key=lambda c: c[0], reverse=True)
@@ -1073,23 +1212,26 @@ class _CoherentSeparation:
         self.prev_max_exceed = candidates[0][1] if candidates else 0.0
 
         # Resolve the effective tolerance once, from THIS problem's own iteration-0
-        # worst distance (d0), so a single tau grid transfers across datasets.
+        # distances, so a single tau grid transfers across datasets AND bank sizes.
         if self._tol is None:
             if self.dist_tol_rel is not None:
-                self._tol = float(self.dist_tol_rel) * float(best_dist)
+                d0 = _resolve_d0(all_dists, env.d0_quantile)
+                self._tol = float(self.dist_tol_rel) * d0
                 print(
-                    f"    [cp] d0={best_dist:.4f} (iter-0 worst distance); "
+                    f"    [cp] d0={d0:.4f} (q{env.d0_quantile:g} of {len(all_dists)} "
+                    f"iter-0 scenario distances; max={best_dist:.4f}); "
                     f"tau={self.dist_tol_rel:g} -> dist_tol={self._tol:.5f}",
                     flush=True,
                 )
             else:
                 self._tol = self.dist_tol
 
+        pool_note = "" if np.isnan(pool_frac) else f"PoolFrac={pool_frac:.3f} "
         print(
             f"Iter {iteration}: {'Obj' if self.single_point else 'AvgObj'}={last_obj:.4f} "
             f"WorstScenarioNormDist={best_dist:.4f} "
-            f"p_infeas={p_infeas*100:.1f}% PoolFrac={pool_frac:.3f} "
-            f"Time={time.time()-iter_start:.2f}s",
+            f"p_infeas={p_infeas*100:.1f}% {pool_note}"
+            f"scanned={len(scenarios)} Time={time.time()-iter_start:.2f}s",
             flush=True,
         )
 
@@ -1109,7 +1251,7 @@ class _CoherentSeparation:
         n_infeas_base = len(env.anchors) - len(feasible)
         feas_alpha = n_infeas_base / len(env.anchors)
 
-        for cand_rank, (_dist, _mx, cuts) in enumerate(candidates):
+        for cand_rank, (_dist, _mx, cuts, draw) in enumerate(candidates):
             added_ids = []
             for c_idx, models, rhs in cuts:
                 master.add_scenario(c_idx, models, rhs, rho=env.rho)
@@ -1126,6 +1268,11 @@ class _CoherentSeparation:
                 )
             if fits:
                 self.last_added_ids = added_ids
+                if env.bank is not None:
+                    # Remember which bank draw each cut came from, so the exclusion
+                    # set can follow the ACTIVE cuts rather than the ever-cut ones.
+                    for sid in added_ids:
+                        self.cut_draws[sid] = draw
                 n_active = sum(1 for c in master.scenario_constrs if c is not None)
                 cap_note = (
                     "feasible" if self.single_point
@@ -1184,6 +1331,11 @@ def _run_cp_loop(instance: ProblemInstance,
                  cp_k_neighbors_min: int = 1,
                  cp_cut_eviction: str = "reject",
                  cp_dist_tol_rel: float = None,
+                 cp_scenario_source: str = "noise",
+                 cp_n_scenarios: int = 200,
+                 cp_d0_quantile: float = 0.9,
+                 cp_uncertainty=None,
+                 cp_bank=None,
                  cp_trace_path: Optional[str] = None) -> tuple[SolutionResult, CPHistory]:
     """Run the CP cut loop for a fixed anchor set (one or many contexts)."""
     total_start = time.time()
@@ -1206,12 +1358,26 @@ def _run_cp_loop(instance: ProblemInstance,
         }
 
     distance_feature_indices = _resolve_distance(cp_distance, instance)
+
+    # The bank is independent of tau, so a caller sweeping the tau grid should build
+    # it ONCE and pass it in (cp_bank); rebuilding per knob multiplies stage-1 CV
+    # cost by the grid size for no reason.
+    bank = cp_bank
+    if bank is None and cp_scenario_source == "noise":
+        from src.methods.uncertainty import ScenarioBank, UncertaintySet
+        uset = cp_uncertainty if cp_uncertainty is not None else UncertaintySet()
+        bank = ScenarioBank(
+            instance, model_config_map, uset,
+            n_scenarios=cp_n_scenarios, seed=seed,
+        )
+
     env = _SepEnv(
         instance=instance, master=master, anchors=anchors,
         model_config_map=model_config_map,
         distance_feature_indices=distance_feature_indices,
         rho=rho, seed=seed,
         k_neighbors_min=cp_k_neighbors_min,
+        bank=bank, d0_quantile=cp_d0_quantile,
     )
 
     n_constraints = sum(1 for c in instance.constraints if _is_constraint_constraint(c))
@@ -1237,8 +1403,10 @@ def _run_cp_loop(instance: ProblemInstance,
         )
         mode = "basic"
     else:
+        # With a bank, the scenario count IS the bank size, not cp_n_candidates.
+        n_scen = len(bank) if bank is not None else cp_n_candidates
         strategy = _CoherentSeparation(
-            cp_k_neighbors_frac, cp_n_candidates, cp_alpha,
+            cp_k_neighbors_frac, n_scen, cp_alpha,
             single_point, cp_dist_tol, cp_k_neighbors_min,
             cut_eviction=cp_cut_eviction, base_scenario_ids=base_scenario_ids,
             dist_tol_rel=cp_dist_tol_rel,
@@ -1248,14 +1416,20 @@ def _run_cp_loop(instance: ProblemInstance,
     n_solves = 1 if single_point else len(anchors)
     extra = f", alpha={cp_alpha}" if (not use_basic and not single_point) else ""
     obj_flag = "robustify_objective" if cp_robustify_objective else "nominal_objective"
-    n_pool = resolve_neighbor_pool_size(
-        len(instance.constraints[0].models_data[0].y_train),
-        cp_k_neighbors_frac, cp_k_neighbors_min,
-    )
+    if bank is not None:
+        src_note = (f"scenarios=noise bank (B={len(bank)}, "
+                    f"coherent={bank.coherent}, d0_q={cp_d0_quantile:g})")
+    else:
+        n_pool = resolve_neighbor_pool_size(
+            len(instance.constraints[0].models_data[0].y_train),
+            cp_k_neighbors_frac, cp_k_neighbors_min,
+        )
+        src_note = (f"scenarios=localized bootstrap, "
+                    f"neighbor_pool>={cp_k_neighbors_min} (k={n_pool})")
     print(
         f"    [cp] separation={mode}; constraints={n_constraints}, "
         f"optimal solves={n_solves}, distance={cp_distance}, {obj_flag}, "
-        f"neighbor_pool>={cp_k_neighbors_min} (k={n_pool}){extra}",
+        f"{src_note}{extra}",
         flush=True,
     )
 
@@ -1324,6 +1498,11 @@ def solve_cp(instance: ProblemInstance,
              cp_nearest_distance: str = "context",
              cp_cut_eviction: str = "reject",
              cp_dist_tol_rel: Optional[float] = None,
+             cp_scenario_source: str = "noise",
+             cp_n_scenarios: int = 200,
+             cp_d0_quantile: float = 0.9,
+             cp_uncertainty=None,
+             cp_bank=None,
              ) -> tuple:
     """Cutting Planes for robust constraint learning (one driver, auto-selected oracle).
 
@@ -1332,12 +1511,25 @@ def solve_cp(instance: ProblemInstance,
     separation strategy is chosen automatically from the problem shape:
 
     - **basic** -- non-contextual synthetic only: a single global LP with a single
-      learned constraint; plain worst-case localized-bootstrap separation at ``x*``.
-      No ``cp_alpha``.
+      learned constraint; worst-case separation at ``x*``. No ``cp_alpha``.
     - **coherent** -- contextual problems (gastric), multiple constraints,
-      multiple ``x*``, and/or a learned objective: one *shared* bootstrap
-      relabeling drives all constraints (and optionally the epigraph objective),
-      and the worst scenario -- ranked by **normalized average distance** -- is cut.
+      multiple ``x*``, and/or a learned objective: one *shared* relabeling drives
+      all constraints (and optionally the epigraph objective), and the worst
+      scenario -- ranked by **normalized average distance** -- is cut.
+
+    ``cp_scenario_source``:
+    - ``"noise"`` (default): separate over a FIXED :class:`ScenarioBank` of
+      ``cp_n_scenarios`` draws from the shared uncertainty set D. Because the
+      draws do not move between iterations, the worst violation over the bank is
+      monotone and ``tau`` has a stable meaning. Pass ``cp_bank`` to reuse one
+      bank across a tau grid, or ``cp_uncertainty`` to set D's shape.
+    - ``"bootstrap"``: the legacy localized bootstrap resample, redrawn each
+      iteration. Kept as an ablation and to reproduce earlier results; this is the
+      path whose fresh-sample-vs-frozen-d0 mismatch made the trace oscillate.
+
+    Only the argmax scenario becomes a cut, so the bank is a separation *pool*,
+    not an embedded ensemble -- CP's master stays small at bank sizes the wrapper
+    could not embed.
 
     ``cp_eval_mode``:
     - ``"global"`` (default): one shared master; cuts from all anchors.
@@ -1363,6 +1555,11 @@ def solve_cp(instance: ProblemInstance,
         cp_dist_tol_rel=cp_dist_tol_rel,
         cp_robustify_objective=cp_robustify_objective,
         cp_cut_eviction=cp_cut_eviction,
+        cp_scenario_source=cp_scenario_source,
+        cp_n_scenarios=cp_n_scenarios,
+        cp_d0_quantile=cp_d0_quantile,
+        cp_uncertainty=cp_uncertainty,
+        cp_bank=cp_bank,
     )
 
     if cp_eval_mode == "per_anchor_nearest":

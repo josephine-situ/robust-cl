@@ -111,6 +111,18 @@ def _resolve_run_settings(config, args):
     settings["cp_eval_mode"] = cp_cfg.get("eval_mode", "global")
     settings["cp_nearest_distance"] = cp_cfg.get("nearest_distance", "context")
     settings["cp_cut_eviction"] = cp_cfg.get("cut_eviction", "reject")
+    settings["cp_scenario_source"] = cp_cfg.get("scenario_source", "noise")
+    settings["cp_d0_quantile"] = cp_cfg.get("d0_quantile", 0.9)
+    # B: CP embeds one extra scenario per iteration, so it can afford a bank far
+    # larger than the wrapper's P (which is embedded in full). --quick shrinks it.
+    settings["cp_n_scenarios"] = (
+        quick_cfg.get("cp_n_scenarios", 10) if args.quick
+        else cp_cfg.get("n_scenarios", 200)
+    )
+    # The shared uncertainty set D -- one object handed to cp, wrapper and
+    # robust_reg, so a difference between them is a difference in METHOD.
+    from src.methods.uncertainty import uncertainty_set_from_config
+    settings["uncertainty_set"] = uncertainty_set_from_config(config)
     settings["calibration_method"] = config.get("calibration", {}).get("method", "alpha")
     settings["pareto_center_factors"] = config.get("cv_calibration", {}).get(
         "pareto_center_factors", [0.5, 0.75, 1.0, 1.5, 2.0])
@@ -248,6 +260,10 @@ def _cp_solver(settings, model_type, model_params, cp_alpha=0.0,
         cp_eval_mode=settings["cp_eval_mode"],
         cp_nearest_distance=settings["cp_nearest_distance"],
         cp_cut_eviction=settings["cp_cut_eviction"],
+        cp_scenario_source=settings["cp_scenario_source"],
+        cp_n_scenarios=settings["cp_n_scenarios"],
+        cp_d0_quantile=settings["cp_d0_quantile"],
+        cp_uncertainty=settings["uncertainty_set"],
     )
 
 

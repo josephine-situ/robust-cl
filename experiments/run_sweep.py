@@ -30,6 +30,7 @@ def _synth_build(method, config, model_type, model_params, seed):
     from src.methods.robust_regression import solve_robust_regression
     from src.methods.wrapper import solve_wrapper
     from src.methods.cp import solve_cp
+    from src.methods.uncertainty import uncertainty_set_from_config
     unc = config["uncertainty"]
     rr = config["methods"].get("robust_reg", {})
     cp = config["methods"].get("cp", {})
@@ -57,7 +58,11 @@ def _synth_build(method, config, model_type, model_params, seed):
             # (The basic path previously ignored dist_tol entirely -- it cut every
             # violation > 1e-6 -- so synthetic CP had no robustness lever at all.)
             cp_alpha=0.0, cp_dist_tol_rel=knob,
-            cp_cut_eviction=cp.get("cut_eviction", "evict_slack"))
+            cp_cut_eviction=cp.get("cut_eviction", "evict_slack"),
+            cp_scenario_source=cp.get("scenario_source", "noise"),
+            cp_n_scenarios=cp.get("n_scenarios", 200),
+            cp_d0_quantile=cp.get("d0_quantile", 0.9),
+            cp_uncertainty=uncertainty_set_from_config(config))
     raise ValueError(f"unknown synthetic method {method}")
 
 
