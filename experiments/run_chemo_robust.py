@@ -142,7 +142,10 @@ def _resolve_run_settings(config, args):
     settings["bootstrap_seed"] = unc.get("bootstrap_seed", 42)
     settings["embedding_mode"] = config["methods"].get("embedding_mode", "hard")
     settings["rf_alpha"] = config["methods"].get("chemo_wrapper", {}).get("alpha", 0.25)
-    settings["wrapper_alpha"] = config["methods"]["wrapper"].get("alpha", 0.1)
+    _wrap_cfg = config["methods"]["wrapper"]
+    settings["wrapper_alpha"] = _wrap_cfg.get("alpha", 0.1)
+    settings["wrapper_scenario_source"] = _wrap_cfg.get("scenario_source", "noise")
+    settings["wrapper_robustify_objective"] = _wrap_cfg.get("robustify_objective", False)
     settings["robust_rho"] = config["methods"].get("robust_param", {}).get("rho", 0.05)
     rr_cfg = config["methods"].get("robust_reg", {})
     settings["robust_reg_label_eps"] = rr_cfg.get("label_eps", 0.1)
@@ -222,6 +225,9 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             seed=seed,
             rho=0.0,
             bootstrap_cache=bootstrap_cache,
+            scenario_source=settings["wrapper_scenario_source"],
+            uncertainty_set=settings["uncertainty_set"],
+            robustify_objective=settings["wrapper_robustify_objective"],
         ),
         # Single driver; gastric (multiple toxicity constraints over many
         # patients) auto-selects coherent separation with the shared alpha as the
@@ -293,6 +299,9 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
             solve_wrapper, model_type=model_type, model_params=model_params,
             n_estimators=nb, alpha=knob, seed=seed, rho=0.0,
             bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
+            scenario_source=settings["wrapper_scenario_source"],
+            uncertainty_set=settings["uncertainty_set"],
+            robustify_objective=settings["wrapper_robustify_objective"],
         )
     elif method == "tree_violation":
         amax = ranges["tree_alpha_max"]

@@ -644,6 +644,14 @@ def _finalize(instance, master, ctx_bounds, history, status, total_start,
     else:
         x_opt, obj_value = np.zeros(d), np.inf
 
+    # The CP-vs-wrapper size claim, measured: CP embeds one cut per iteration over
+    # a bank the wrapper could not embed in full, and evicts/prunes as it goes.
+    n_active = sum(1 for c in master.scenario_constrs if c is not None)
+    print(
+        f"    [cp] final master: {n_active} active cuts, "
+        f"{master.opt.NumVars} vars / {master.opt.NumConstrs} constrs",
+        flush=True,
+    )
     _write_cp_trace(history, cp_trace_path)
     return SolutionResult(
         x_opt=x_opt,

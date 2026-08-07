@@ -45,7 +45,12 @@ def _synth_build(method, config, model_type, model_params, seed):
     if method == "wrapper":
         return lambda knob: partial(
             solve_wrapper, model_type=model_type, model_params=model_params,
-            n_estimators=unc.get("n_bootstrap", 20), alpha=knob, seed=seed, rho=0.0)
+            n_estimators=config["methods"]["wrapper"].get("n_estimators", 20),
+            alpha=knob, seed=seed, rho=0.0,
+            scenario_source=config["methods"]["wrapper"].get("scenario_source", "noise"),
+            uncertainty_set=uncertainty_set_from_config(config),
+            robustify_objective=config["methods"]["wrapper"].get(
+                "robustify_objective", False))
     if method == "cp":
         return lambda knob: partial(
             solve_cp, model_type=model_type, model_params=model_params, rho=0.0,

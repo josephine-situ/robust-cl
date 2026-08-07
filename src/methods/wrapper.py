@@ -9,6 +9,7 @@ import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 import time
+from typing import Optional
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
@@ -115,20 +116,62 @@ def solve_wrapper(instance: ProblemInstance,
                   seed: int = 42,
                   rho: float = 0.0,
                   bootstrap_cache=None,
-                  ensembles_cache=None) -> SolutionResult:
-    """Solve using the Maragno et al. wrapper approach, made coherent across
-    constraints: a single shared bootstrap replicate ``p`` must satisfy ALL
-    toxicity constraints jointly (one indicator ``z[p]`` shared across
-    constraints), and at least ``(1 - alpha)`` of replicates must do so. The
-    learned objective (OS) is robustified with a worst-case epigraph over the
-    same replicates."""
+                  ensembles_cache=None,
+                  scenario_source: str = "noise",
+                  uncertainty_set=None,
+                  bank=None,
+                  robustify_objective: bool = False,
+                  coherent: Optional[bool] = None) -> SolutionResult:
+    """Maragno et al.'s wrapper: at least ``(1 - alpha)`` of P plausible
+    relabelings must satisfy the constraints at ``x``.
+
+    ``scenario_source``:
+    - ``"noise"`` (default): the P models come from the **same** uncertainty set D
+      and the **same** seeded draw sequence CP separates over
+      (:class:`~src.methods.uncertainty.ScenarioBank`). Because draw ``b`` is a
+      pure function of ``(seed, b)``, the wrapper's P models are a genuine
+      *prefix* of CP's bank -- so ``alpha=0`` here and ``tau->0`` in CP face
+      identical adversaries and must agree.
+    - ``"bootstrap"``: the legacy bootstrap replicates.
+
+    P is capped by MIP size, because unlike CP -- which embeds one extra scenario
+    per iteration and evicts -- the wrapper embeds **all** P models at once.
+
+    ``coherent`` (default: D's setting): coherent requires one shared relabeling
+    to satisfy every constraint jointly via a single indicator ``z[p]``.
+    Incoherent gives each constraint its own ``z[c, p]``, so different
+    constraints may be satisfied by different relabelings.
+
+    ``robustify_objective``: when ``False`` (default) the objective is a single
+    nominal model, matching CP's default. When ``True`` the objective is a
+    worst-case epigraph over the same P replicates -- the legacy behavior, which
+    carried conservatism CP did not, and which costs P extra OS embeddings.
+    """
     start = time.time()
     n_bootstrap = n_estimators
+    if coherent is None:
+        coherent = bool(getattr(uncertainty_set, "coherent", True))
 
-    trained_ensembles_cache, _ = train_bootstrap_ensembles_for_instance(
-        instance, model_type, model_params, n_bootstrap, seed,
-        bootstrap_cache, ensembles_cache,
-    )
+    if scenario_source == "noise":
+        if bank is None:
+            from src.methods.uncertainty import ScenarioBank, UncertaintySet
+            uset = uncertainty_set if uncertainty_set is not None else UncertaintySet()
+            model_config_map = {
+                id(md): resolve_constraint_config(instance, i, model_type, model_params)
+                for i, md in enumerate(
+                    md for c in instance.constraints for md in c.models_data)
+            }
+            bank = ScenarioBank(instance, model_config_map, uset,
+                                n_scenarios=n_bootstrap, seed=seed)
+        elif len(bank) < n_bootstrap:
+            bank.extend(n_bootstrap)
+        # A prefix of CP's bank: nested, not merely identically distributed.
+        trained_ensembles_cache = bank.as_ensembles_cache(n_bootstrap)
+    else:
+        trained_ensembles_cache, _ = train_bootstrap_ensembles_for_instance(
+            instance, model_type, model_params, n_bootstrap, seed,
+            bootstrap_cache, ensembles_cache,
+        )
 
     trained_constraints = []
     config_idx = 0
@@ -168,21 +211,34 @@ def solve_wrapper(instance: ProblemInstance,
             models_embedded += 1
         return embedded_models_cache[m_id]
 
-    # Coherent indicator: z[p] = 1 iff replicate p satisfies *every* toxicity
-    # constraint at x. Shared across constraints so the chance constraint is over
-    # one joint relabeling, not independent per-constraint relabelings.
-    has_constraints = any(
-        not any(md.obj_weight != 0 for md in instance.constraints[c_idx].models_data)
-        for c_idx in range(len(trained_constraints))
-    )
-    z = opt.addVars(P, vtype=GRB.BINARY, name="z_wrapper_joint") if has_constraints else None
+    # Coherent: z[p] = 1 iff replicate p satisfies *every* toxicity constraint at
+    # x, so the chance constraint is over one joint relabeling. Incoherent: a
+    # separate z[c, p] per constraint, so each constraint may be satisfied by a
+    # different relabeling -- the same coherence flag the bank and robust_reg take.
+    constraint_idxs = [
+        c_idx for c_idx in range(len(trained_constraints))
+        if not any(md.obj_weight != 0 for md in instance.constraints[c_idx].models_data)
+    ]
+    if not constraint_idxs:
+        z = None
+    elif coherent:
+        z = opt.addVars(P, vtype=GRB.BINARY, name="z_wrapper_joint")
+    else:
+        z = opt.addVars(constraint_idxs, P, vtype=GRB.BINARY, name="z_wrapper")
+
+    def _z(c_idx, p):
+        return z[p] if coherent else z[c_idx, p]
 
     for c_idx, constraint_ensembles in enumerate(trained_constraints):
         constraint = instance.constraints[c_idx]
         is_obj = any(md.obj_weight != 0 for md in constraint.models_data)
 
         if is_obj:
-            for p in range(P):
+            # Nominal objective (default): embed ONE model, not P. CP's default is
+            # a nominal objective too, so robustifying here would hand the wrapper
+            # extra conservatism CP does not carry -- and cost P OS embeddings.
+            reps = range(P) if robustify_objective else [0]
+            for p in reps:
                 for m_idx, (weight, obj_weight, ensemble) in enumerate(constraint_ensembles):
                     f_p = _embed(ensemble[p], f"wrapper_c{c_idx}_m{m_idx}_p{p}")
                     obj_scenarios[p].append(obj_weight * weight * f_p)
@@ -193,20 +249,36 @@ def solve_wrapper(instance: ProblemInstance,
                     f_p = _embed(ensemble[p], f"wrapper_c{c_idx}_m{m_idx}_p{p}")
                     f_pred_vars.append(weight * f_p)
                 opt.addConstr(
-                    gp.quicksum(f_pred_vars) <= constraint.rhs + M_val * (1 - z[p]),
+                    gp.quicksum(f_pred_vars) <= constraint.rhs + M_val * (1 - _z(c_idx, p)),
                     name=f"wrapper_indicator_c{c_idx}_p{p}",
                 )
 
     if z is not None:
-        opt.addConstr(
-            (1.0 / P) * gp.quicksum(z[p] for p in range(P)) >= 1 - alpha,
-            name="wrapper_chance_joint",
-        )
+        if coherent:
+            opt.addConstr(
+                (1.0 / P) * gp.quicksum(z[p] for p in range(P)) >= 1 - alpha,
+                name="wrapper_chance_joint",
+            )
+        else:
+            for c_idx in constraint_idxs:
+                opt.addConstr(
+                    (1.0 / P) * gp.quicksum(z[c_idx, p] for p in range(P)) >= 1 - alpha,
+                    name=f"wrapper_chance_c{c_idx}",
+                )
 
     add_problem_constraints(opt, x, instance)
-    build_and_set_robust_objective(opt, x, instance, obj_scenarios)
+    if robustify_objective:
+        build_and_set_robust_objective(opt, x, instance, obj_scenarios)
+    else:
+        build_and_set_objective(opt, x, instance, obj_scenarios[0])
+    opt.update()
+    # MIP size is the whole point of the CP-vs-wrapper comparison: the wrapper
+    # embeds all P models, CP embeds one cut per iteration over a bank that can be
+    # an order of magnitude larger. Log it so the claim is measured, not asserted.
     print(
-        f"    [wrapper] MIP built ({models_embedded} models embedded); solving...",
+        f"    [wrapper] MIP built (P={P}, source={scenario_source}, "
+        f"coherent={coherent}, {models_embedded} models embedded, "
+        f"{opt.NumVars} vars / {opt.NumConstrs} constrs); solving...",
         flush=True,
     )
     opt.optimize()

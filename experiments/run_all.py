@@ -115,10 +115,15 @@ def run_experiment(config, cv_configs=None):
         model_type=model_type,
         model_params=model_params,
         rho=0.0,
-        n_estimators=n_bootstrap,
+        n_estimators=wrapper_cfg.get("n_estimators", n_bootstrap),
         alpha=wrapper_cfg["alpha"],
         seed=bootstrap_seed,
         bootstrap_cache=bootstrap_cache,
+        # Same D, same seeded draw sequence CP separates over -- the wrapper's P
+        # models are a prefix of CP's bank, so alpha=0 and tau->0 are comparable.
+        scenario_source=wrapper_cfg.get("scenario_source", "noise"),
+        uncertainty_set=uncertainty_set_from_config(config),
+        robustify_objective=wrapper_cfg.get("robustify_objective", False),
     )
 
     cp_cfg = config["methods"]["cp"]

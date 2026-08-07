@@ -124,8 +124,17 @@ methods:
     K: 5               # adversarial-training iterations (tree/xgb path only)
 
   wrapper:
-    n_estimators: 25  # P (bootstrap wrapper; uses uncertainty.n_bootstrap in chemo runner)
-    alpha: 0.1  # violation fraction across bootstrap models
+    # P. Capped by MIP size: the wrapper embeds ALL P models, whereas CP embeds one
+    # cut per iteration and can separate over a bank ~10x larger. P is the first P
+    # draws of the SAME seeded sequence CP uses, so it is a nested prefix of CP's
+    # bank -- which is what makes the alpha=0 / tau->0 equivalence test meaningful.
+    n_estimators: 20
+    alpha: 0.1  # violation fraction across models
+    scenario_source: "noise"   # "noise" (shared D, prefix of CP's bank) | "bootstrap"
+    # false = one nominal objective model, matching CP's default. true rebuilds the
+    # worst-case epigraph over all P (legacy), which handed the wrapper conservatism
+    # CP does not carry and cost P extra OS embeddings.
+    robustify_objective: false
 
   chemo_wrapper:
     alpha: 0.25  # max fraction of embedded RF trees allowed to violate
