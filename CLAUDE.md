@@ -51,9 +51,37 @@ returns a `SolutionResult`.
   toolkit every other method imports.
 - **`robust_regression.py`** — train one noise-robust model, embed it.
 - **`wrapper.py`** — Maragno et al. ensemble chance constraint: require
-  $(1-\alpha)$ of $P$ bootstrap models to satisfy the constraint. Also provides
-  `solve_tree_violation_wrapper` and the bootstrap-index helpers reused by CP.
+  $(1-\alpha)$ of $P$ models to satisfy the constraint. Also provides
+  `solve_tree_violation_wrapper` and the bootstrap-index helpers.
 - **`cp.py`** — Cutting Planes (the contribution). See below.
+
+### `uncertainty.py` — the shared uncertainty set D
+
+All three uncertainty-aware methods face **one** set and differ only in what they
+do with it (cut lazily / chance-constrain / robustify the fit):
+
+$$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget\_frac}\cdot n\,\varepsilon_c\},\quad \varepsilon_c = \texttt{eps\_0}\cdot \mathrm{sd}(y_c)$$
+
+- **`sd(y)`, not residuals.** δ is added to labels *before* training and the model
+  is retrained, so the radius is a label-space quantity. A residual-based radius
+  would make D depend on model class — circular, since robust_reg's own model
+  would define the set it is robust to. `stat="oof_quantile"` is an ablation only;
+  **no coverage claim** is made. On gastric `sd(y)` is 0.288 for all five
+  percentile toxicities and 2.62 for OS — and the OOF numbers are just as flat, so
+  the residual estimator buys no discrimination.
+- **`ScenarioBank`** draws B **vertices** of D (±eps on `budget_frac`·n rows, 0
+  elsewhere — matching robust_reg's adversary; interior draws would be a weaker
+  adversary at the same D) and trains one model per draw per outcome, with
+  `random_state` fixed across members so the scenario is the only variation.
+  Draw *b* is a pure function of `(seed, b)`, so **the wrapper's P models are a
+  nested prefix of CP's B** — which is what makes the α=0 ≡ τ→0 equivalence exact.
+- **`coherent`** — one flag, all three methods. Coherent shares one standardized
+  direction across outcomes (scaled by each `eps_c`); incoherent draws
+  independently. Vacuous on synthetic (one outcome).
+- `uncertainty.eps_0` and `budget_frac` are shared **constants, not knobs** —
+  each method keeps exactly one conservatism dial (CP τ, wrapper α, robust_reg
+  `label_eps`). `eps_0` is deliberately *not* pinned to robust_reg's calibrated
+  ε*, which would conflate D's definition with one method's tuning.
 
 ### `solve_cp` — one driver, auto-selected strategy
 
@@ -63,26 +91,46 @@ separate → add cuts → terminate* — and **auto-selects** the separation str
 from the problem shape (number of learned constraints × number of optimal
 solutions). **There is no separation flag.**
 
-- **basic** — single LP, single learned constraint (synthetic). Retrain each
-  localized bootstrap resample, score all *candidates* at $x^*$, and cut the
-  single worst — ranked by the *actual* constraint model (not a CART proxy).
-  The candidates are a separation pool, not an embedded ensemble: only the argmax
-  becomes a cut. ("Ensemble" in this repo means the GT evaluator; see below.)
+- **basic** — single LP, single learned constraint (synthetic). Score every bank
+  draw at $x^*$ and cut the single worst — ranked by the *actual* constraint model
+  (not a CART proxy). The bank is a separation pool, not an embedded ensemble:
+  only the argmax becomes a cut. ("Ensemble" in this repo means the GT evaluator.)
 - **coherent** — multiple constraints / multiple $x^*$ / learned objective
-  (gastric). A *scenario* is one **shared** localized bootstrap relabeling used
-  to train every constraint (and the epigraph objective) jointly. Each iteration
-  cuts the single worst scenario, ranked by **normalized average distance**
-  (mean relative exceedance over all $(x^*,\text{outcome})$ cells, 0–1 scale).
-  Stops when that distance ≤ `cp.dist_tol`, or no scenario fits under the
-  coverage cap `cp_alpha` (max fraction of $x^*$ allowed infeasible).
+  (gastric). A *scenario* is one **shared** relabeling used to train every
+  constraint (and the epigraph objective) jointly. Each iteration cuts the single
+  worst scenario, ranked by **normalized average distance** (mean relative
+  exceedance over all $(x^*,\text{outcome})$ cells, 0–1 scale). Stops when that
+  distance ≤ the tolerance, or no scenario fits under the coverage cap `cp_alpha`.
+
+**Scenarios come from a fixed bank** (`cp.scenario_source: "noise"`, default).
+The legacy `"bootstrap"` path redrew every iteration while `d0` stayed frozen from
+iteration 0, so the stopping rule compared *different samples* with sampling noise
+the size of the signal — CP never converged and every τ ≤ 0.5 gave an identical
+20-iteration run. With the bank fixed, τ responds and CP converges.
+
+Note what this does **not** buy: the violation trace is still non-monotone. It is
+measured at the current $x^*$, which moves each iteration, and a cut only
+guarantees *its* scenario holds at the new $x^*$.
+
+**`d0` is a high quantile** (`cp.d0_quantile`, default 0.9) of the iteration-0
+scenario distances, **not their max** — the max grows with B, and CP (B=200) and
+the wrapper (P=20) run at different B by design.
+
+**Why B differs, and why it matters.** The wrapper embeds all P models, so P is
+capped by MIP size; CP embeds one cut per iteration and evicts/prunes. Measured on
+synthetic: wrapper at P=20 is 31,917 vars / 101,172 constrs; CP at B=200 is 6,380
+vars / 20,236 constrs. At B = P on the identical prefix, CP at τ→0 and the wrapper
+at α=0 return the same $x^*$ exactly — **CP is a lazy wrapper at α=0**.
 
 Key shared knobs (all under `cp:` in `config.yaml`): **anchors** (`anchor_source`
 train/test, `n_anchors`, `anchor_method` kmedoids/sample/all) select where the
-$x^*$ are collected for contextual problems; **localization** (`distance`
-full/context/auto) picks the bootstrap pool; `robustify_objective` toggles the
+$x^*$ are collected for contextual problems; `robustify_objective` toggles the
 epigraph objective robustification; `eval_mode` (`global` vs
 `per_anchor_nearest`) controls whether one shared master or per-anchor masters
 are trained, with `nearest_distance` for prescribe-time anchor assignment.
+`uncertainty.cp_k_neighbors_*`, `cp_n_candidates` and `cp.distance` apply **only**
+to the legacy `scenario_source: "bootstrap"` path — kept so prior results
+reproduce, unused under the default.
 
 The *marketing* (in-LP context, "coupled") setting is described in the README
 but **not implemented** (no data loader).
@@ -129,13 +177,21 @@ self-regulates via its `p_infeas` cap); nominal has no knob.
 ## Config
 
 `config.yaml` drives everything. Notable structure: `data.type` switches
-synthetic vs gastric; `uncertainty.alpha` is the **shared coverage cap** that CP
-enforces directly and the baselines are calibrated to; `methods.cp.*` holds the
-CP knobs above; `methods.chemo.methods_to_run` / `constraint_modes` select what
-the gastric runner executes, and `methods.chemo.quick` overrides them for
-`--quick`. Cross-validated model selections are read from
+synthetic vs gastric; `uncertainty.{eps_0, budget_frac, coherent, scale_stat}`
+define the **shared set D**; `uncertainty.alpha` is the **shared coverage cap**
+that CP enforces directly and the baselines are calibrated to; `methods.cp.*`
+holds the CP knobs above; `methods.chemo.methods_to_run` / `constraint_modes`
+select what the gastric runner executes, and `methods.chemo.quick` overrides them
+for `--quick`. Cross-validated model selections are read from
 `results/cv/*_selected_configs.json` (constraint models) and
 `*_gt_ensemble_configs.json` (GT ensemble) when present, via `--cv-configs`.
+
+**Robustness-knob CV is per (method, coherence) cell**, keyed
+`method@coherent` / `method@incoherent` (`cv_calibrate.knob_key` / `lookup_knob`,
+which falls back to a bare `method` key for older JSONs). A coherent draw is the
+stronger adversary at a fixed radius, so reusing one θ* across both would
+confound coherence with conservatism. `cv_calibration.coherence_cells` controls
+which cells run; synthetic stays single-cell (coherence is vacuous there).
 
 ## Conventions / gotchas
 
@@ -147,8 +203,15 @@ the gastric runner executes, and `methods.chemo.quick` overrides them for
   **outer m-out-of-n subsampling without replacement** of training rows, with
   the GT ensemble as a fixed oracle — this is uncertainty over *training draws*,
   distinct from the inner bootstrap the methods use.
-- Uncertainty is **data-driven** (bootstrap resamples of observed labels), not a
-  parametric label-noise model or preset perturbation wrapper.
+- Uncertainty is the **shared set D** (`src/methods/uncertainty.py`), scaled by
+  `sd(y)` per outcome. The older data-driven bootstrap resampling survives as the
+  `scenario_source: "bootstrap"` ablation.
+- **`eps_0 = 1.0` is not a viable default** — that is a 29-percentile-rank shift
+  on half the gastric arms and 6× the true noise on synthetic; CP could not
+  converge against it. The default `0.1` comes from the label radius robust_reg
+  has always used, chosen from repo precedent rather than either problem's
+  data-generating process (setting it from synthetic's known `noise_std` would be
+  circular and CP would win by construction).
 - `trust_region.py` / `add_trust_region` constrains decisions to the convex hull
   of observed treatment vectors (gastric).
 - Parameter robustness (`methods.robust_param.rho`) shrinks decision-tree leaf

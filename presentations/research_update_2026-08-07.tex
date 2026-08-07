@@ -1,0 +1,448 @@
+\documentclass{beamer}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{array}
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}{\hfill\insertframenumber/\inserttotalframenumber\hspace{1.5em}}
+
+\title{Robust Constraint Learning: Research Update}
+\subtitle{One shared uncertainty set; CP as lazy separation}
+\date{7 August 2026}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+  \begin{center}\footnotesize
+  Supersedes \texttt{research\_update.tex}.
+  \end{center}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Formulation}
+  \textbf{Nominal}:
+  \[
+    \min_{x\in\mathcal{X}}\; c^\top x \quad\text{s.t.}\quad \hat f(x;\theta^\ast)\le b .
+  \]
+  \begin{itemize}
+    \item Noisy labels $\Rightarrow$ different $\theta^\ast(\delta)$ $\Rightarrow$ infeasible
+      decisions.
+    \item \textbf{Robust}: feasible against \emph{every} reachable model.
+  \end{itemize}
+  \[
+    \min_{x\in\mathcal{X}} c^\top x
+    \;\;\text{s.t.}\;\; \max_{\delta\in\mathcal{D}} f(x;\theta^\ast(\delta))\le b,
+    \quad \theta^\ast(\delta)=\arg\min_{\theta\in\Theta_{\text{feas}}}\mathcal L(\theta;X,y+\delta)
+  \]
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{The headline change: one $\mathcal{D}$, three methods}
+  \small
+  Previously each method carried its \emph{own} notion of uncertainty --- CP a
+  localized bootstrap, the wrapper a plain bootstrap, Robust Reg.\ a box$\cap$L1
+  set. A difference between methods was then partly a difference in what each was
+  handed.
+  \medskip
+
+  \textbf{Now all three face the same set}, and differ only in what they \emph{do}
+  with it:
+  \[
+    \mathcal D_c = \{\delta: |\delta_i|\le\varepsilon_c,\ \lVert\delta\rVert_1 \le
+      \texttt{budget\_frac}\cdot n\,\varepsilon_c\},
+    \qquad \varepsilon_c = \varepsilon_0\cdot\mathrm{sd}(y_c)
+  \]
+  \begin{center}\small
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    Method & What it does with $\mathcal D$ & Dial \\
+    \midrule
+    Robust Reg. & robustifies the \emph{fit}       & $\texttt{label\_eps}$ \\
+    Wrapper     & chance-constrains a sample of it & $\alpha$ \\
+    CP (ours)   & separates it \emph{lazily}       & $\tau$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+  \footnotesize
+  $\texttt{budget\_frac}=0.5$ and $\varepsilon_0$ are shared constants, not knobs.
+  $\varepsilon_0$ is deliberately \textbf{not} pinned to Robust Reg.'s calibrated
+  $\varepsilon^\ast$: that would make $\mathcal D$'s definition depend on one
+  method's tuning and force stage-1 CV to run sequentially.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Why $\mathrm{sd}(y)$, and not a residual-based radius}
+  \small
+  $\delta$ is added to labels \textbf{before} training and the model is retrained.
+  It is not a post-hoc perturbation of predictions --- so the radius belongs in
+  \emph{label space}.
+  \begin{itemize}
+    \item $\mathrm{sd}(y)$ is model-free, computable before any fit, and identical
+      for all three methods.
+    \item An out-of-fold \emph{residual} radius would make $\mathcal D$ depend on
+      model class and hyperparameters --- circular, since Robust Reg.'s own model
+      would define the set it is robust to, and $\mathcal D$ would silently move
+      whenever model selection was re-run.
+  \end{itemize}
+  \medskip
+  \textbf{Consequence, stated plainly.} Gastric toxicity labels are percentile
+  ranks, so $\mathrm{sd}(y)$ is $0.2882$--$0.2887$ across all five --- measured, not
+  assumed --- against $2.617$ for OS in months. That is a \emph{feature}:
+  $\varepsilon_c=\varepsilon_0\,\mathrm{sd}(y_c)$ is then the same \emph{rank}
+  shift in every outcome, which is what makes a shared coherent draw a coherent
+  statement. OS, in raw months, gets its own scale.
+  \medskip
+
+  \textbf{And the residual estimator buys nothing here.} Measured out-of-fold on
+  the five toxicities: $\mathrm{sd}$ $0.249$--$0.293$, $q_{0.9}$ $0.398$--$0.441$
+  --- just as flat across outcomes as $\mathrm{sd}(y)$ is. It would add model
+  dependence for no discrimination. Retained as a one-flag ablation; both logged.
+  \medskip
+
+  \textbf{No coverage claim} is made anywhere. This is a calibrated scale, not a
+  conformal guarantee; the deliverable is \emph{comparability}.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Draws are vertices of $\mathcal D$, not interior points}
+  \small
+  A scenario is a draw $\delta_b$: $\pm\varepsilon_c$ on $m=\texttt{budget\_frac}\cdot n$
+  randomly chosen rows, $0$ elsewhere.
+  \begin{itemize}
+    \item Robust Reg.'s adversary attains its inner max at exactly such a vertex.
+    \item Sampling the \emph{interior} (uniform draw, then L1 projection) spreads
+      mass thinly over all $n$ rows and would hand CP and the wrapper a
+      systematically \textbf{weaker} adversary than Robust Reg.\ at the same
+      $\mathcal D$ --- confounding the very comparison the shared set enables.
+  \end{itemize}
+  \medskip
+  \textbf{Coherence} --- one flag, all three methods:
+  \begin{itemize}
+    \item \textbf{Coherent}: one standardized direction $u$ shared across outcomes,
+      scaled per outcome as $\delta^c=\varepsilon_c u$. Inside every outcome's own
+      $\mathcal D_c$, all six models moving together.
+    \item \textbf{Incoherent}: an independent $u_c$ per outcome.
+    \item Vacuous on synthetic (one outcome) --- verified: identical draws,
+      identical $x^\ast$ for every method.
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{The defect this fixes: CP was not converging}
+  \small
+  \texttt{results/gastric/cp\_trace.csv}, worst violation by iteration:
+  \[
+    0.0128 \to 0.0070 \to \cdots \to 0.0064_{(15)} \to 0.0233_{(17)} \to 0.0091
+  \]
+  It never converged --- it exhausted \texttt{max\_iterations} every time.
+  \medskip
+
+  \textbf{Cause.} Every iteration drew a \emph{fresh} scenario sample, while $d_0$
+  was frozen from iteration 0's sample. The stopping rule compared iteration-$k$'s
+  sample against iteration-0's sample $\times\ \tau$ --- \textbf{different samples},
+  with sampling noise the same order as the signal.
+  \begin{itemize}
+    \item At $\tau=0.1$ the tolerance $0.00128$ was never reached.
+    \item So $\tau^\ast=0.1$ and \emph{every} $\tau\lesssim0.5$ produced an
+      identical 20-iteration run. The knob was inert.
+    \item The earlier switch from absolute \texttt{dist\_tol} to relative $\tau$
+      did not cure this: the problem was \emph{noise}, not units.
+  \end{itemize}
+  \medskip
+  \textbf{Fix.} Draw the sample \textbf{once}. With $\delta$ fixed,
+  $\theta(\delta_b)$ no longer depends on $x^\ast$; the models are trained once and
+  every measurement refers to one fixed population.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{What the fixed bank does and does not buy}
+  \small
+  \textbf{Does} --- measured on synthetic:
+  \begin{itemize}
+    \item \textbf{$\tau$ does something.} $\tau=0.8$ stops at 3 iterations
+      (obj $-1.2767$); $\tau\le0.4$ runs 4 ($-1.2426$). CP \emph{converges} rather
+      than exhausting its iteration budget.
+    \item $d_0$ and every later measurement refer to the same population, so the
+      comparison is meaningful.
+  \end{itemize}
+  \medskip
+  \textbf{Does not} --- a claim we made and then had to withdraw:
+  \begin{itemize}
+    \item The violation trace is \textbf{still not monotone}:
+      $0.132 \to 0.144 \to 0.073 \to -0.007$.
+    \item Why: violation is measured at the \emph{current} $x^\ast$, which moves
+      each iteration. A cut guarantees only that \emph{its} scenario is satisfied
+      at the new $x^\ast$ --- not that the max over the rest fell.
+    \item Cutting-plane theory gives monotone \emph{bounds}, not monotone
+      separation values --- and eviction/pruning deliberately break even that.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{$d_0$ is a high quantile, not the max}
+  \small
+  \texttt{tolerance} $=\tau\cdot d_0$, with $d_0 = q_{0.9}$ of the iteration-0
+  scenario distances.
+  \begin{itemize}
+    \item The \textbf{max} over $B$ draws grows with $B$ by construction --- so a
+      max-based $d_0$ would stop $\tau$ transferring across bank sizes.
+    \item And CP and the wrapper run at \emph{different} $B$ on purpose (next
+      slide), so that transfer is not optional.
+  \end{itemize}
+  \medskip
+  \begin{center}\small
+  \begin{tabular}{@{}rcc@{}}
+    \toprule
+    $B$ & $d_0 = q_{0.9}$ & $\max$ \\
+    \midrule
+     20 & 0.097 & 0.132 \\
+     50 & 0.070 & 0.132 \\
+    200 & 0.090 & 0.191 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+  \footnotesize
+  The quantile does not grow with $B$; the max climbs 45\%. Not perfectly flat
+  ($B=20$ is 20 points), but the right estimator.
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Why CP scales where the wrapper cannot}
+  \small
+  \textbf{The wrapper embeds all $P$ models} in the MIP, so $P$ is capped by MIP
+  size. \textbf{CP embeds one extra scenario per iteration} and evicts/prunes
+  cuts, so its master stays small at \emph{any} $B$. The bank is a separation
+  \emph{pool}, not an embedded ensemble --- only the argmax becomes a cut.
+  \medskip
+  \begin{center}\small
+  \begin{tabular}{@{}lrrr@{}}
+    \toprule
+    & adversaries & vars & constrs \\
+    \midrule
+    Wrapper & $P=20$  & 31{,}917 & 101{,}172 \\
+    CP      & $B=200$ & \textbf{6{,}380} & \textbf{20{,}236} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+  \textbf{Ten times the adversaries, in a fifth of the MIP.} CP's final master
+  held 4 active cuts.
+  \medskip
+
+  This is the structural argument for lazy separation over chance-constraining,
+  and it is now \emph{measured} --- both solvers log their size at termination.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{CP $\equiv$ a lazy wrapper at $\alpha=0$}
+  \small
+  Because draw $b$ is a pure function of $(\texttt{seed},b)$, the wrapper's $P$
+  models are a genuine \textbf{prefix} of CP's bank --- nested, not merely
+  identically distributed. So the two can be compared exactly.
+  \medskip
+
+  \textbf{Test.} $B=P=12$ on the identical prefix, objective un-robustified on
+  both, CP at $\tau\to0$ vs.\ the wrapper at $\alpha=0$:
+  \begin{center}\small
+  \begin{tabular}{@{}lcc@{}}
+    \toprule
+    & $x^\ast$ & objective \\
+    \midrule
+    Wrapper ($\alpha=0$) & $(0.54468,\,0.70555)$ & $-1.25023$ \\
+    CP ($\tau\to0$)      & $(0.54468,\,0.70555)$ & $-1.25023$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \[
+    \max|\Delta x| = 0.0
+  \]
+  \medskip
+  \textbf{Exact agreement.} CP is the wrapper's chance constraint at $\alpha=0$,
+  separated lazily. $\tau$ is the difference --- and the reason CP can afford a
+  bank the wrapper cannot embed.
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Coherence is now a crossed factor}
+  \small
+  Previously coherence was an inconsistent per-method default: the wrapper was
+  coherent, Robust Reg.\ was not, CP was coherent on gastric only. Now it is
+  \textbf{one flag} crossed with all three methods.
+  \begin{itemize}
+    \item \textbf{Wrapper}: coherent $\Rightarrow$ one shared $z_p$; incoherent
+      $\Rightarrow$ per-constraint $z_{c,p}$.
+    \item \textbf{Robust Reg.}: coherent picks \emph{one shared row set} $S$ per
+      iteration --- ranked by mean \emph{normalized} $|r_i|$, so OS in months does
+      not outvote percentile toxicities --- then shifts each outcome on $S$ in its
+      own worst direction.
+    \item \textbf{CP}: the bank's draws.
+  \end{itemize}
+  \medskip
+  \textbf{Trade-off, not hidden}: with $\delta$ chosen jointly, Robust Reg.'s exact
+  QP counterpart no longer applies (its inner max assumes the adversary optimizes
+  one outcome alone), so the coherent arm retrains on shifted labels. Since
+  coherence is crossed, the exact linear result stays available from the
+  incoherent arm.
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{$\theta^\ast$ is calibrated \emph{per} coherence cell}
+  \small
+  A coherent draw moves every outcome together, so at a fixed radius it is the
+  \textbf{stronger} adversary: the objective budget binds sooner, and
+  \[
+    \theta^\ast_{\text{coherent}} \;\le\; \theta^\ast_{\text{incoherent}}
+    \quad\text{in general.}
+  \]
+  \begin{itemize}
+    \item Reusing one $\theta^\ast$ across both would confound \emph{coherence}
+      with \emph{more conservatism} --- exactly the confound the shared
+      $\mathcal D$ exists to remove.
+    \item Knobs are keyed \texttt{method@coherent} / \texttt{method@incoherent}.
+    \item Costs $2\times$ stage 1; the scores checkpoint is keyed by the same
+      string and resumable, so no cell is ever recomputed.
+    \item Pareto frontier stays \textbf{coherent-only} --- crossing coherence with
+      5 knob points $\times$ 30 draws risks the 12h wall for a second-order effect.
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Evaluation (unchanged)}
+  \small
+  \begin{center}
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{4.0cm}>{\raggedright\arraybackslash}p{4.0cm}@{}}
+    \toprule
+    & Gastric & Synthetic \\
+    \midrule
+    Ground truth & GT ensemble, fit on all \textbf{416} arms (train + test) & Exact analytic constraint \\[0.3em]
+    New train draw & $m$ of $n=320$ arms, no replacement
+      ($m=160$ at frac 0.5); 30 draws headline, 10 in sweeps
+      & Fresh data draw, seed $= \text{base} + 1000r$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \begin{itemize}
+    \item \textbf{No circularity}: the evaluator is independent of $\mathcal D$.
+      Synthetic's radius is \emph{not} set from the known \texttt{noise\_std} ---
+      that would calibrate $\mathcal D$ to the data-generating process and CP would
+      win by construction.
+    \item \textbf{Fixed}: the synthetic runner never passed a seed, so every
+      ``realization'' rebuilt the \emph{same} dataset and the spread across draws
+      was identically zero. Draws are now genuinely independent, and run at
+      CV-calibrated knobs rather than config defaults.
+  \end{itemize}
+  \medskip
+  \footnotesize
+  \textbf{Samestore cohort} (gastric): every reported number is a mean over test
+  arms \emph{every} method could prescribe for, recomputed per draw. Feasibility
+  is conditional on solvability, reported separately.
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Housekeeping}
+  \small
+  \begin{itemize}
+    \item \textbf{DLT-only dropped.} Per-mode samestore means the
+      \texttt{all\_constraints} numbers never depended on whether
+      \texttt{dlt\_only} also ran --- so this halves runtime and changes nothing.
+      It also retires a real bug: \texttt{\_feas} selected the
+      \texttt{all\_constraints} \emph{outcome} row regardless of mode, so the
+      DLT-only panel never showed DLT-only joint feasibility.
+    \item \textbf{Wrapper restored} to the gastric run, and its OS robustification
+      turned \textbf{off} by default --- it always robustified the objective while
+      CP did not, carrying conservatism CP never paid for (and $P$ extra
+      embeddings).
+    \item \textbf{Synthetic violation plot} now shows the violation itself, not the
+      feasibility indicator: the indicator collapsed every infeasible method onto a
+      flat 0 line (at $\sigma=0.5$: nominal $0.54$, RR $0.83$, wrapper $0.23$ all
+      read as ``0.0'') and drew no-solution rows identically to
+      solved-but-infeasible ones.
+    \item \textbf{SLURM}: synthetic now runs \emph{first} and gates gastric
+      (\texttt{afterok}) --- minutes of correctness checks before a 12h slot.
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Results --- to be regenerated}
+  \small
+  Phases 1--4 all change what the methods compute, so stage-1 CV must be recomputed
+  before any number here is quotable.
+  \medskip
+
+  \textbf{Pipeline} (one command, three chained stages):
+  \begin{center}\footnotesize
+  \texttt{METHODS="cp robust\_reg wrapper" bash experiments/submit\_pipeline.sh}
+  \end{center}
+  \begin{enumerate}\footnotesize
+    \item synthetic CV $\to$ noise sweep $\to$ CV-centered Pareto
+    \item gastric robustness CV, per (method, coherence) cell
+    \item gastric headline + frontiers + CV-centered Pareto
+  \end{enumerate}
+  \medskip
+  \textbf{Then}: \texttt{uv run python experiments/make\_paper\_figures.py}
+  \medskip
+
+  \footnotesize
+  Figures in this deck that depend on the new runs are intentionally left out
+  rather than shown stale.
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Summary}
+  \small
+  \textbf{What changed}
+  \begin{enumerate}
+    \item \textbf{One shared uncertainty set.} $\mathrm{sd}(y)$-scaled
+      box$\cap$L1, vertex draws, one coherence flag --- so a difference between
+      methods is a difference in \emph{method}.
+    \item \textbf{CP's scenario bank is fixed.} The oscillating trace was a
+      fresh-sample-vs-frozen-$d_0$ mismatch; $\tau$ was inert below $0.5$ and now
+      is not.
+    \item \textbf{$d_0$ is a quantile}, so $\tau$ transfers across bank sizes.
+    \item \textbf{Coherence is crossed}, with $\theta^\ast$ calibrated per cell.
+  \end{enumerate}
+  \medskip
+  \textbf{Two results that stand on their own}
+  \begin{itemize}
+    \item CP at $\tau\to0$ $\equiv$ the wrapper at $\alpha=0$, \emph{exactly}
+      ($\max|\Delta x| = 0$) --- CP is lazy separation of the same chance
+      constraint.
+    \item CP searches $10\times$ the adversaries in $1/5$ the MIP. That is the
+      argument for separating rather than embedding.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Open questions}
+  \small
+  \textbf{1. Is $\varepsilon_0$ well-chosen?} \emph{The live question.}
+  \begin{itemize}
+    \item $\varepsilon_0=0.1$, taken from the label radius Robust Reg.\ has always
+      used (\texttt{label\_eps}) and the weak end of its CV grid --- i.e.\ from the
+      codebase's own precedent, not from either problem's DGP. Setting it from
+      synthetic's known $\sigma$ is off the table (circular).
+    \item \textbf{$\varepsilon_0=1$ was tried first and is not viable}: a
+      29-percentile-rank shift on half the gastric arms, and $6\times$ the true
+      noise on synthetic. CP could not converge against it in 20 iterations.
+    \item Note $\mathrm{sd}(y)$ tracks the \emph{signal} spread on synthetic, not
+      the noise --- so the same $\varepsilon_0$ is a relatively wider set there
+      than on gastric. Sensitivity ablation over
+      $\varepsilon_0\in\{0.05,0.1,0.2\}$; the claim to establish is that
+      $\tau^\ast$, not $\varepsilon_0$, drives CP.
+  \end{itemize}
+  \medskip
+  \textbf{2. Cutting planes per test point, or once over all anchors?}
+  \begin{itemize}
+    \item Per test point ($n=96$): tailored, but many different LPs.
+    \item Over train anchors (now): offline, but $x^\ast_1..x^\ast_{10}$ may not
+      represent test points.
+  \end{itemize}
+  \medskip
+  \textbf{3. Add the WFP problem setting} --- the in-LP-context (``coupled'')
+  formulation is described but has no data loader.
+\end{frame}
+
+\end{document}

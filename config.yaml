@@ -27,7 +27,14 @@ uncertainty:
   # ONE conservatism dial (tau / alpha / label_eps). eps_0 is deliberately NOT
   # pinned to robust_reg's calibrated eps*: pinning would force stage-1 CV to run
   # sequentially and would conflate D's definition with one method's tuning.
-  eps_0: 1.0          # radius in units of scale(y). Sensitivity: {0.5, 1.0, 2.0}
+  # Radius in units of scale(y). 0.1 = the label radius robust_reg has always used
+  # (methods.robust_reg.label_eps) and the weak end of its CV grid, so it is chosen
+  # from the codebase's own precedent rather than from either problem's DGP --
+  # setting it from synthetic's known noise_std would be circular. Sensitivity
+  # ablation: rerun CP's headline cell at eps_0 in {0.05, 0.1, 0.2}.
+  # NOT 1.0: that is a 29-percentile-rank shift on gastric and 6x the true noise on
+  # synthetic, and CP could not converge against it in 20 iterations.
+  eps_0: 0.1
   budget_frac: 0.5    # rows the adversary may move (m = frac * n). A constant, not a knob
   coherent: true      # true = one shared draw across outcomes; false = independent per outcome
   scale_stat: "sd"    # "sd" (default; model-free, label-space) | "oof_quantile" (ablation)
