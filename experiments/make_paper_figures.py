@@ -217,21 +217,44 @@ def fig_synthetic(csv="results/synthetic/noise_sweep_results.csv"):
     # information. The indicator collapsed every infeasible method onto a flat 0
     # line (at sigma=0.5: nominal 0.54, robust_reg 0.83, wrapper 0.23 all read as
     # "0.0"), and drew no-solution rows identically to solved-but-infeasible ones.
+    # Multiple independent data draws (run_sweep --n-real): plot the mean and shade
+    # the min-max band. Robustness is a claim about the BAD draw, so the worst-case
+    # edge is drawn explicitly rather than left to the shading.
+    n_draws = df["draw"].nunique() if "draw" in df.columns else 1
+
+    def _agg(s, col, worst="max"):
+        s = s.dropna(subset=[col])
+        if s.empty:
+            return None
+        g = s.groupby("noise_std")[col]
+        return g.mean(), g.min(), g.max(), (g.max() if worst == "max" else g.min())
+
     no_sol = []
     for m in methods:
         s = df[df.method == m].sort_values("noise_std")
-        v = s.dropna(subset=["worst_violation"])
-        axes[0].plot(v["noise_std"], v["worst_violation"], marker=MARKER[m],
-                     color=COLOR[m], lw=2, ms=7, mec="white", mew=1,
-                     label=LABEL[m], zorder=3)
+        a = _agg(s, "worst_violation")
+        if a is not None:
+            mean, lo, hi, edge = a
+            axes[0].plot(mean.index, mean.values, marker=MARKER[m], color=COLOR[m],
+                         lw=2, ms=7, mec="white", mew=1, label=LABEL[m], zorder=3)
+            if n_draws > 1:
+                axes[0].fill_between(mean.index, lo.values, hi.values,
+                                     color=COLOR[m], alpha=0.15, lw=0, zorder=2)
+                axes[0].plot(edge.index, edge.values, ls=":", lw=1.3,
+                             color=COLOR[m], zorder=3)
         # Rows where the MIP returned nothing: a gap in the line, flagged below,
         # never a zero.
-        for sig in s[s["worst_violation"].isna()]["noise_std"]:
+        for sig in s[s["worst_violation"].isna()]["noise_std"].unique():
             no_sol.append((float(sig), m))
         so = s[s["objective"].notna() & (s["objective"] < 1e6)]
-        axes[1].plot(so["noise_std"], so["objective"], marker=MARKER[m],
-                     color=COLOR[m], lw=2, ms=7, mec="white", mew=1,
-                     label=LABEL[m], zorder=3)
+        a = _agg(so, "objective")
+        if a is not None:
+            mean, lo, hi, _ = a
+            axes[1].plot(mean.index, mean.values, marker=MARKER[m], color=COLOR[m],
+                         lw=2, ms=7, mec="white", mew=1, label=LABEL[m], zorder=3)
+            if n_draws > 1:
+                axes[1].fill_between(mean.index, lo.values, hi.values,
+                                     color=COLOR[m], alpha=0.15, lw=0, zorder=2)
 
     axes[0].axhline(0.0, color="#2E7D32", ls="--", lw=1.2, alpha=0.7, zorder=2)
     lo, hi = axes[0].get_ylim()

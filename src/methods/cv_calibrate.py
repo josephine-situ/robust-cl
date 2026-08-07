@@ -295,6 +295,35 @@ def append_score(path: str, method: str, knob: float, feas: float, obj: float) -
         w.writerow([method, knob, feas, obj])
 
 
+def knob_key(method: str, coherent: Optional[bool]) -> str:
+    """Checkpoint / knobs key for one (method, coherence) cell.
+
+    theta* is calibrated PER CELL. A coherent draw moves every outcome together,
+    so at a fixed radius it is the stronger adversary: the objective budget binds
+    sooner and coherent theta* <= incoherent theta* in general. Reusing one theta*
+    across both would confound "coherence" with "more conservatism" -- the exact
+    confound the shared uncertainty set exists to remove.
+
+    ``coherent=None`` gives the bare method name, for problems where coherence is
+    vacuous (a single outcome, e.g. synthetic).
+    """
+    if coherent is None:
+        return method
+    return f"{method}@{'coherent' if coherent else 'incoherent'}"
+
+
+def lookup_knob(knobs: dict, method: str, coherent: Optional[bool] = None,
+                default=None):
+    """theta* for a cell, falling back to the bare ``method`` key so knobs JSONs
+    written before per-cell keying still load."""
+    if not knobs:
+        return default
+    for k in (knob_key(method, coherent), method):
+        if k in knobs:
+            return knobs[k]
+    return default
+
+
 def write_knobs(path: str, knobs: dict) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w") as f:

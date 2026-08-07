@@ -73,6 +73,14 @@ cv_calibration:
   fold_cutoffs: [2004, 2005, 2006, 2007]  # gastric temporal forward-chaining (val = cutoff+1)
   n_kfold: 4                          # synthetic KFold splits (no time)
   os_tolerance_frac: 0.1              # objective budget: keep obj within 10% of nominal
+  # theta* is calibrated PER (method, coherence) cell, keyed "method@coherent" /
+  # "method@incoherent". A coherent draw moves every outcome together, so at a fixed
+  # radius it is the stronger adversary: the objective budget binds sooner and
+  # coherent theta* <= incoherent theta* in general. Reusing one theta* across both
+  # would confound "coherence" with "more conservatism". Costs 2x stage 1, but the
+  # scores checkpoint is resumable and never redoes a cell. Set to [true] for
+  # coherent-only. Vacuous on synthetic (one outcome), which stays single-cell.
+  coherence_cells: [true, false]
   knob_grids:                         # native-unit robustness knob per method (strongest last)
     # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, where d0
     # is the problem's own iteration-0 worst distance (logged per solve as "[cp] d0=").

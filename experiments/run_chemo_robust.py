@@ -30,6 +30,7 @@ from src.methods.wrapper import (
 )
 from src.methods.cp import solve_cp, select_anchor_contexts
 from src.methods.calibrate import calibrate_strength
+from src.methods.cv_calibrate import lookup_knob
 from src.evaluation.chemo_metrics import (
     evaluate_given_table6,
     evaluate_prescribed_table6,
@@ -527,11 +528,16 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
                 settings["n_bootstrap"], settings["bootstrap_seed"], coherent_cache,
             )
 
+    # theta* is stored per (method, coherence) cell; pick the cell matching the
+    # uncertainty set this run is actually using. lookup_knob falls back to a bare
+    # `method` key so pre-per-cell knobs JSONs still load.
+    _coherent = bool(getattr(settings.get("uncertainty_set"), "coherent", True))
+
     def _resolve_solver(method, sub):
         if conservativeness is not None:
             if pareto_center_cv and cv_knobs is not None:
                 # Centered Pareto: knob = CV theta* x factor (nominal has no knob).
-                theta = cv_knobs.get(method, 0.0)
+                theta = lookup_knob(cv_knobs, method, _coherent, 0.0)
                 return _solver_at_knob(
                     method, theta * conservativeness, settings, model_type,
                     model_params, coherent_cache, ensembles_cache,
@@ -545,9 +551,10 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
         if settings["calibration_method"] == "cv" and cv_knobs is not None:
             if method == "nominal":
                 return solvers[method]
-            if method in cv_knobs:
+            theta = lookup_knob(cv_knobs, method, _coherent)
+            if theta is not None:
                 return _solver_at_knob(
-                    method, cv_knobs[method], settings, model_type, model_params,
+                    method, theta, settings, model_type, model_params,
                     coherent_cache, ensembles_cache,
                 )
         if method in ("cp", "nominal") or not calibrate:
@@ -787,9 +794,10 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
     """Stage 1: select each method's single robustness knob by held-out CV (temporal
     folds for gastric, KFold for synthetic), writing ``*_robustness_knobs.json`` +
     a resumable scores checkpoint. See ``src/methods/cv_calibrate``."""
+    import dataclasses
     from src.methods.cv_calibrate import (
         make_folds, make_cv_oracle, cv_score_knob, select_knob_cv,
-        load_score_checkpoint, append_score, write_knobs,
+        load_score_checkpoint, append_score, write_knobs, knob_key,
     )
     settings = _resolve_run_settings(config, args)
     cvc = config.get("cv_calibration", {})
@@ -845,18 +853,29 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
 
     knobs = {"nominal": 0.0}
     grids = cvc.get("knob_grids", {})
+    # theta* is calibrated PER (method, coherence) cell -- see cv_calibrate.knob_key.
+    # The scores CSV is keyed by a free-text `method` column and is resumable, so
+    # this doubles stage-1 work but never redoes a cell.
+    cells = cvc.get("coherence_cells", [True, False])
     # CP first (slowest / most likely to fail), then the rest.
     order = [m for m in ("cp", "robust_reg", "wrapper")
              if m in settings["methods_to_run"] and m in grids]
-    for method in order:
-        build, _ = _method_build_map(method, settings, ranges, model_type,
-                                     model_params, None, None)
-        theta, _rows = select_knob_cv(
-            build, grids[method], folds, oracle, instance, os_tol, nom_obj,
-            constraint_names=constraint_names, contextual=contextual, method=method,
-            score_fn=make_scorer(method, build),
+    for coherent in cells:
+        cell_settings = dict(settings)
+        cell_settings["uncertainty_set"] = dataclasses.replace(
+            settings["uncertainty_set"], coherent=bool(coherent)
         )
-        knobs[method] = float(theta)
+        print(f"\n[cv] === coherence cell: coherent={coherent} ===", flush=True)
+        for method in order:
+            key = knob_key(method, coherent)
+            build, _ = _method_build_map(method, cell_settings, ranges, model_type,
+                                         model_params, None, None)
+            theta, _rows = select_knob_cv(
+                build, grids[method], folds, oracle, instance, os_tol, nom_obj,
+                constraint_names=constraint_names, contextual=contextual, method=key,
+                score_fn=make_scorer(key, build),
+            )
+            knobs[key] = float(theta)
 
     write_knobs(knobs_path, knobs)
     return knobs
