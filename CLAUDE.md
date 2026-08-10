@@ -235,6 +235,24 @@ stronger adversary at a fixed radius, so reusing one θ* across both would
 confound coherence with conservatism. `cv_calibration.coherence_cells` controls
 which cells run; synthetic stays single-cell (coherence is vacuous there).
 
+## Presentations (`presentations/`)
+
+Beamer decks, named `research_update_YYYY-MM-DD.tex`; each new deck supersedes
+the last rather than editing it in place.
+
+- **Be very concise.** Terse bullet fragments, not prose. No lengthy sentences,
+  no sentences spanning several lines. One claim per bullet, numbers over
+  adjectives. Slides must fit — check the log for `Overfull \vbox` and cut text
+  (don't just shrink the font) until there are none.
+- **Build with `latexmk`, never bare `pdflatex`.** `presentations/.latexmkrc` sets
+  `$aux_dir = 'build'` and `$out_dir = '.'`, so any latexmk run whose cwd is
+  `presentations/` — including an editor's compile-on-save — keeps the `.pdf` (and
+  `.synctex.gz`) next to the `.tex` and puts `.aux`, `.log`, `.fls`,
+  `.fdb_latexmk`, `.nav`, `.out`, `.snm`, `.toc` in `build/`. Bare `pdflatex`
+  ignores the rc file and litters. `presentations/build.ps1` compiles every deck
+  this way. (A distinct `$aux_dir` relies on `-aux-directory`, which is
+  MiKTeX-only.)
+
 ## Conventions / gotchas
 
 - **Ground truth for evaluation is fixed and separate** from the embedded
