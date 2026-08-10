@@ -1107,7 +1107,8 @@ class _CoherentSeparation:
 
     def __init__(self, k_neighbors_frac, n_scenarios, alpha, single_point, dist_tol,
                  k_neighbors_min=1, cut_eviction="reject", base_scenario_ids=None,
-                 dist_tol_rel=None, prune_slack_cuts=True, objective_monotone=False):
+                 dist_tol_rel=None, prune_slack_cuts=True, objective_monotone=False,
+                 cut_whole_scenario=True):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_scenarios = n_scenarios
         self.alpha = alpha               # coverage cap: max fraction of x* infeasible
@@ -1134,6 +1135,9 @@ class _CoherentSeparation:
         # path's single global cut -- ten contexts, so ten bounds, each imposed
         # transiently while its own anchor is solved). Gated by the SAME flag.
         self.objective_monotone = objective_monotone
+        # Enforce every constraint of an accepted scenario, not just the breached
+        # subset -- see step(). This is what makes per-scenario exclusion sound.
+        self.cut_whole_scenario = cut_whole_scenario
         self.base_scenario_ids = set(base_scenario_ids or ())  # nominal cuts, never evicted
         self.obj_bound = {}          # a_idx -> best (max) objective seen so far
         self.prev_max_exceed = 0.0   # scale for the dynamic pruning threshold (raw)
@@ -1406,10 +1410,35 @@ class _CoherentSeparation:
             n_cells = max(1, n_points * n_outcomes)
             total_dist = sum_norm_exceed / n_cells
 
-            cuts = [
-                (c_idx, per_constraint_models[c_idx][0], per_constraint_models[c_idx][1])
-                for c_idx in sorted(violated_constraints)
-            ]
+            # Cut the WHOLE scenario, not just the constraints that happen to be
+            # violated at the current x*. A scenario is one coherent relabeling of
+            # the trial: if we accept it as plausible, every constraint under it
+            # should hold, not the subset that was breached at this particular x*.
+            #
+            # Three things follow. It matches what the wrapper enforces per
+            # replicate -- one shared indicator gated on ALL constraints holding
+            # (wrapper.py) -- so CP at tau->0 and the wrapper at alpha=0 are the
+            # same object on multi-constraint problems, not just on synthetic
+            # where the distinction is vacuous. It makes per-scenario exclusion
+            # CORRECT: a fully-cut scenario can never be violated again, whereas a
+            # partially-cut one could breach a different constraint at a moved x*
+            # and never be re-separated. And it makes the stopping rule a genuine
+            # statement about the whole bank rather than the scannable remainder.
+            #
+            # Cost: ~5 embedded models per accepted scenario instead of ~1.4.
+            # Set cut_whole_scenario=False for the old lazy-subset behaviour.
+            if self.cut_whole_scenario:
+                cuts = [(c_idx, models, rhs)
+                        for c_idx, (models, rhs) in sorted(per_constraint_models.items())]
+                # Only a genuinely violating scenario is a candidate -- otherwise
+                # every draw would qualify with distance 0.
+                if not violated_constraints and not obj_violated:
+                    cuts = []
+            else:
+                cuts = [
+                    (c_idx, per_constraint_models[c_idx][0], per_constraint_models[c_idx][1])
+                    for c_idx in sorted(violated_constraints)
+                ]
             # Robustify the objective with the same relabeling: raise the epigraph
             # floor t_obj to this scenario's (worse) objective.
             if obj_violated:
@@ -1583,6 +1612,7 @@ def _run_cp_loop(instance: ProblemInstance,
                  cp_n_scenarios: int = 200,
                  cp_d0_quantile: float = 0.9,
                  cp_objective_monotone: bool = False,
+                 cp_cut_whole_scenario: bool = True,
                  cp_mip_gap: float = 1e-4,
                  cp_uncertainty=None,
                  cp_bank=None,
@@ -1672,6 +1702,7 @@ def _run_cp_loop(instance: ProblemInstance,
             dist_tol_rel=cp_dist_tol_rel,
             prune_slack_cuts=not keep_all,
             objective_monotone=cp_objective_monotone,
+            cut_whole_scenario=cp_cut_whole_scenario,
         )
         mode = "coherent (single x*)" if single_point else "coherent (multi x*)"
 
@@ -1766,6 +1797,7 @@ def solve_cp(instance: ProblemInstance,
              cp_n_scenarios: int = 200,
              cp_d0_quantile: float = 0.9,
              cp_objective_monotone: bool = False,
+             cp_cut_whole_scenario: bool = True,
              cp_mip_gap: float = 1e-4,
              cp_uncertainty=None,
              cp_bank=None,
@@ -1825,6 +1857,7 @@ def solve_cp(instance: ProblemInstance,
         cp_n_scenarios=cp_n_scenarios,
         cp_d0_quantile=cp_d0_quantile,
         cp_objective_monotone=cp_objective_monotone,
+        cp_cut_whole_scenario=cp_cut_whole_scenario,
         cp_mip_gap=cp_mip_gap,
         cp_uncertainty=cp_uncertainty,
         cp_bank=cp_bank,

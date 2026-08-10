@@ -233,6 +233,19 @@ methods:
     # 1e-4 matches the final solve and the prescribe-time solve, so cuts are
     # generated at the same optimality the prescriptions are made at.
     mip_gap: 1.0e-4
+    # Cut the WHOLE scenario (every constraint under the accepted relabeling), not
+    # just the constraints breached at the current x*. A scenario is one coherent
+    # relabeling: if it is plausible, all of its constraints should hold. This is
+    # also exactly what the wrapper enforces per replicate (one shared indicator
+    # gated on ALL constraints), so CP at tau->0 and the wrapper at alpha=0 are the
+    # same object on multi-constraint problems -- not only on synthetic, where one
+    # constraint makes the distinction vacuous. And it makes per-scenario exclusion
+    # sound: a fully-cut scenario can never be violated again, whereas a
+    # partially-cut one could breach a different constraint at a moved x* and never
+    # be re-separated, leaving the stopping rule a statement about the scannable
+    # remainder rather than the whole bank.
+    # Costs ~5 embedded models per accepted scenario instead of ~1.4 on gastric.
+    cut_whole_scenario: true
 
   chemo:
     methods_to_run:

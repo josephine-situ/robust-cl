@@ -170,6 +170,7 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
         cp_d0_quantile=cp_cfg.get("d0_quantile", 0.9),
         cp_objective_monotone=cp_cfg.get("objective_monotone", False),
         cp_mip_gap=float(cp_cfg.get("mip_gap", 1e-4)),
+        cp_cut_whole_scenario=cp_cfg.get("cut_whole_scenario", True),
         cp_uncertainty=uncertainty_set_from_config(config),
     )
 
