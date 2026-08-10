@@ -115,6 +115,7 @@ def _resolve_run_settings(config, args):
     settings["cp_scenario_source"] = cp_cfg.get("scenario_source", "noise")
     settings["cp_d0_quantile"] = cp_cfg.get("d0_quantile", 0.9)
     settings["cp_objective_monotone"] = cp_cfg.get("objective_monotone", False)
+    settings["cp_mip_gap"] = float(cp_cfg.get("mip_gap", 1e-4))
     # B: CP embeds one extra scenario per iteration, so it can afford a bank far
     # larger than the wrapper's P (which is embedded in full). --quick shrinks it.
     settings["cp_n_scenarios"] = (
@@ -273,6 +274,7 @@ def _cp_solver(settings, model_type, model_params, cp_alpha=0.0,
         cp_n_scenarios=settings["cp_n_scenarios"],
         cp_d0_quantile=settings["cp_d0_quantile"],
         cp_objective_monotone=settings["cp_objective_monotone"],
+        cp_mip_gap=settings["cp_mip_gap"],
         cp_uncertainty=settings["uncertainty_set"],
     )
 

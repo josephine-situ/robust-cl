@@ -72,13 +72,22 @@ class CPMultiAnchorResult:
 class IncrementalMaster:
     """Keeps the Gurobi model in memory to add constraints incrementally."""
 
-    def __init__(self, instance: ProblemInstance, obj_terms: list, rho: float = 0.0):
+    def __init__(self, instance: ProblemInstance, obj_terms: list, rho: float = 0.0,
+                 mip_gap: float = 1e-4):
         self.instance = instance
         self.d = instance.n_features
         self.rho = rho
         self.opt = gp.Model("cp_incremental_master")
         self.opt.Params.OutputFlag = 0
-        self.opt.Params.MIPGap = 0.01
+        # Gap for the CUT LOOP. 0.01 (1%) was far too loose on gastric: the
+        # objective is ~10, so 1% is ~0.1, while the scenario distances being
+        # separated are ~0.007 -- cuts an order of magnitude below the solver's own
+        # stopping tolerance, so it returned the SAME incumbent for different cut
+        # sets and x* stopped moving. Synthetic never hit this (objective ~1.2,
+        # distances ~0.1, so cuts sit above the gap). Matches the final solve and
+        # the prescribe-time solve, so cuts are generated at the same optimality
+        # the prescriptions are made at.
+        self.opt.Params.MIPGap = mip_gap
         self.opt.Params.MIPFocus = 1
         self.opt.Params.Threads = 0
 
@@ -447,7 +456,8 @@ def _write_cp_trace(history: "CPHistory", path: Optional[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _build_master_with_nominal(instance, model_type, model_params, rho,
-                               robustify_objective: bool = True):
+                               robustify_objective: bool = True,
+                               mip_gap: float = 1e-4):
     """Train nominal models, build the master MIP, embed objective + initial cuts.
 
     Returns ``(master, model_config_map)`` where ``model_config_map`` maps each
@@ -455,7 +465,7 @@ def _build_master_with_nominal(instance, model_type, model_params, rho,
     bootstrap retraining during separation.
     """
     trained_constraints = _train_nominal_with_configs(instance, model_type, model_params)
-    master = IncrementalMaster(instance, [], rho=rho)
+    master = IncrementalMaster(instance, [], rho=rho, mip_gap=mip_gap)
 
     nominal_obj_terms = []
     for c_idx, constraint_models in enumerate(trained_constraints):
@@ -607,33 +617,33 @@ def _solve_all_anchors(master, instance, anchors, obj_bounds=None,
     return feasible, p_infeas, n_bound_blocked
 
 
-def _p_infeas_after_cuts(master, instance, anchors, feasible, n_infeas_base, alpha):
-    """Check whether p_infeas stays within alpha after recently-added cuts.
+def _protected_still_feasible(master, instance, anchors, protected, order=None):
+    """Do all ``protected`` anchors remain feasible after the cuts just added?
 
-    Anchors that were already infeasible before this call remain infeasible
-    (cuts only tighten), so ``n_infeas_base`` is a free lower bound on the
-    result. We solve only the currently-feasible subset, sorted by **descending
-    obj_q**: anchors that achieved a higher objective under the current cuts
-    were closer to the feasibility boundary and are the most likely to flip
-    infeasible first, maximising the chance of an early exit.
+    ``protected`` is the **fixed** set of anchors the NOMINAL fit could serve,
+    measured once before any cut. Pinning the reference there, rather than
+    recomputing it each iteration, matters for three reasons:
 
-    Returns ``(p_infeas_after, fits)`` where ``fits = p_infeas_after <= alpha``.
-    The ``p_infeas_after`` value may be a lower bound (not the true fraction)
-    when we exit early -- callers should only use it for rejection (fits=False).
+    - It is the meaningful requirement: "CP may not break an anchor the nominal
+      model already served". A per-iteration baseline is a ratchet -- once one
+      anchor drops out the cap loosens, legitimising the next drop.
+    - It is **set-wise**, not count-wise. A count would let CP trade one
+      patient's feasibility for another's, which is arbitrary and unstable.
+    - It makes rejections **permanent**: the cap no longer moves and the master
+      only tightens, so a cut that breaks a protected anchor once breaks it
+      always. That is what lets the caller cache rejected scenarios instead of
+      re-deriving them every iteration.
+
+    ``order`` optionally sorts the anchors most-likely-to-fail first (anchors
+    that achieved a higher objective sit closer to the boundary), maximising the
+    chance of an early exit. Returns ``(n_broken, fits)``.
     """
-    n_total = len(anchors)
-    n_infeas = n_infeas_base
-    # Pre-check: already over budget before solving anything.
-    if n_infeas > (alpha + 1e-12) * n_total:
-        return n_infeas / n_total, False
-    for a_idx, _, _ in sorted(feasible, key=lambda t: t[2], reverse=True):
+    seq = [a for a in (order or sorted(protected)) if a in protected]
+    for a_idx in seq:
         _fix_anchor_context(master, instance, anchors[a_idx])
-        x_q, _ = master.solve()
-        if x_q is None:
-            n_infeas += 1
-            if n_infeas > (alpha + 1e-12) * n_total:
-                return n_infeas / n_total, False
-    return n_infeas / n_total, True
+        if master.solve()[0] is None:
+            return 1, False        # one broken protected anchor is enough
+    return 0, True
 
 
 def _resolve_distance(cp_distance, instance):
@@ -722,6 +732,11 @@ class _SepEnv:
     # None restores the legacy localized-bootstrap path.
     bank: Optional[object] = None
     d0_quantile: float = 0.9
+    # Smallest normalized distance worth separating. The master is solved to
+    # `mip_gap` relative optimality, so cuts whose effect falls below that leave
+    # x* unmoved -- separating there burns iterations for nothing. Expressed in
+    # the same normalized-distance units as the tolerance.
+    resolution_floor: float = 0.0
 
 
 def _scenario_models(inst: ProblemInstance, model_map: dict, obj_specs: list):
@@ -753,6 +768,7 @@ def _report_cp_diagnostics(strategy, status: str) -> None:
     print(
         f"    [cp] diagnostics: status={status}, "
         f"objective regressions={strategy.n_obj_regressions}, "
+        f"permanent rejections={getattr(strategy, 'n_rejections', 0)}, "
         f"anchor solves infeasible={infeas}/{solves} ({100 * infeas / solves:.1f}%), "
         f"bound-blocked={blocked}/{solves} ({100 * blocked / solves:.1f}%)",
         flush=True,
@@ -996,7 +1012,8 @@ class _BasicSeparation:
         if self._tol is None:
             if self.dist_tol_rel is not None and all_viol:
                 d0 = _resolve_d0(all_viol, env.d0_quantile)
-                self._tol = max(float(self.dist_tol_rel) * d0, 1e-6)
+                self._tol = max(float(self.dist_tol_rel) * d0,
+                                env.resolution_floor, 1e-6)
                 print(
                     f"    [cp] d0={d0:.4f} (q{env.d0_quantile:g} of {len(all_viol)} "
                     f"iter-0 scenario violations; max={max_violation:.4f}); "
@@ -1133,6 +1150,12 @@ class _CoherentSeparation:
         self.n_anchor_solves = 0
         self.n_anchor_infeasible = 0
         self.seen_states: dict = {}   # active-cut-set hash -> iteration first seen
+        # Fixed at the nominal-feasible anchors on the first step, never recomputed.
+        self.protected_anchors = None
+        # Bank draws whose cut broke a protected anchor. Permanent -- see
+        # _protected_still_feasible. Disabled under eviction (non-monotone master).
+        self.rejected_draws: set = set()
+        self.n_rejections = 0
 
     def _evict_to_fit(self, master, inst, anchors, added_ids, min_slack, baseline_infeas):
         """Evict the most-slack ACTIVE non-base scenario (keeping the just-added,
@@ -1315,7 +1338,11 @@ class _CoherentSeparation:
                 if sid < len(master.scenario_constrs)
                 and master.scenario_constrs[sid] is not None
             }
-            scenarios = [b for b in range(len(env.bank)) if b not in active]
+            # Skip permanently-rejected draws here too, not just at acceptance:
+            # scoring them means retraining nothing but re-predicting at every
+            # (anchor x outcome) cell for a scenario we already know we cannot use.
+            skip = active | self.rejected_draws
+            scenarios = [b for b in range(len(env.bank)) if b not in skip]
             pool_frac = float("nan")
         else:
             # Legacy: shared, decision-dependent localized pool -> B coherent scenarios.
@@ -1402,11 +1429,23 @@ class _CoherentSeparation:
         if self._tol is None:
             if self.dist_tol_rel is not None:
                 d0 = _resolve_d0(all_dists, env.d0_quantile)
-                self._tol = float(self.dist_tol_rel) * d0
+                raw = float(self.dist_tol_rel) * d0
+                # Never separate below what the master is solved to. The solver
+                # returns any incumbent within `mip_gap` of optimal, so a cut whose
+                # effect is smaller than that leaves x* unmoved and the iteration
+                # accomplishes nothing. Reported explicitly: a floored tolerance
+                # means every tau below the floor gives the SAME run, so a tau grid
+                # must be spanned above it to be informative.
+                floor = env.resolution_floor
+                self._tol = max(raw, floor)
+                note = "" if raw >= floor else (
+                    f"  [FLOORED at solver resolution {floor:.5f}; "
+                    f"tau<={raw / d0 if d0 else 0:.3g} all give this run]"
+                )
                 print(
                     f"    [cp] d0={d0:.4f} (q{env.d0_quantile:g} of {len(all_dists)} "
                     f"iter-0 scenario distances; max={best_dist:.4f}); "
-                    f"tau={self.dist_tol_rel:g} -> dist_tol={self._tol:.5f}",
+                    f"tau={self.dist_tol_rel:g} -> dist_tol={self._tol:.5f}{note}",
                     flush=True,
                 )
             else:
@@ -1428,29 +1467,45 @@ class _CoherentSeparation:
         if best_dist <= self._tol:
             return _StepResult(stop=True, status="optimal", obj=last_obj, violation=history_viol)
 
-        # Single-lever CP: the "budget" is the current baseline of infeasible anchors,
-        # i.e. a cut may not make any currently-FEASIBLE anchor infeasible, but
-        # anchors already infeasible under the nominal fit are tolerated (nominal is
-        # not guaranteed feasible for every context). No pre-check stop -- the
-        # baseline is trivially within its own budget; eviction/rollback enforces
-        # "no new infeasibility".
-        n_infeas_base = len(env.anchors) - len(feasible)
-        feas_alpha = n_infeas_base / len(env.anchors)
+        # Single-lever CP: the protected set is FIXED at the anchors the nominal
+        # fit could serve (captured at iteration 0, before any cut). A cut may not
+        # break any of them. Anchors the nominal fit already failed are tolerated
+        # -- nominal is not guaranteed feasible for every context.
+        if self.protected_anchors is None:
+            self.protected_anchors = frozenset(a_idx for a_idx, _, _ in feasible)
+            print(
+                f"    [cp] protected anchors fixed at the nominal-feasible set: "
+                f"{len(self.protected_anchors)}/{len(env.anchors)}",
+                flush=True,
+            )
+        # Anchors closest to the boundary first -> earliest possible exit.
+        order = [a for a, _, _ in sorted(feasible, key=lambda t: t[2], reverse=True)]
 
         for cand_rank, (_dist, _mx, cuts, draw) in enumerate(candidates):
+            # Rejections are permanent: the protected set is fixed and the master
+            # only tightens, so a cut that broke a protected anchor once always
+            # will. Skipping them is exact, and it is where the time goes --
+            # rollbacks were growing 8 -> 44 per iteration, each costing a pass
+            # over the anchors.
+            if draw in self.rejected_draws:
+                continue
             added_ids = []
             for c_idx, models, rhs in cuts:
                 master.add_scenario(c_idx, models, rhs, rho=env.rho)
                 added_ids.append(master.n_models - 1)
-            p_infeas_after, fits = _p_infeas_after_cuts(
-                master, inst, env.anchors, feasible, n_infeas_base, feas_alpha
+            n_broken, fits = _protected_still_feasible(
+                master, inst, env.anchors, self.protected_anchors, order
             )
+            p_infeas_after = (
+                len(env.anchors) - len(self.protected_anchors) + n_broken
+            ) / len(env.anchors)
             # evict_slack: keep the relevant new cut and evict stale scenarios to
             # restore feasibility instead of rejecting the new cut outright.
             evicted = []
             if not fits and evicting:
                 fits, evicted = self._evict_to_fit(
-                    master, inst, env.anchors, added_ids, min_slack, n_infeas_base
+                    master, inst, env.anchors, added_ids, min_slack,
+                    len(env.anchors) - len(self.protected_anchors),
                 )
             if fits:
                 self.last_added_ids = added_ids
@@ -1477,10 +1532,17 @@ class _CoherentSeparation:
             for s in reversed(added_ids):
                 master.remove_scenario(s)
             master.opt.update()
+            # Permanent under a fixed protected set + monotone master (see
+            # _protected_still_feasible); never retried, so the per-iteration
+            # rollback storm cannot recur.
+            if not evicting:
+                self.rejected_draws.add(draw)
+                self.n_rejections += 1
             reject_msg = (
                 "would become infeasible"
                 if self.single_point
-                else f"p_infeas_after={p_infeas_after*100:.1f}% > alpha {feas_alpha*100:.1f}%"
+                else f"breaks a protected anchor "
+                     f"(p_infeas would be {p_infeas_after*100:.1f}%)"
             )
             evict_note = f" (also evicted {evicted}, kept removed)" if evicted else ""
             print(
@@ -1521,6 +1583,7 @@ def _run_cp_loop(instance: ProblemInstance,
                  cp_n_scenarios: int = 200,
                  cp_d0_quantile: float = 0.9,
                  cp_objective_monotone: bool = False,
+                 cp_mip_gap: float = 1e-4,
                  cp_uncertainty=None,
                  cp_bank=None,
                  cp_trace_path: Optional[str] = None) -> tuple[SolutionResult, CPHistory]:
@@ -1532,6 +1595,7 @@ def _run_cp_loop(instance: ProblemInstance,
     master, model_config_map = _build_master_with_nominal(
         instance, model_type, model_params, rho,
         robustify_objective=cp_robustify_objective,
+        mip_gap=cp_mip_gap,
     )
     # Scenarios added during the build are the NOMINAL (point-estimate) cuts; they are
     # the feasible base and must never be evicted.
@@ -1565,6 +1629,7 @@ def _run_cp_loop(instance: ProblemInstance,
         rho=rho, seed=seed,
         k_neighbors_min=cp_k_neighbors_min,
         bank=bank, d0_quantile=cp_d0_quantile,
+        resolution_floor=cp_mip_gap,
     )
 
     n_constraints = sum(1 for c in instance.constraints if _is_constraint_constraint(c))
@@ -1701,6 +1766,7 @@ def solve_cp(instance: ProblemInstance,
              cp_n_scenarios: int = 200,
              cp_d0_quantile: float = 0.9,
              cp_objective_monotone: bool = False,
+             cp_mip_gap: float = 1e-4,
              cp_uncertainty=None,
              cp_bank=None,
              ) -> tuple:
@@ -1759,6 +1825,7 @@ def solve_cp(instance: ProblemInstance,
         cp_n_scenarios=cp_n_scenarios,
         cp_d0_quantile=cp_d0_quantile,
         cp_objective_monotone=cp_objective_monotone,
+        cp_mip_gap=cp_mip_gap,
         cp_uncertainty=cp_uncertainty,
         cp_bank=cp_bank,
     )

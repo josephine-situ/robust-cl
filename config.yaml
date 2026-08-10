@@ -225,6 +225,14 @@ methods:
     # pruning/eviction safely. Applies to BOTH paths (one global cut on synthetic's
     # single context, per-anchor transient bounds on gastric's ten).
     objective_monotone: false
+    # MIP gap for the CUT LOOP. Was hard-coded at 0.01 (1%), which on gastric is
+    # ~0.1 of an objective of ~10 -- while the scenario distances being separated
+    # are ~0.007. Cuts an order of magnitude below the solver's stopping tolerance
+    # left x* unmoved for different cut sets (iterations 6 and 7 of the 2026-08-10
+    # trace are identical to 4dp), which is also why tau collapsed below 0.75.
+    # 1e-4 matches the final solve and the prescribe-time solve, so cuts are
+    # generated at the same optimality the prescriptions are made at.
+    mip_gap: 1.0e-4
 
   chemo:
     methods_to_run:
