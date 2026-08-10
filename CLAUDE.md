@@ -116,13 +116,43 @@ solutions). **There is no separation flag.**
 
 **Scenarios come from a fixed bank** (`cp.scenario_source: "noise"`, default).
 The legacy `"bootstrap"` path redrew every iteration while `d0` stayed frozen from
-iteration 0, so the stopping rule compared *different samples* with sampling noise
-the size of the signal — CP never converged and every τ ≤ 0.5 gave an identical
-20-iteration run. With the bank fixed, τ responds and CP converges.
+iteration 0, so the stopping rule compared *different samples*. Kept as an ablation.
 
-Note what this does **not** buy: the violation trace is still non-monotone. It is
-measured at the current $x^*$, which moves each iteration, and a cut only
-guarantees *its* scenario holds at the new $x^*$.
+### Four things that had to be right before CP converged on gastric
+
+Each was found by a run, not by reading. In combination they took gastric from an
+exact period-4 cycle (never converging, τ inert across its whole grid) to
+`status=optimal` in 19 iterations.
+
+1. **`cp.mip_gap` (default `1e-4`, was hard-coded `0.01`).** The single biggest
+   one. At 1% on a gastric objective of ~10 the solver returns any incumbent
+   within ~0.1, while the distances being separated are ~0.007 — so cuts an order
+   of magnitude below the solver's own tolerance left $x^*$ unmoved and different
+   cut sets produced identical solutions. **Synthetic never hit this** (objective
+   ~1.2, distances ~0.1, so its cuts sit above the gap): same code, opposite
+   regimes. The loop now matches the final and prescribe-time solves.
+2. **Nothing is removed from the master** under a fixed bank — `prune_slack_cuts`
+   is off and `cut_eviction: "reject"`. Removing a cut lets a previous $x^*$ recur,
+   which is what a cycle *is*. With nothing removed the eligible set strictly
+   shrinks, so CP terminates in ≤ B iterations on both problems.
+3. **The protected anchor set is fixed**, not recomputed per iteration — the
+   anchors the *nominal* fit could serve (8/10 on gastric), tested **set-wise** so
+   CP can't trade one patient's feasibility for another's. The old per-iteration
+   baseline was a ratchet.
+4. **Rejections are cached** (113 of 200 draws on gastric), which (3) makes sound:
+   with a fixed protected set and a monotone master, a cut that breaks a protected
+   anchor always will. Without this, rollbacks grew 8 → 44 per iteration.
+
+`cp.objective_monotone` (default off) adds a no-deterioration cut in both paths.
+It is redundant while nothing is removed, and is the lever for re-enabling
+pruning/eviction safely. Note it constrains $x$ in both settings — `obj_expr` is
+`c'x` on synthetic and `−OS(x)` on gastric under `robustify_objective: false` — but
+would be **vacuous** under `robustify_objective: true`, where `obj_expr` becomes
+the free epigraph variable `t_obj`.
+
+`_report_cp_diagnostics` prints per-run cycle status, objective regressions,
+permanent rejections, and anchor-infeasibility / bound-blocked rates. These are
+reported, never acted on automatically.
 
 **`d0` is a high quantile** (`cp.d0_quantile`, default 0.9) of the iteration-0
 scenario distances, **not their max** — the max grows with B, and CP (B=200) and

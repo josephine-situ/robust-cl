@@ -32,7 +32,7 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # method's Pareto grid on theta* (--pareto-center-cv).
 #
 # JOB ARRAY (capped at 2 concurrent = the Gurobi session limit):
-#   0 : headline confirmation   nominal/robust_reg/cp, frac=0.5, rhs=0.6,      R=30
+#   0 : headline confirmation   nominal/robust_reg/cp, frac=0.5, rhs=0.6,      R=10
 #   1 : RHS frontier            nominal/robust_reg/cp, frac=0.5, rhs 0.4..0.8, R=10
 #   2 : frac (scarcity) frontier nominal/robust_reg/cp, rhs=0.6, frac 0.3..0.8, R=10
 #   3 : wrapper (headline cell)  wrapper,               frac=0.5, rhs=0.6,      R=10
@@ -42,7 +42,12 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # Outputs: results/gastric/chemo_robust_{realizations,robustness_summary}_<TAG>_sweep.csv
 # (frontier CSVs carry rhs, frac, and/or strength columns for the figures.)
 # ============================================================================
-R_CONFIRM="${R_CONFIRM:-30}"
+# 10 draws everywhere. The headline used to run 30 while the wrapper (task 3) ran
+# 10, so the wrapper was never comparable and had to be excluded from the figures.
+# Equal draws also stop tasks 1/2/4 hitting the 12h wall, which is what killed them
+# on 2026-08-10. Raise R_CONFIRM in a later run once the numbers are trusted -- the
+# only cost of 10 is a wider worst-case band.
+R_CONFIRM="${R_CONFIRM:-10}"
 R_SWEEP="${R_SWEEP:-10}"
 FRAC_GRID="${FRAC_GRID:-0.3 0.4 0.5 0.6 0.7 0.8}"   # uniform scarcity axis
 CONS_GRID="${CONS_GRID:-0 0.25 0.5 0.75 1.0}"       # conservativeness strengths

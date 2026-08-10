@@ -163,27 +163,28 @@
 \end{frame}
 
 % ---------------------------------------------------------------------------
-\begin{frame}{What the fixed bank does and does not buy}
+\begin{frame}{The fixed bank was necessary but not sufficient}
   \small
-  \textbf{Does} --- measured on synthetic:
-  \begin{itemize}
-    \item \textbf{$\tau$ does something.} $\tau=0.8$ stops at 3 iterations
-      (obj $-1.2767$); $\tau\le0.4$ runs 4 ($-1.2426$). CP \emph{converges} rather
-      than exhausting its iteration budget.
-    \item $d_0$ and every later measurement refer to the same population, so the
-      comparison is meaningful.
-  \end{itemize}
+  With the bank fixed, gastric \emph{still} cycled --- an exact period-4 loop
+  through iteration 19. Four further faults had to be fixed, each found by a run:
+  \begin{enumerate}
+    \item \textbf{The MIP gap.} The cut loop solved at $1\%$. On gastric that is
+      $\approx0.1$ of an objective of $\approx10$, while the distances being
+      separated are $\approx0.007$ --- cuts an order of magnitude below the
+      solver's own stopping tolerance, so it returned the \emph{same} incumbent
+      for different cut sets. Synthetic never hit this (objective $\approx1.2$,
+      distances $\approx0.1$): same code, opposite regimes.
+    \item \textbf{Cut removal.} Pruning/eviction let a previous $x^\ast$ recur ---
+      which is what a cycle is. Nothing is removed now, so the eligible set
+      strictly shrinks and CP terminates in $\le B$ iterations.
+    \item \textbf{A drifting coverage baseline}, recomputed each iteration. Now
+      pinned to the anchors the \emph{nominal} fit could serve (8/10), set-wise.
+    \item \textbf{No rejection memory} --- rollbacks grew $8\to44$ per iteration
+      re-deriving known answers. Fixing (3) makes caching provably exact.
+  \end{enumerate}
   \medskip
-  \textbf{Does not} --- a claim we made and then had to withdraw:
-  \begin{itemize}
-    \item The violation trace is \textbf{still not monotone}:
-      $0.132 \to 0.144 \to 0.073 \to -0.007$.
-    \item Why: violation is measured at the \emph{current} $x^\ast$, which moves
-      each iteration. A cut guarantees only that \emph{its} scenario is satisfied
-      at the new $x^\ast$ --- not that the max over the rest fell.
-    \item Cutting-plane theory gives monotone \emph{bounds}, not monotone
-      separation values --- and eviction/pruning deliberately break even that.
-  \end{itemize}
+  \textbf{Result}: gastric \texttt{status=optimal} in 19 iterations, 0 cycles,
+  0 objective regressions. Synthetic unchanged (6 iterations).
 \end{frame}
 
 % ---------------------------------------------------------------------------
