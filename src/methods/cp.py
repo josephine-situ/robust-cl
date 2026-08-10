@@ -105,6 +105,14 @@ class IncrementalMaster:
         add_domain_constraints(self.opt, self.x, instance)
         add_trust_region(self.opt, self.x, instance)
 
+        # anchor index -> its last known x*, used as a MIP start when that same
+        # anchor is re-solved. Each anchor pins its own context (_fix_anchor_context
+        # rewrites variable bounds), so an incumbent is only reusable for the anchor
+        # that produced it -- which is why solving them in a loop otherwise starts
+        # cold every time. A cut targets one worst scenario, so most anchors' previous
+        # solutions survive it and hand Gurobi an immediate incumbent.
+        self.anchor_starts = {}
+
         self.n_models = 0
         self.scenario_constrs = []
         self.scenario_vars_map = {}
@@ -208,11 +216,32 @@ class IncrementalMaster:
         self.opt.addConstr(self.obj_expr >= obj_val, name=f"obj_bound_{iteration}")
         self.opt.update()
 
-    def solve(self):
+    def apply_start(self, key):
+        """Warm-start from this anchor's previous ``x*``, if we have one.
+
+        Gurobi silently drops a start that violates current bounds or cuts, so a
+        stale one costs nothing; a surviving one skips the search for a first
+        incumbent and leaves only the optimality proof.
+        """
+        vals = self.anchor_starts.get(key)
+        if vals is None:
+            return
+        for var, v in zip(self.x, vals):
+            var.Start = v
+
+    def record_start(self, key, x_vals):
+        self.anchor_starts[key] = [float(v) for v in x_vals]
+
+    def solve(self, start_key=None):
+        if start_key is not None:
+            self.apply_start(start_key)
         self.opt.optimize()
         if self.opt.Status != GRB.OPTIMAL:
             return None, np.inf
-        return np.array([v.X for v in self.x]), self.opt.ObjVal
+        x_vals = np.array([v.X for v in self.x])
+        if start_key is not None:
+            self.record_start(start_key, x_vals)
+        return x_vals, self.opt.ObjVal
 
 
 def prune_inactive_scenarios(master: IncrementalMaster, slack_threshold: float = 0.1):
@@ -585,7 +614,7 @@ def _solve_all_anchors(master, instance, anchors, obj_bounds=None,
                 )
                 master.opt.update()
 
-            x_q, obj_q = master.solve()
+            x_q, obj_q = master.solve(start_key=a_idx)
 
             if collect_slack and x_q is not None:
                 for s, constr in enumerate(master.scenario_constrs):
@@ -605,7 +634,7 @@ def _solve_all_anchors(master, instance, anchors, obj_bounds=None,
             n_infeas += 1
             if tmp is not None:
                 # Attribute the cause: was it the bound, or the cuts?
-                x_free, _ = master.solve()
+                x_free, _ = master.solve(start_key=a_idx)
                 if x_free is not None:
                     n_bound_blocked += 1
         else:
@@ -641,7 +670,12 @@ def _protected_still_feasible(master, instance, anchors, protected, order=None):
     seq = [a for a in (order or sorted(protected)) if a in protected]
     for a_idx in seq:
         _fix_anchor_context(master, instance, anchors[a_idx])
-        if master.solve()[0] is None:
+        # Warm-started: this check is dominated by anchors that come back FEASIBLE
+        # (all of them for an accepted candidate, and every one before the breaking
+        # anchor in a rejection). A surviving incumbent removes the search for a
+        # first solution. It cannot help the decisive infeasible solve -- proving no
+        # solution exists means exhausting the search regardless.
+        if master.solve(start_key=a_idx)[0] is None:
             return 1, False        # one broken protected anchor is enough
     return 0, True
 
