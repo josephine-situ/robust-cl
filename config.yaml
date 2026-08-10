@@ -166,6 +166,13 @@ methods:
     # One solve_cp driver; separation is auto-selected from the problem shape
     # (basic for a single-LP/single-constraint case, coherent otherwise).
     max_iterations: 20
+    # Per-iteration CSV trace (iteration, max_violation, objective). null = off.
+    # It is rewritten by EVERY CP solve, so across a robustness run (R realizations
+    # x RHS x constraint modes, and per-anchor masters under
+    # eval_mode: per_anchor_nearest) only the last loop survives, with no key
+    # saying which. The same per-iteration numbers are in the stdout log, keyed by
+    # the run. Off by default; set a path to inspect a single CP loop.
+    trace_path: null
     # Contextual (gastric): anchors are representative cohorts at which we collect
     # an optimal solution x* (one per context).
     anchor_source: "train"   # "train" (offline, no test labels) | "test" (online)

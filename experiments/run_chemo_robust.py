@@ -105,7 +105,11 @@ def _resolve_run_settings(config, args):
 
     settings["cp_anchor_source"] = cp_cfg.get("anchor_source", "train")
     settings["cp_anchor_method"] = cp_cfg.get("anchor_method", "kmedoids")
-    settings["cp_trace_path"] = "results/gastric/cp_trace.csv"
+    # Off unless methods.cp.trace_path is set: every CP solve rewrites the same
+    # file, so over a robustness run only the last loop survives and nothing in it
+    # says which realization/RHS/mode it came from. The stdout log carries the same
+    # per-iteration numbers in context.
+    settings["cp_trace_path"] = cp_cfg.get("trace_path") or None
     settings["cp_distance"] = cp_cfg.get("distance", "full")
     settings["cp_dist_tol"] = cp_cfg.get("dist_tol", 1e-3)
     settings["cp_robustify_objective"] = cp_cfg.get("robustify_objective", True)
