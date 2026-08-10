@@ -207,12 +207,24 @@ methods:
     # Single-lever CP: the coverage cap alpha is pinned at 0 (cuts that break a
     # training anchor are rolled back / evicted, keeping the training set feasible),
     # so dist_tol is CP's ONLY robustness knob -- symmetric with the one-knob baselines.
-    cut_eviction: "evict_slack" # on infeasibility, evict the most-slack ACTIVE scenario
-                                # cut (keep the current-x*-relevant new cut) then retry;
-                                # "reject" = drop the new cut instead (legacy behavior).
-                                # Nominal constraints are never evicted. Under evict_slack
-                                # the no-deterioration objective bounds are disabled (the
-                                # working set is non-monotone).
+    # RETENTION. Under a fixed bank nothing is removed from the master:
+    # slack-pruning is off (cp.py sets prune_slack_cuts = not keep_all) and
+    # cut_eviction is "reject", which drops the *new* cut rather than removing an
+    # existing one. Both problems then share one policy, the eligible scenario set
+    # strictly shrinks, and CP terminates in at most B iterations.
+    #
+    # Why: the 2026-08-10 gastric run used "evict_slack" + pruning and produced an
+    # EXACT period-4 cycle through iteration 19, which left tau inert across its
+    # whole grid (identical CV feasibility/objective to 16 digits for tau 0.1..1.0).
+    # Removing cuts is what lets a previous x* recur. Synthetic never cycled -- it
+    # has no eviction path at all -- so this also makes the two settings consistent.
+    cut_eviction: "reject"      # "reject" | "evict_slack" (cycles; kept for reproduction)
+    # No-deterioration objective cut: forbid the master returning to a better
+    # objective than already attained. Redundant while nothing is removed, so it is
+    # OFF for the keep-everything experiment; turning it on is how we would re-enable
+    # pruning/eviction safely. Applies to BOTH paths (one global cut on synthetic's
+    # single context, per-anchor transient bounds on gastric's ten).
+    objective_monotone: false
 
   chemo:
     methods_to_run:

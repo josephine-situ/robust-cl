@@ -179,6 +179,23 @@ class IncrementalMaster:
         self.n_models += 1
 
     def add_objective_cut(self, obj_val: float, iteration: int):
+        """No-deterioration cut ``obj_expr >= obj_val``: forbid the master from
+        returning to a better objective than it has already attained.
+
+        Scenario cuts only tighten the feasible region, so a minimum can only
+        rise; this is therefore REDUNDANT while nothing is removed, and bites only
+        once cuts can be pruned or evicted -- which is exactly when a previous
+        ``x*`` can recur and CP can cycle.
+
+        It constrains ``x`` in both problem settings, despite appearances:
+        ``obj_expr`` is ``c'x`` on synthetic (no learned objective) and
+        ``base_cost + sum(obj_terms(x))`` = ``-OS(x)`` on gastric under
+        ``robustify_objective: false`` (``_build_master_with_nominal``). It would
+        be vacuous only under ``robustify_objective: true``, where ``obj_expr``
+        becomes the free epigraph variable ``t_obj`` and bounding it merely raises
+        ``t_obj`` without moving ``x``. Callers gate on ``objective_monotone``;
+        the old ``t_obj is not None`` guard made this dead code on both problems.
+        """
         self.opt.addConstr(self.obj_expr >= obj_val, name=f"obj_bound_{iteration}")
         self.opt.update()
 
@@ -536,42 +553,58 @@ def _solve_all_anchors(master, instance, anchors, obj_bounds=None,
     ``collect_slack`` -- if True, also return ``{scenario_idx: min slack across
     feasible anchors}`` for the active scenario constraints (for multi-anchor
     pruning: a cut is globally inactive only if it is slack at *every* ``x*``).
+
+    Returns ``(feasible, p_infeas[, min_slack], n_bound_blocked)``.
+    ``n_bound_blocked`` counts anchors that were infeasible ONLY because of the
+    no-deterioration bound -- attributed by one re-solve without it, purely to
+    report the cause. The anchor is still counted infeasible: we flag rather than
+    silently relax, so a bound that is doing more harm than good is visible.
     """
     feasible = []
     n_infeas = 0
+    n_bound_blocked = 0
     min_slack = {} if collect_slack else None
     for a_idx, anchor in enumerate(anchors):
         _fix_anchor_context(master, instance, anchor)
 
         tmp = None
-        if obj_bounds is not None and a_idx in obj_bounds:
-            tmp = master.opt.addConstr(
-                master.obj_expr >= obj_bounds[a_idx], name=f"obj_bnd_{a_idx}"
-            )
-            master.opt.update()
+        try:
+            if obj_bounds is not None and a_idx in obj_bounds:
+                tmp = master.opt.addConstr(
+                    master.obj_expr >= obj_bounds[a_idx], name=f"obj_bnd_{a_idx}"
+                )
+                master.opt.update()
 
-        x_q, obj_q = master.solve()
+            x_q, obj_q = master.solve()
 
-        if collect_slack and x_q is not None:
-            for s, constr in enumerate(master.scenario_constrs):
-                if constr is not None:
-                    sl = constr.Slack
-                    if s not in min_slack or sl < min_slack[s]:
-                        min_slack[s] = sl
-
-        if tmp is not None:
-            master.opt.remove(tmp)
-            master.opt.update()
+            if collect_slack and x_q is not None:
+                for s, constr in enumerate(master.scenario_constrs):
+                    if constr is not None:
+                        sl = constr.Slack
+                        if s not in min_slack or sl < min_slack[s]:
+                            min_slack[s] = sl
+        finally:
+            # Must not survive into the prescribe phase: the master object is
+            # handed back and re-solved per test row, so a leaked bound derived
+            # from TRAINING anchors would silently distort every prescription.
+            if tmp is not None:
+                master.opt.remove(tmp)
+                master.opt.update()
 
         if x_q is None:
             n_infeas += 1
+            if tmp is not None:
+                # Attribute the cause: was it the bound, or the cuts?
+                x_free, _ = master.solve()
+                if x_free is not None:
+                    n_bound_blocked += 1
         else:
             feasible.append((a_idx, x_q, obj_q))
 
     p_infeas = n_infeas / len(anchors)
     if collect_slack:
-        return feasible, p_infeas, min_slack
-    return feasible, p_infeas
+        return feasible, p_infeas, min_slack, n_bound_blocked
+    return feasible, p_infeas, n_bound_blocked
 
 
 def _p_infeas_after_cuts(master, instance, anchors, feasible, n_infeas_base, alpha):
@@ -618,7 +651,7 @@ def _resolve_distance(cp_distance, instance):
 
 def _finalize(instance, master, ctx_bounds, history, status, total_start,
               cp_trace_path, last_x=None, last_obj=np.inf, anchors=None,
-              incumbent_x=None, incumbent_obj=np.inf):
+              incumbent_x=None, incumbent_obj=np.inf, strategy=None):
     """Restore context-free bounds, do a tight final solve, persist trace.
 
     ``incumbent_x`` (best feasible iterate) is supplied only by the basic path
@@ -652,6 +685,8 @@ def _finalize(instance, master, ctx_bounds, history, status, total_start,
         f"{master.opt.NumVars} vars / {master.opt.NumConstrs} constrs",
         flush=True,
     )
+    if strategy is not None:
+        _report_cp_diagnostics(strategy, status)
     _write_cp_trace(history, cp_trace_path)
     return SolutionResult(
         x_opt=x_opt,
@@ -706,6 +741,36 @@ def _scenario_models(inst: ProblemInstance, model_map: dict, obj_specs: list):
     return per_constraint, obj_models
 
 
+def _report_cp_diagnostics(strategy, status: str) -> None:
+    """Run-level health of the cut loop: cycling, objective regressions, and how
+    often anchors were infeasible. Reported, never acted on -- a run that needs a
+    different policy should say so in the log rather than quietly change itself."""
+    solves = getattr(strategy, "n_anchor_solves", 0)
+    if not solves:
+        return
+    infeas = strategy.n_anchor_infeasible
+    blocked = strategy.n_bound_blocked
+    print(
+        f"    [cp] diagnostics: status={status}, "
+        f"objective regressions={strategy.n_obj_regressions}, "
+        f"anchor solves infeasible={infeas}/{solves} ({100 * infeas / solves:.1f}%), "
+        f"bound-blocked={blocked}/{solves} ({100 * blocked / solves:.1f}%)",
+        flush=True,
+    )
+    if blocked > 0.25 * solves:
+        print(
+            "    [cp] WARNING: the no-deterioration bound blocked >25% of anchor "
+            "solves -- it is over-constraining. Consider objective_monotone=false.",
+            flush=True,
+        )
+    if status == "cycle_detected":
+        print(
+            "    [cp] WARNING: cut loop cycled. tau cannot bind in a cycle, so any "
+            "tau grid over this configuration is uninformative.",
+            flush=True,
+        )
+
+
 def _resolve_d0(distances, quantile: float) -> float:
     """``d0`` = a high quantile of the iteration-0 scenario distances, not their max.
 
@@ -748,10 +813,21 @@ class _BasicSeparation:
     """
 
     def __init__(self, k_neighbors_frac, n_candidates, k_neighbors_min=1,
-                 dist_tol_rel=None):
+                 dist_tol_rel=None, prune_slack_cuts=True, objective_monotone=False):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_candidates = n_candidates
         self.k_neighbors_min = k_neighbors_min
+        # Same two policies the coherent path takes, so the methods differ only
+        # where the PROBLEMS differ (one context vs ten, one constraint vs five).
+        self.prune_slack_cuts = prune_slack_cuts
+        self.objective_monotone = objective_monotone
+        # Same diagnostics as the coherent path (one "anchor" here: the single x*).
+        self.prev_min_obj = None
+        self.n_obj_regressions = 0
+        self.n_bound_blocked = 0
+        self.n_anchor_solves = 0
+        self.n_anchor_infeasible = 0
+        self.seen_states: dict = {}
         # Same problem-agnostic knob as the coherent path: tolerance = tau * d0,
         # with d0 = the iteration-0 worst violation. Without it this path cut every
         # violation > 1e-6, i.e. it had no robustness lever at all.
@@ -767,7 +843,9 @@ class _BasicSeparation:
             _fix_anchor_context(master, inst, env.anchors[0])
 
         x_star, obj_star = master.solve()
+        self.n_anchor_solves += 1
         if x_star is None:
+            self.n_anchor_infeasible += 1
             return _StepResult(stop=True, status="infeasible")
 
         if env.bank is not None:
@@ -828,8 +906,9 @@ class _BasicSeparation:
         )
 
         # Single global LP: prune slack scenarios and add the no-deterioration
-        # objective cut (both valid only with one objective / active set).
-        if iteration > 0:
+        # objective cut. Both are off by default -- see _CoherentSeparation.step
+        # and IncrementalMaster.add_objective_cut for why.
+        if self.prune_slack_cuts and iteration > 0:
             dynamic_slack = max(0.1, max_violation)
             pruned_count, total_active = prune_inactive_scenarios(
                 master, slack_threshold=dynamic_slack
@@ -839,7 +918,7 @@ class _BasicSeparation:
                     f"Iter {iteration}: Pruned {pruned_count}/{total_active} "
                     f"inactive scenarios"
                 )
-        if master.t_obj is not None:
+        if self.objective_monotone:
             master.add_objective_cut(obj_star, iteration)
 
         for c_idx, worst_case_models, rhs in scenarios_to_add:
@@ -864,6 +943,29 @@ class _BasicSeparation:
         """
         inst, master = env.instance, env.master
         xs2d = np.atleast_2d(x_star)
+
+        # Same two diagnostics the coherent path runs, on its single x*.
+        if self.prev_min_obj is not None and obj_star < self.prev_min_obj - 1e-9:
+            self.n_obj_regressions += 1
+            print(
+                f"Iter {iteration}: objective REGRESSED "
+                f"{self.prev_min_obj:.6f} -> {obj_star:.6f} (a cut was removed).",
+                flush=True,
+            )
+        self.prev_min_obj = obj_star
+        state = frozenset(
+            s for s, c in enumerate(master.scenario_constrs) if c is not None
+        )
+        if state in self.seen_states:
+            first = self.seen_states[state]
+            print(
+                f"Iter {iteration}: CYCLE DETECTED -- active cut set repeats "
+                f"iteration {first} (period {iteration - first}); stopping.",
+                flush=True,
+            )
+            return _StepResult(stop=True, status="cycle_detected",
+                               obj=obj_star, x=x_star.copy())
+        self.seen_states[state] = iteration
 
         active = {
             b for sid, b in self.cut_draws.items()
@@ -910,14 +1012,14 @@ class _BasicSeparation:
             flush=True,
         )
 
-        if iteration > 0:
+        if self.prune_slack_cuts and iteration > 0:
             pruned_count, total_active = prune_inactive_scenarios(
                 master, slack_threshold=max(0.1, max_violation)
             )
             if pruned_count > 0:
                 print(f"Iter {iteration}: Pruned {pruned_count}/{total_active} "
                       f"inactive scenarios")
-        if master.t_obj is not None:
+        if self.objective_monotone:
             master.add_objective_cut(obj_star, iteration)
 
         add_cut = best is not None and max_violation > self._tol
@@ -988,7 +1090,7 @@ class _CoherentSeparation:
 
     def __init__(self, k_neighbors_frac, n_scenarios, alpha, single_point, dist_tol,
                  k_neighbors_min=1, cut_eviction="reject", base_scenario_ids=None,
-                 dist_tol_rel=None):
+                 dist_tol_rel=None, prune_slack_cuts=True, objective_monotone=False):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_scenarios = n_scenarios
         self.alpha = alpha               # coverage cap: max fraction of x* infeasible
@@ -1007,6 +1109,14 @@ class _CoherentSeparation:
         # cut (legacy). Under evict_slack the working set is non-monotone, so the
         # no-deterioration obj bound is disabled.
         self.cut_eviction = cut_eviction
+        # Slack-pruning is a cycling hazard under a fixed bank (see step()); the
+        # driver turns it off there. Eviction is NOT optional -- it is forced by MIP
+        # infeasibility, and an evicted scenario stays re-separable on purpose.
+        self.prune_slack_cuts = prune_slack_cuts
+        # Per-anchor no-deterioration bounds (the coherent analogue of the basic
+        # path's single global cut -- ten contexts, so ten bounds, each imposed
+        # transiently while its own anchor is solved). Gated by the SAME flag.
+        self.objective_monotone = objective_monotone
         self.base_scenario_ids = set(base_scenario_ids or ())  # nominal cuts, never evicted
         self.obj_bound = {}          # a_idx -> best (max) objective seen so far
         self.prev_max_exceed = 0.0   # scale for the dynamic pruning threshold (raw)
@@ -1014,7 +1124,15 @@ class _CoherentSeparation:
         # scenario id -> bank draw it came from. The exclusion set is derived from
         # the entries whose cut is still ACTIVE, never from "ever cut": eviction and
         # pruning retire cuts, and a retired scenario must stay re-separable.
+        # (With nothing removed, the two definitions coincide.)
         self.cut_draws: dict = {}
+        # Diagnostics -- counted, reported, never acted on automatically.
+        self.prev_min_obj = None
+        self.n_obj_regressions = 0
+        self.n_bound_blocked = 0
+        self.n_anchor_solves = 0
+        self.n_anchor_infeasible = 0
+        self.seen_states: dict = {}   # active-cut-set hash -> iteration first seen
 
     def _evict_to_fit(self, master, inst, anchors, added_ids, min_slack, baseline_infeas):
         """Evict the most-slack ACTIVE non-base scenario (keeping the just-added,
@@ -1027,7 +1145,7 @@ class _CoherentSeparation:
         n = len(anchors)
         evicted: List[int] = []
         while True:
-            _, p_infeas = _solve_all_anchors(master, inst, anchors)
+            _, p_infeas, _ = _solve_all_anchors(master, inst, anchors)
             if p_infeas * n <= baseline_infeas + 1e-9:
                 return True, evicted
             cand = [s for s, c in enumerate(master.scenario_constrs)
@@ -1046,13 +1164,21 @@ class _CoherentSeparation:
         iter_start = time.time()
         inst, master = env.instance, env.master
 
-        # Under eviction the working set is non-monotone (cuts can be removed), so the
-        # no-deterioration objective bound is invalid -- an anchor's optimum may improve.
         evicting = self.cut_eviction == "evict_slack"
-        feasible, p_infeas, min_slack = _solve_all_anchors(
+        feasible, p_infeas, min_slack, n_bound_blocked = _solve_all_anchors(
             master, inst, env.anchors,
-            obj_bounds=None if evicting else self.obj_bound, collect_slack=True,
+            obj_bounds=self.obj_bound if self.objective_monotone else None,
+            collect_slack=True,
         )
+        self.n_bound_blocked += n_bound_blocked
+        self.n_anchor_solves += len(env.anchors)
+        self.n_anchor_infeasible += len(env.anchors) - len(feasible)
+        if n_bound_blocked:
+            print(
+                f"Iter {iteration}: {n_bound_blocked} anchor solve(s) infeasible "
+                f"ONLY under the no-deterioration bound (bound-blocked).",
+                flush=True,
+            )
         if not feasible:
             if iteration > 0 and self.last_added_ids:
                 for s in reversed(self.last_added_ids):
@@ -1069,17 +1195,69 @@ class _CoherentSeparation:
             return _StepResult(stop=True, status="infeasible")
 
         # Per-anchor no-deterioration bound: each context's optimum only rises as
-        # cuts are added, so store its best objective to warm-start later solves.
-        # Skipped under eviction (working set non-monotone -> bound would be wrong).
-        if not evicting:
+        # cuts are added, so record its best objective for later solves.
+        if self.objective_monotone:
             for a_idx, _, obj_q in feasible:
                 if obj_q > self.obj_bound.get(a_idx, -np.inf):
                     self.obj_bound[a_idx] = obj_q
 
+        # Objective-regression detector (always on, never changes behaviour).
+        # Scenario cuts only tighten, so min_a v_a can fall ONLY if a cut was
+        # removed -- which is the regression that lets a previous x* recur. This
+        # is the cheap diagnostic for cycling, independent of any bound.
+        m_now = min(obj_q for _, _, obj_q in feasible)
+        if self.prev_min_obj is not None and m_now < self.prev_min_obj - 1e-9:
+            self.n_obj_regressions += 1
+            print(
+                f"Iter {iteration}: objective REGRESSED "
+                f"{self.prev_min_obj:.6f} -> {m_now:.6f} "
+                f"(a cut was removed; this is what permits cycling).",
+                flush=True,
+            )
+        self.prev_min_obj = m_now
+
+        # Cycle detection: the master is fully described by its ACTIVE cut set, so
+        # a repeated set means a repeated state and every later iteration replays
+        # the same sequence. Terminate with a diagnostic instead of burning the
+        # remaining iterations -- gastric ran an exact period-4 cycle to iteration
+        # 19 this way, which left tau inert across its whole grid.
+        state = frozenset(
+            s for s, c in enumerate(master.scenario_constrs) if c is not None
+        )
+        if state in self.seen_states:
+            first = self.seen_states[state]
+            print(
+                f"Iter {iteration}: CYCLE DETECTED -- active cut set repeats "
+                f"iteration {first} (period {iteration - first}); stopping.",
+                flush=True,
+            )
+            return _StepResult(
+                stop=True, status="cycle_detected",
+                obj=float(np.mean([o for (_, _, o) in feasible])),
+            )
+        self.seen_states[state] = iteration
+
         # Multi-anchor pruning: drop cuts that are slack at *every* x* (globally
         # inactive). Threshold scales with the previous iteration's worst cut, as
         # in the basic case; skipped on iteration 0.
-        if iteration > 0 and min_slack:
+        #
+        # OFF by default under a fixed bank, because it makes CP cycle. Pruning a
+        # slack cut returns its scenario to the eligible pool (exclusion follows
+        # ACTIVE cuts); x* then drifts back, the same scenario is again the worst,
+        # and it is re-cut -- gastric showed an exact period-4 cycle through
+        # iteration 19, which left tau inert across its whole grid. The old
+        # localized-bootstrap path hid this by redrawing scenarios every iteration,
+        # so re-separating the identical scenario was measure-zero.
+        #
+        # Permanently excluding a pruned scenario would break the cycle but is
+        # WORSE: the cut is still gone, so the master is still relaxed, and now a
+        # later x* that violates that scenario can never be cut again. Keeping the
+        # cut is what preserves robustness, and it also makes CP terminate by
+        # construction -- a scenario whose cut stays in the master is satisfied at
+        # every future x*, so the eligible set strictly shrinks (<= B iterations).
+        #
+        # Cost is bounded by max_iterations (one embed per iteration), not by B.
+        if self.prune_slack_cuts and iteration > 0 and min_slack:
             dynamic_slack = max(0.1, self.prev_max_exceed)
             to_remove = [s for s, sl in min_slack.items() if sl > dynamic_slack]
             for s in to_remove:
@@ -1342,6 +1520,7 @@ def _run_cp_loop(instance: ProblemInstance,
                  cp_scenario_source: str = "noise",
                  cp_n_scenarios: int = 200,
                  cp_d0_quantile: float = 0.9,
+                 cp_objective_monotone: bool = False,
                  cp_uncertainty=None,
                  cp_bank=None,
                  cp_trace_path: Optional[str] = None) -> tuple[SolutionResult, CPHistory]:
@@ -1404,10 +1583,18 @@ def _run_cp_loop(instance: ProblemInstance,
         and not contextual
     )
 
+    # One retention policy for both problems: under a fixed bank nothing is
+    # removed from the master, so the eligible set strictly shrinks and CP
+    # terminates in at most B iterations on either problem. The methods then
+    # differ only where the PROBLEMS differ (one context vs ten, one constraint
+    # vs five), not in bookkeeping.
+    keep_all = bank is not None
     if use_basic:
         strategy = _BasicSeparation(
             cp_k_neighbors_frac, cp_n_candidates, cp_k_neighbors_min,
             dist_tol_rel=cp_dist_tol_rel,
+            prune_slack_cuts=not keep_all,
+            objective_monotone=cp_objective_monotone,
         )
         mode = "basic"
     else:
@@ -1418,6 +1605,8 @@ def _run_cp_loop(instance: ProblemInstance,
             single_point, cp_dist_tol, cp_k_neighbors_min,
             cut_eviction=cp_cut_eviction, base_scenario_ids=base_scenario_ids,
             dist_tol_rel=cp_dist_tol_rel,
+            prune_slack_cuts=not keep_all,
+            objective_monotone=cp_objective_monotone,
         )
         mode = "coherent (single x*)" if single_point else "coherent (multi x*)"
 
@@ -1426,7 +1615,9 @@ def _run_cp_loop(instance: ProblemInstance,
     obj_flag = "robustify_objective" if cp_robustify_objective else "nominal_objective"
     if bank is not None:
         src_note = (f"scenarios=noise bank (B={len(bank)}, "
-                    f"coherent={bank.coherent}, d0_q={cp_d0_quantile:g})")
+                    f"coherent={bank.coherent}, d0_q={cp_d0_quantile:g}, "
+                    f"keep_all_cuts={keep_all}, "
+                    f"objective_monotone={cp_objective_monotone})")
     else:
         n_pool = resolve_neighbor_pool_size(
             len(instance.constraints[0].models_data[0].y_train),
@@ -1480,7 +1671,7 @@ def _run_cp_loop(instance: ProblemInstance,
     return _finalize(
         instance, master, ctx_bounds, history, status,
         total_start, cp_trace_path, last_x, last_obj, anchors=anchors,
-        incumbent_x=incumbent_x, incumbent_obj=incumbent_obj,
+        incumbent_x=incumbent_x, incumbent_obj=incumbent_obj, strategy=strategy,
     )
 
 
@@ -1509,6 +1700,7 @@ def solve_cp(instance: ProblemInstance,
              cp_scenario_source: str = "noise",
              cp_n_scenarios: int = 200,
              cp_d0_quantile: float = 0.9,
+             cp_objective_monotone: bool = False,
              cp_uncertainty=None,
              cp_bank=None,
              ) -> tuple:
@@ -1566,6 +1758,7 @@ def solve_cp(instance: ProblemInstance,
         cp_scenario_source=cp_scenario_source,
         cp_n_scenarios=cp_n_scenarios,
         cp_d0_quantile=cp_d0_quantile,
+        cp_objective_monotone=cp_objective_monotone,
         cp_uncertainty=cp_uncertainty,
         cp_bank=cp_bank,
     )

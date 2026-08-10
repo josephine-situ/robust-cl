@@ -67,6 +67,7 @@ def _synth_build(method, config, model_type, model_params, seed):
             cp_scenario_source=cp.get("scenario_source", "noise"),
             cp_n_scenarios=cp.get("n_scenarios", 200),
             cp_d0_quantile=cp.get("d0_quantile", 0.9),
+            cp_objective_monotone=cp.get("objective_monotone", False),
             cp_uncertainty=uncertainty_set_from_config(config))
     raise ValueError(f"unknown synthetic method {method}")
 
