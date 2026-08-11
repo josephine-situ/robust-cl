@@ -769,7 +769,9 @@ class _SepEnv:
     # Smallest normalized distance worth separating. The master is solved to
     # `mip_gap` relative optimality, so cuts whose effect falls below that leave
     # x* unmoved -- separating there burns iterations for nothing. Expressed in
-    # the same normalized-distance units as the tolerance.
+    # NORMALIZED distance units: the coherent path's distances are already
+    # normalized so it applies this as-is, while the basic path keeps its
+    # violations raw and converts this floor into constraint units first.
     resolution_floor: float = 0.0
 
 
@@ -826,7 +828,17 @@ def _resolve_d0(distances, quantile: float) -> float:
 
     The max over B draws grows with B, so a max-based ``d0`` would stop tau from
     transferring across bank sizes -- and CP and the wrapper run at different B by
-    design. A quantile is stable in B.
+    design. A quantile is stable in B and less seed-noisy than a max.
+
+    The quantile is over the **draws**. Callers pass one distance per draw (the
+    coherent path has already collapsed anchors x outcomes by a mean; the basic
+    path has no anchor dimension), so anchors never enter this order statistic.
+
+    Note the asymmetry this creates, which is deliberate and documented at
+    ``config.yaml``'s ``d0_quantile``: both callers compare the resulting
+    tolerance against the **max** over the bank, not against this quantile. So
+    ``tau=1`` does not reduce to nominal -- iteration 0 fails its own stopping
+    test, since max > q0.9 whenever the top decile is non-degenerate.
     """
     d = np.asarray([v for v in distances if np.isfinite(v)], dtype=float)
     if d.size == 0:
@@ -936,8 +948,18 @@ class _BasicSeparation:
             candidate_cuts.append((violation, c_idx, worst_case_models, constraint.rhs))
 
         # Resolve the effective tolerance once from this problem's own iteration-0
-        # worst violation (d0), then cut only what exceeds it. tau=1 stops at iter 0
-        # (~nominal); tau->0 approaches the legacy "cut everything > 1e-6".
+        # worst violation (d0), then cut only what exceeds it. tau->0 approaches the
+        # legacy "cut everything > 1e-6".
+        #
+        # This is the legacy `scenario_source: "bootstrap"` path, and it is the ONE
+        # place where tau=1 really does stop at iteration 0 (~nominal): d0 is the
+        # max here, the same statistic the filter tests, and the filter is strict.
+        # No quantile is taken because there is none available -- candidate_cuts
+        # holds one entry per learned constraint (synthetic has exactly one), and
+        # localized_bootstrap_separation has already collapsed its candidate draws
+        # to the argmax internally, so the per-draw spread never reaches us.
+        # The default "noise" path (_step_bank) uses the quantile and does NOT
+        # share this tau=1 behaviour.
         if self._tol is None:
             if self.dist_tol_rel is not None and np.isfinite(max_violation):
                 self._tol = max(float(self.dist_tol_rel) * float(max_violation), 1e-6)
@@ -1026,6 +1048,13 @@ class _BasicSeparation:
 
         best = None          # (violation, c_idx, models, rhs, draw)
         all_viol = []
+        # Raw-unit equivalent of one normalized distance unit. The coherent path
+        # divides each exceedance by `max(1.0, abs(rhs))`; this path keeps its
+        # violations RAW (so d0, the logged "Max Violation", and the history stay in
+        # constraint units), so the same factor is applied to the FLOOR instead --
+        # see the tolerance block below. Single-constraint path (`use_basic`), so the
+        # max over scanned constraints is just that constraint's scale.
+        tol_scale = 1.0
         for b in draws:
             model_map = env.bank.models_for(b)
             for c_idx, constraint in enumerate(inst.constraints):
@@ -1036,22 +1065,45 @@ class _BasicSeparation:
                 val = sum(w * th.predict(xs2d)[0] for w, th in models)
                 violation = val - constraint.rhs
                 all_viol.append(violation)
+                tol_scale = max(tol_scale, abs(float(constraint.rhs)))
                 if best is None or violation > best[0]:
                     best = (violation, c_idx, models, constraint.rhs, b)
 
         max_violation = best[0] if best is not None else -np.inf
 
         # tolerance = tau * d0, with d0 a high QUANTILE of the iteration-0 draws --
-        # stable in bank size, unlike the max.
+        # stable in bank size, unlike the max. The stopping statistic below is the
+        # MAX, though, so tau=1 does not stop at iteration 0 on this path (unlike
+        # the legacy path above); it separates the bank's worst ~decile.
+        #
+        # `all_viol` holds RAW SIGNED violations (val - rhs, no normalization),
+        # unlike the coherent path's normalized anchor-averaged distances. So
+        # `resolution_floor` -- documented in _CPEnv as normalized units, and set
+        # from cp_mip_gap -- is converted into this path's raw units by `tol_scale`
+        # rather than compared across units. Inert at the default synthetic config
+        # (rhs = 0.5 * n_features = 1.0, so tol_scale = 1.0), and live as soon as
+        # data.synthetic.n_features > 2 makes rhs exceed 1.
         if self._tol is None:
             if self.dist_tol_rel is not None and all_viol:
                 d0 = _resolve_d0(all_viol, env.d0_quantile)
-                self._tol = max(float(self.dist_tol_rel) * d0,
-                                env.resolution_floor, 1e-6)
+                raw = float(self.dist_tol_rel) * d0
+                # Never separate below what the master is solved to: the solver
+                # returns any incumbent within `mip_gap` of optimal, so a cut whose
+                # effect is smaller leaves x* unmoved. 1e-6 is the absolute backstop
+                # (the legacy "cut everything > 1e-6" semantics).
+                floor = max(env.resolution_floor * tol_scale, 1e-6)
+                self._tol = max(raw, floor)
+                # Report a floored tolerance explicitly, as the coherent path does:
+                # it means every tau below that point gives the SAME run, so a tau
+                # grid must be spanned above it to be informative.
+                note = "" if raw >= floor else (
+                    f"  [FLOORED at solver resolution {floor:.6f}; "
+                    f"tau<={raw / d0 if d0 else 0:.3g} all give this run]"
+                )
                 print(
                     f"    [cp] d0={d0:.4f} (q{env.d0_quantile:g} of {len(all_viol)} "
                     f"iter-0 scenario violations; max={max_violation:.4f}); "
-                    f"tau={self.dist_tol_rel:g} -> tol={self._tol:.6f}",
+                    f"tau={self.dist_tol_rel:g} -> tol={self._tol:.6f}{note}",
                     flush=True,
                 )
             else:
@@ -1149,10 +1201,17 @@ class _CoherentSeparation:
         self.single_point = single_point
         self.dist_tol = dist_tol         # stop once worst normalized distance <= this
         # Problem-agnostic knob: when set, the stopping tolerance is tau * d0, where
-        # d0 is THIS problem's iteration-0 worst distance (measured before any cut).
-        # tau=1 stops immediately (~nominal); tau->0 cuts maximally. Absolute
-        # dist_tol values don't transfer across datasets because d0 varies with the
-        # data's noise scale; tau does. Resolved once, at iteration 0.
+        # d0 is a QUANTILE (env.d0_quantile) of THIS problem's iteration-0 distances,
+        # measured before any cut. tau->0 cuts maximally. Absolute dist_tol values
+        # don't transfer across datasets because d0 varies with the data's noise
+        # scale; tau does -- but only as a RATIO to each problem's own d0, since the
+        # basic and coherent paths measure distance in different units. Resolved
+        # once, at iteration 0.
+        #
+        # tau=1 does NOT stop immediately here: step() compares the MAX distance
+        # over the bank against this q0.9-derived tolerance, so iteration 0 fails
+        # its own test and tau=1 separates the bank's worst ~decile. Kept as is;
+        # see config.yaml's d0_quantile for the full statement and the alternatives.
         self.dist_tol_rel = dist_tol_rel
         self._tol = None                 # effective absolute tolerance (set at iter 0)
         self.k_neighbors_min = k_neighbors_min

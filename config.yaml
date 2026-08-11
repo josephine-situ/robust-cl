@@ -52,10 +52,12 @@ uncertainty:
   cp_k_neighbors_frac: 0.1  # fraction of n_train for CP localized pool
   cp_k_neighbors_min: 100      # floor on pool size: k = max(min, round(frac * n_train))
   cp_n_candidates: 20  # bootstrap candidates per CP separation call
-  alpha: 0.1     # shared coverage cap (used by CP and to calibrate the baselines):
-                 # at most this fraction of training contexts (patients) may be
-                 # infeasible. CP enforces it directly as its p_infeas cap; the
-                 # baselines are tuned to it on the training set (see `calibration`).
+  alpha: 0.1     # coverage target for the LEGACY baseline calibration only: at most
+                 # this fraction of training contexts (patients) may be infeasible.
+                 # Read by calibrate_strength under `calibration.method: "alpha"`;
+                 # the default method is "cv", which ignores it. CP does NOT read
+                 # it -- its own cp_alpha is pinned at 0 at every call site, so a
+                 # cut breaking a protected anchor is rolled back, not budgeted.
 
 calibration:
   # method: "cv" (held-out robustness-parameter CV; default) or "alpha" (legacy
@@ -98,11 +100,18 @@ cv_calibration:
   coherence_cells: [true, false]
   knob_grids:                         # native-unit robustness knob per method (strongest last)
     # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, where d0
-    # is the problem's own iteration-0 worst distance (logged per solve as "[cp] d0=").
-    # tau=1 stops at iteration 0 (~nominal); tau->0 cuts maximally. Relative units make
-    # this ONE grid valid for gastric, synthetic, and any new dataset -- absolute
-    # dist_tol does not transfer (on gastric d0~0.017, so 0.05/0.03/0.02 were silent
-    # no-ops that tied nominal exactly, leaving an effective 2-point grid).
+    # is a QUANTILE (cp.d0_quantile, default 0.9) of the problem's own iteration-0
+    # scenario distances (logged per solve as "[cp] d0="). tau->0 cuts maximally.
+    # tau=1 does NOT reduce to nominal: the stopping test compares the MAX distance
+    # over the bank against a q0.9-derived tolerance, so iteration 0 fails its own
+    # test and tau=1 still separates the bank's worst ~decile. There is no tau in
+    # this grid that reproduces nominal -- run nominal itself for that endpoint.
+    # Relative units make this ONE grid valid for gastric, synthetic, and any new
+    # dataset -- absolute dist_tol does not transfer (on gastric d0~0.017, so
+    # 0.05/0.03/0.02 were silent no-ops that tied nominal exactly, leaving an
+    # effective 2-point grid). But tau transfers only as a RATIO to each problem's
+    # own d0, never as a shared physical quantity: the two separation paths measure
+    # distance in different units (see cp.d0_quantile below).
     cp:         [1.0, 0.75, 0.5, 0.25, 0.1]        # tau (smaller = stronger)
     robust_reg: [0.1, 0.25, 0.5, 0.75, 1.0]        # label_eps (larger = stronger)
     wrapper:    [0.4, 0.3, 0.2, 0.1, 0.0]          # chance alpha (smaller = stronger)
@@ -123,7 +132,10 @@ conservativeness_sweep:
   # the joint all_constraints problem (degenerate), so we floor at a small positive
   # value rather than 0. The calibrated production CP uses dist_tol=0.01, which
   # this range brackets. The coverage cap is held fixed at uncertainty.alpha.
-  cp_dist_tol_rel_max: 1.0    # s=0 (weakest: tau=1 stops at iter 0 == nominal)
+  cp_dist_tol_rel_max: 1.0    # s=0 (weakest). NOT nominal: tau=1 still cuts the bank's
+                              # worst ~decile, because the stopping test uses the max
+                              # while the tolerance comes from q0.9 (see knob_grids.cp).
+                              # The sweep's weak end is therefore not anchored to nominal.
   cp_dist_tol_rel_min: 0.1    # s=1 (strongest: cut until 10% of the iter-0 distance)
   cp_alpha_max: 0.3           # (unused as the CP sweep knob; retained for reference only)
   robust_reg_eps_max: 1.0     # label-uncertainty radius; eps = max*s. Widened from 0.5
@@ -187,9 +199,10 @@ methods:
     # or below this. Range 0-1; 0 = stop only when nothing violates.
     dist_tol: 0.01
     # RELATIVE distance tolerance tau (the transferable knob): tolerance = tau * d0,
-    # with d0 the problem's own iteration-0 worst distance. Used by BOTH separation
-    # paths and by the synthetic runner (run_all.py / run_sweep.py). Left unset the
-    # basic path cuts every violation > 1e-6, i.e. no robustness lever at all.
+    # with d0 a quantile of the problem's own iteration-0 distances (d0_quantile).
+    # Used by BOTH separation paths and by the synthetic runner (run_all.py /
+    # run_sweep.py). Left unset the basic path cuts every violation > 1e-6, i.e. no
+    # robustness lever at all. Note tau=1 is not nominal -- see knob_grids.cp.
     # 0.1 = the CV-selected tau* on gastric, and the strongest point of the shared grid.
     dist_tol_rel: 0.1
     # Where separation scenarios come from. "noise" = a FIXED bank of draws from the
@@ -203,7 +216,27 @@ methods:
     n_scenarios: 200
     # d0 = this quantile of the iteration-0 scenario distances, NOT their max: the
     # max grows with B, so a max-based d0 would stop tau transferring across bank
-    # sizes -- and CP and the wrapper deliberately run at different B.
+    # sizes -- and CP and the wrapper deliberately run at different B. A quantile is
+    # also less seed-noisy than a max over B draws.
+    #
+    # The quantile is over the DRAWS. On the coherent path the anchors and outcomes
+    # are already collapsed by a mean inside each entry (one distance per scenario);
+    # the basic path has no anchor dimension at all (single x*).
+    #
+    # KNOWN ASYMMETRY -- deliberate, kept as is. The TOLERANCE comes from this
+    # quantile but the STOPPING STATISTIC is the max over the bank, on both paths.
+    # So the rule is "drive the worst scenario down to the iteration-0 q0.9", not
+    # "reduce a like-for-like statistic by tau". Two consequences: tau=1 over-cuts
+    # rather than reducing to nominal (see knob_grids.cp), and the effect differs by
+    # problem because the two paths differ in what they feed the quantile --
+    #   basic (synthetic): RAW SIGNED violations, no normalization, negatives
+    #     included and then clamped to 0 in _resolve_d0;
+    #   coherent (gastric): normalized (per-outcome scale), anchor-averaged
+    #     distances gated at >1e-6, so non-violating scenarios enter as exactly 0.
+    # The coherent path also drops permanently-rejected draws from the population
+    # after iteration 0 (113/200 on gastric), and rejection correlates with
+    # severity -- so gastric's max is measured with its worst tail deleted and the
+    # same tau over-cuts LESS there than the d0 ratio suggests.
     d0_quantile: 0.9
     # Ablation (rhs=0.6, frac=0.5) showed the robustness comes from the toxicity
     # cuts; robustifying the OS objective and per-anchor masters both hurt (lower

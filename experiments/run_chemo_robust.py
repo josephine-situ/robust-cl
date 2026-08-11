@@ -349,10 +349,13 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
         )
     elif method == "cp":
         # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, with
-        # d0 the problem's own iteration-0 worst distance. tau=1 stops at iteration 0
-        # (~nominal, the weak end); tau->0 cuts maximally. Relative units make one grid
-        # valid across datasets -- absolute dist_tol does not transfer, because
-        # anything above d0 (~0.017 on gastric) is a silent no-op that ties nominal.
+        # d0 a QUANTILE (cp.d0_quantile, default 0.9) of the problem's own iteration-0
+        # distances. tau->0 cuts maximally. tau=1 is the weak end but is NOT nominal:
+        # the stopping test compares the MAX distance over the bank against a
+        # q0.9-derived tolerance, so tau=1 still separates the bank's worst ~decile
+        # (see config.yaml's d0_quantile). Relative units make one grid valid across
+        # datasets -- absolute dist_tol does not transfer, because anything above d0
+        # (~0.017 on gastric) is a silent no-op that ties nominal.
         tmax = ranges.get("cp_dist_tol_rel_max", 1.0)
         tmin = ranges.get("cp_dist_tol_rel_min", 0.1)
         strength_to_knob = lambda s: tmax * (1.0 - s) + tmin * s  # s=1 -> tmin (strongest)
@@ -963,8 +966,10 @@ def main():
         default=None,
         metavar="S",
         help=(
-            "Fixed-threshold Pareto sweep: strengths in [0,1] (0=weakest ~nominal, "
-            "1=strongest). Each method's OWN knob is set per strength (no "
+            "Fixed-threshold Pareto sweep: strengths in [0,1] (0=weakest, "
+            "1=strongest; s=0 is ~nominal for every method EXCEPT cp, whose tau=1 "
+            "still cuts the bank's worst ~decile). Each method's OWN knob is set "
+            "per strength (no "
             "calibration): robust_param->rho, cp->alpha, robust_reg->label_eps, "
             "wrapper->alpha. Traces per-method OS vs worst-case-feasibility frontiers "
             "to separate robustness from mere conservatism. E.g. 0 0.25 0.5 0.75 1."

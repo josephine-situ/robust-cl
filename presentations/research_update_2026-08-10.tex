@@ -16,7 +16,7 @@
 \begin{frame}
   \titlepage
   \begin{center}\footnotesize
-  Supersedes \texttt{research\_update.tex} and the 7 Aug deck.
+  Supersedes the 7 Aug deck. Standing method reference: \texttt{method.tex}.
   \end{center}
 \end{frame}
 
@@ -153,6 +153,10 @@
       separation \emph{pool}.
     \item $d_0$ is now a 0.9 quantile, not the max --- the max grows with $B$, and
       CP/wrapper run at different $B$ by design.
+    \item But the \emph{stopping statistic} is still the max, so iteration 0 fails
+      its own test: $\tau=1$ still separates the worst ${\sim}$decile.
+      \textbf{No $\tau$ in the grid reproduces nominal} --- run nominal for that
+      endpoint.
   \end{itemize}
 \end{frame}
 
@@ -172,17 +176,20 @@
     \item \textbf{DLT-only dropped.} Retires a bug: \texttt{\_feas} read the
       all-constraints row regardless of mode.
     \item Synthetic figures now show a min--max band and the \textbf{worst-case edge}.
+    \item \textbf{Also landed today}: CV feasibility scored \emph{conditional on
+      solved} (ties $\to$ best objective); per-anchor warm starts;
+      \texttt{--coherence-cells}; CP trace opt-in.
   \end{itemize}
 \end{frame}
 
 % ===========================================================================
-\begin{frame}{7. In flight: cut the whole scenario}
+\begin{frame}{7. Landed: cut the whole scenario}
   \small
-  Today CP cuts only the constraints breached at the current $x^\ast$. But a scenario
-  is one coherent relabeling --- if plausible, \emph{all} its constraints should hold.
+  CP cut only the constraints breached at the current $x^\ast$. But a scenario is one
+  coherent relabeling --- if plausible, \emph{all} its constraints should hold.
   \medskip
 
-  \texttt{cp.cut\_whole\_scenario: true} --- uncommitted, \textbf{not yet run}:
+  \texttt{cp.cut\_whole\_scenario: true} --- now the default; \textbf{not yet run}:
   \begin{itemize}
     \item Extends the wrapper equivalence to multi-constraint problems. The wrapper
       already gates one indicator on all constraints.
@@ -198,8 +205,7 @@
   \small
   \textbf{Changed}
   \begin{enumerate}
-    \item One shared $\mathcal D$ at one unexplained sd. Method differences are now
-      method differences.
+    \item One shared $\mathcal D$ at one unexplained sd.
     \item CP converges on gastric: 5 faults, MIP gap the biggest. $\tau$ is live for
       the first time.
     \item CP $\equiv$ wrapper at $\alpha=0$, exactly; $10\times$ adversaries in $1/5$
@@ -209,8 +215,8 @@
   \medskip
   \textbf{Next}
   \begin{itemize}
-    \item Run \texttt{cut\_whole\_scenario}; check master size.
-    \item Re-run the pipeline. Every old result number predates the fixes.
+    \item Re-run the pipeline with whole-scenario cuts on; check master size.
+      Every old result number predates the fixes.
     \item Sensitivity over $\varepsilon_0\in\{0.5,1,2\}$: show $\tau^\ast$, not
       $\varepsilon_0$, drives CP.
     \item Open: cuts per test point vs.\ over anchors. WFP setting still needs a

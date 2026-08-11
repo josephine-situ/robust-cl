@@ -4,8 +4,14 @@ training set.
 
 Each non-CP baseline exposes a single monotone robustness knob. We pick the
 *strongest* setting whose fraction of infeasible training contexts is at most
-``alpha`` - the same coverage semantics CP enforces directly via its ``p_infeas``
-cap - so every method is compared at a matched level of training-set robustness.
+``alpha``, so every method is compared at a matched level of training-set
+robustness.
+
+This is the **legacy** calibration path: ``calibration.method`` defaults to
+``"cv"`` (:mod:`src.methods.cv_calibrate`), and this module runs only under
+``calibration.method: "alpha"``. CP is exempt and never reads
+``uncertainty.alpha`` -- its ``cp_alpha`` is pinned at 0 at every call site, so
+cuts that would break a protected anchor are rolled back rather than budgeted.
 
 Calibration bounds (weakest at strength=0, strongest at strength=1) are set in
 ``config.yaml``: ``wrapper_alpha_max`` / ``tree_alpha_max`` for chance-constraint

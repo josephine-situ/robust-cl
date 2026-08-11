@@ -112,7 +112,9 @@ solutions). **There is no separation flag.**
   constraint (and the epigraph objective) jointly. Each iteration cuts the single
   worst scenario, ranked by **normalized average distance** (mean relative
   exceedance over all $(x^*,\text{outcome})$ cells, 0–1 scale). Stops when that
-  distance ≤ the tolerance, or no scenario fits under the coverage cap `cp_alpha`.
+  distance ≤ the tolerance, or no scenario fits under the coverage cap `cp_alpha`
+  (pinned at 0 in production, so: no scenario can be cut without breaking a
+  protected anchor).
 
 **Scenarios come from a fixed bank** (`cp.scenario_source: "noise"`, default).
 The legacy `"bootstrap"` path redrew every iteration while `d0` stayed frozen from
@@ -156,7 +158,23 @@ reported, never acted on automatically.
 
 **`d0` is a high quantile** (`cp.d0_quantile`, default 0.9) of the iteration-0
 scenario distances, **not their max** — the max grows with B, and CP (B=200) and
-the wrapper (P=20) run at different B by design.
+the wrapper (P=20) run at different B by design. The quantile is over the *draws*
+(the coherent path means over anchors × outcomes inside each entry first).
+
+**τ=1 is the weak end of the grid but is not nominal.** The tolerance comes from
+`q0.9` while the stopping statistic is the **max** over the bank, on both paths
+(`cp.py:1076`, `cp.py:1530`), so iteration 0 fails its own test and τ=1 still
+separates the worst ~decile. **No τ in `[0.1, 1.0]` reproduces nominal** — run
+nominal itself for that endpoint. This is known and deliberately left as is: the
+max is the worst-case statistic the contribution rests on, and matching the two
+sides would either weaken it to a percentile claim or make `d0` seed-noisy. The
+consequence is that τ is a *ratio to each problem's own d0*, never a shared
+physical quantity — the two paths don't even share units (basic scores **raw
+signed** violations; coherent scores **normalized, anchor-averaged** distances
+gated at 0). Also, coherent drops permanently-rejected draws after iteration 0
+(113/200 on gastric) and rejection correlates with severity, so gastric's max is
+measured with its worst tail deleted and the same τ over-cuts *less* there.
+`_resolve_d0` and `config.yaml`'s `d0_quantile` carry the full statement.
 
 **Why B differs, and why it matters.** The wrapper embeds all P models, so P is
 capped by MIP size; CP embeds one cut per iteration and evicts/prunes. Measured on
@@ -212,16 +230,30 @@ but **not implemented** (no data loader).
 
 Every non-CP baseline has one monotone robustness knob (wrapper/tree $\alpha$,
 robust_param $\rho$). `calibrate_strength` picks the *strongest* setting whose
-training-set infeasible fraction is ≤ the shared `uncertainty.alpha`, so all
-methods are compared at a matched robustness level. CP is exempt (it
-self-regulates via its `p_infeas` cap); nominal has no knob.
+training-set infeasible fraction is ≤ `uncertainty.alpha`, so all methods are
+compared at a matched robustness level. Nominal has no knob.
+
+**This is the legacy path.** `calibration.method` defaults to `"cv"`
+(`cv_calibrate.py`), which selects each knob on held-out folds instead;
+`calibrate_strength` runs only under `calibration.method: "alpha"`.
+
+**CP is exempt, and does not read `uncertainty.alpha`.** Its coverage cap
+`cp_alpha` is **pinned at 0 at every call site** (`run_all.py`, `run_sweep.py`,
+`run_chemo_robust.py:267`), so a cut that would break the protected anchor set is
+rolled back and its draw permanently rejected — τ is CP's only lever. The
+`cp_alpha > 0` machinery in `_CoherentSeparation` (admit the worst scenario
+affordable while `p_infeas ≤ alpha`) is reachable only by calling `solve_cp`
+directly. Note `run_chemo_robust.py:244`/`:363` still *pass* `settings["alpha"]`
+into `_cp_solver`'s `cp_alpha` parameter, but the body hard-codes `0.0` and the
+argument is dead — do not read those call sites as evidence alpha reaches CP.
 
 ## Config
 
 `config.yaml` drives everything. Notable structure: `data.type` switches
 synthetic vs gastric; `uncertainty.{eps_0, budget_frac, coherent, scale_stat}`
-define the **shared set D**; `uncertainty.alpha` is the **shared coverage cap**
-that CP enforces directly and the baselines are calibrated to; `methods.cp.*`
+define the **shared set D**; `uncertainty.alpha` is the **legacy-calibration
+target only** (baselines under `calibration.method: "alpha"` — CP never reads it,
+see Calibration); `methods.cp.*`
 holds the CP knobs above; `methods.chemo.methods_to_run` / `constraint_modes`
 select what the gastric runner executes, and `methods.chemo.quick` overrides them
 for `--quick`. Cross-validated model selections are read from
@@ -237,8 +269,22 @@ which cells run; synthetic stays single-cell (coherence is vacuous there).
 
 ## Presentations (`presentations/`)
 
-Beamer decks, named `research_update_YYYY-MM-DD.tex`; each new deck supersedes
-the last rather than editing it in place.
+Two kinds of deck, with opposite update rules.
+
+- **`method.tex` is the standing method reference and must always be true of the
+  code at HEAD.** It is the one deck that *is* edited in place. **Any change to a
+  method, to D, to the calibration or evaluation protocol, or to a default in
+  `config.yaml` that the deck states, is not finished until `method.tex` says the
+  new thing** — same change, not a follow-up. When in doubt, re-read the slide
+  that covers what you touched and check its numbers against the config/JSON you
+  changed. It carries no results: dated numbers and figures belong in the update
+  decks, because they go stale and `method.tex` may not.
+- **`research_update_YYYY-MM-DD.tex`** are dated snapshots of what changed since
+  the last one. A new deck supersedes the last rather than editing it in place —
+  edit an existing update deck only to correct something that was wrong or has
+  since landed, not to keep it current.
+
+Both:
 
 - **Be very concise.** Terse bullet fragments, not prose. No lengthy sentences,
   no sentences spanning several lines. One claim per bullet, numbers over
