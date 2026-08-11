@@ -168,15 +168,27 @@ def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
 def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
                   folds, oracle, base: ProblemInstance,
                   constraint_names: Optional[List[str]] = None,
-                  contextual: bool = True) -> tuple[float, float]:
-    """Mean held-out ``(feasibility, objective)`` for one knob over the folds.
+                  contextual: bool = True) -> tuple[float, float, float]:
+    """Mean held-out ``(feasibility, objective, solved_frac)`` for one knob.
 
-    Contextual (gastric): prescribe for every fold-val context (optimizer-infeasible
-    contexts score feasibility 0 and are excluded from the objective mean).
-    Single-decision (synthetic): one solve per fold; score the single ``x*``.
+    Both feasibility and objective are scored **conditional on the optimizer
+    returning a prescription**, over that knob's own solved contexts. Nothing is
+    shared across knobs or methods, so a cell's score never depends on what any
+    other cell could solve.
+
+    This also puts the two columns on the same cohort. Previously ``obj`` was
+    already conditional (only solved rows contribute) while ``feas`` scored an
+    unsolvable context as 0 -- so they were means over different sets, and the
+    feasibility column silently penalised whichever knob added the most
+    constraints.
+
+    ``solved_frac`` is returned because conditional feasibility on its own has a
+    perverse incentive: a knob that renders most contexts unsolvable and gets the
+    survivors right scores 1.0. Callers must report it, and treat a high
+    feasibility at a low solved fraction as the artefact it is.
     """
     solver_fn = build_solver(knob)
-    fold_feas, fold_obj = [], []
+    fold_feas, fold_obj, fold_solved = [], [], []
     for train_idx, val_idx in folds:
         val_rows = base.X_train[val_idx] if (contextual and base.X_train is not None) else None
         fi = _fold_instance(base, train_idx, val_rows)
@@ -190,26 +202,31 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
         if isinstance(result, tuple):
             result = result[0]
         if contextual:
-            feas_vals, obj_vals = [], []
+            feas_vals, obj_vals, n_total = [], [], 0
             for row in val_rows:
+                n_total += 1
                 _, x_opt = solve_for_test_cohort(result, fi, row)
                 if x_opt is None:
-                    feas_vals.append(0.0)  # no prescription -> not robustly feasible
-                    continue
+                    continue           # unsolvable: excluded, counted in solved_frac
                 feas_vals.append(1.0 if oracle.feasible(x_opt) else 0.0)
                 obj_vals.append(oracle.objective(x_opt))
             if feas_vals:
                 fold_feas.append(float(np.mean(feas_vals)))
             if obj_vals:
                 fold_obj.append(float(np.mean(obj_vals)))
+            if n_total:
+                fold_solved.append(len(feas_vals) / n_total)
         else:
             x_opt = getattr(result, "x_opt", None)
-            if x_opt is not None and np.all(np.isfinite(x_opt)):
+            solved = x_opt is not None and np.all(np.isfinite(x_opt))
+            if solved:
                 fold_feas.append(1.0 if oracle.feasible(x_opt) else 0.0)
                 fold_obj.append(oracle.objective(x_opt))
+            fold_solved.append(1.0 if solved else 0.0)
     feas = float(np.mean(fold_feas)) if fold_feas else float("nan")
     obj = float(np.mean(fold_obj)) if fold_obj else float("nan")
-    return feas, obj
+    solved = float(np.mean(fold_solved)) if fold_solved else float("nan")
+    return feas, obj, solved
 
 
 def select_knob_cv(build_solver: Callable[[float], Callable], knob_grid: Sequence[float],
@@ -219,20 +236,29 @@ def select_knob_cv(build_solver: Callable[[float], Callable], knob_grid: Sequenc
                    score_fn: Optional[Callable[[float], tuple]] = None,
                    log: Callable = print) -> tuple[float, list]:
     """Score every knob (or reuse ``score_fn`` for checkpointing) and return
-    ``(theta*, rows)`` where ``rows = [(knob, feas, obj), ...]``.
+    ``(theta*, rows)`` where ``rows = [(knob, feas, obj, solved), ...]``.
 
     ``theta*`` = argmax feasibility among knobs whose objective stays within
-    ``os_tol_frac`` of ``nominal_obj`` in the problem's worse direction; ties break
-    to the stronger knob (later grid index). Falls back to the best-objective knob
-    if none pass the budget.
+    ``os_tol_frac`` of ``nominal_obj`` in the problem's worse direction. **Ties
+    break to the best objective**, so when two knobs are equally feasible we take
+    the one that gave up less -- there is no reason to buy extra conservatism that
+    bought nothing. (Previously ties broke to the later grid index, i.e. always to
+    the stronger knob.) Falls back to the best-objective knob if none pass.
+
+    ``feas`` is conditional on the optimizer returning a prescription, so a knob
+    that renders contexts unsolvable is not charged for them -- which is why
+    ``solved`` is logged beside it. High feasibility at a low solved fraction is
+    an artefact, not a result.
     """
     rows = []
     for knob in knob_grid:
-        feas, obj = (score_fn(knob) if score_fn is not None
-                     else cv_score_knob(build_solver, knob, folds, oracle, base,
-                                        constraint_names, contextual))
-        rows.append((knob, feas, obj))
-        log(f"    [cv] {method}: knob={knob:.4g} feas={feas:.3f} obj={obj:.3f}", flush=True)
+        scored = (score_fn(knob) if score_fn is not None
+                  else cv_score_knob(build_solver, knob, folds, oracle, base,
+                                     constraint_names, contextual))
+        feas, obj, solved = scored
+        rows.append((knob, feas, obj, solved))
+        log(f"    [cv] {method}: knob={knob:.4g} feas={feas:.3f} obj={obj:.3f} "
+            f"solved={solved:.3f}", flush=True)
 
     # Budget is an ADDITIVE tolerance of os_tol_frac * |nominal| in the worse
     # direction (additive handles negative objectives, e.g. synthetic cost c'x < 0;
@@ -246,22 +272,28 @@ def select_knob_cv(build_solver: Callable[[float], Callable], knob_grid: Sequenc
         thresh = nominal_obj + margin
         ok = lambda o: np.isfinite(o) and o <= thresh + 1e-9
 
-    passing = [(i, k, f, o) for i, (k, f, o) in enumerate(rows)
-               if np.isfinite(f) and ok(o)]
+    # Signed objective: larger is better under "max", smaller under "min", so one
+    # comparison serves both senses.
+    signed = (lambda o: o) if sense == "max" else (lambda o: -o)
+
+    passing = [(k, f, o, sv) for (k, f, o, sv) in rows if np.isfinite(f) and ok(o)]
     if passing:
-        # max feasibility; ties -> later grid index (stronger knob)
-        best = max(passing, key=lambda r: (r[2], r[0]))
-        theta = best[1]
-        log(f"    [cv] {method}: theta*={theta:.4g} (feas={best[2]:.3f} obj={best[3]:.3f}; "
+        best = max(passing, key=lambda r: (r[1], signed(r[2])))
+        theta = best[0]
+        log(f"    [cv] {method}: theta*={theta:.4g} (feas={best[1]:.3f} "
+            f"obj={best[2]:.3f} solved={best[3]:.3f}; ties -> best objective; "
             f"budget {sense} obj {'>=' if sense=='max' else '<='} {thresh:.3f} "
             f"[nominal {nominal_obj:.3f}, tol {os_tol_frac:.2f}])", flush=True)
+        if np.isfinite(best[3]) and best[3] < 0.9:
+            log(f"    [cv] {method}: WARNING theta* solved only "
+                f"{best[3]*100:.0f}% of held-out contexts -- its feasibility is "
+                f"conditional on that subset and is not comparable at face value.",
+                flush=True)
     else:
-        finite = [(k, f, o) for k, f, o in rows if np.isfinite(o)]
+        finite = [(k, f, o, sv) for (k, f, o, sv) in rows if np.isfinite(o)]
         if not finite:
             raise ValueError(f"{method}: no finite CV scores; cannot select a knob")
-        best = (min if sense == "max" else max)  # best objective as fallback
-        theta = (max(finite, key=lambda r: r[2]) if sense == "max"
-                 else min(finite, key=lambda r: r[2]))[0]
+        theta = max(finite, key=lambda r: signed(r[2]))[0]
         log(f"    [cv] {method}: WARNING no knob meets the objective budget "
             f"(thresh {thresh:.3f}); falling back to best-objective knob theta*={theta:.4g}",
             flush=True)
@@ -272,18 +304,28 @@ def select_knob_cv(build_solver: Callable[[float], Callable], knob_grid: Sequenc
 # Checkpoint I/O
 # ---------------------------------------------------------------------------
 def load_score_checkpoint(path: str) -> dict:
-    """Return ``{(method, knob): (feas, obj)}`` from a scores CSV, or ``{}``."""
+    """Return ``{(method, knob): (feas, obj, solved)}`` from a scores CSV, or ``{}``.
+
+    Rows written before ``solved`` existed load with ``solved = nan``; they are
+    still usable for resume, they just cannot report the solved fraction. Note
+    their ``feas`` also used the old definition (unsolvable scored 0), so a mixed
+    checkpoint is not internally comparable -- refresh when that matters.
+    """
     import pandas as pd
     if not os.path.exists(path):
         return {}
     df = pd.read_csv(path)
     out = {}
     for _, r in df.iterrows():
-        out[(str(r["method"]), float(r["knob"]))] = (float(r["feas"]), float(r["obj"]))
+        solved = float(r["solved"]) if "solved" in df.columns else float("nan")
+        out[(str(r["method"]), float(r["knob"]))] = (
+            float(r["feas"]), float(r["obj"]), solved,
+        )
     return out
 
 
-def append_score(path: str, method: str, knob: float, feas: float, obj: float) -> None:
+def append_score(path: str, method: str, knob: float, feas: float, obj: float,
+                 solved: float = float("nan")) -> None:
     """Append one scored cell to the checkpoint CSV (header written once)."""
     import csv
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -291,8 +333,8 @@ def append_score(path: str, method: str, knob: float, feas: float, obj: float) -
     with open(path, "a", newline="") as f:
         w = csv.writer(f)
         if new:
-            w.writerow(["method", "knob", "feas", "obj"])
-        w.writerow([method, knob, feas, obj])
+            w.writerow(["method", "knob", "feas", "obj", "solved"])
+        w.writerow([method, knob, feas, obj, solved])
 
 
 def knob_key(method: str, coherent: Optional[bool]) -> str:

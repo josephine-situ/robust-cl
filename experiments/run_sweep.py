@@ -117,15 +117,15 @@ def run_cv_calibration_synthetic(config, methods=None, refresh=False):
             key = (method, float(knob))
             if key in ckpt:
                 return ckpt[key]
-            feas, obj = cv_score_knob(build, knob, folds, oracle, inst,
+            feas, obj, solved = cv_score_knob(build, knob, folds, oracle, inst,
                                       constraint_names=None, contextual=False)
-            append_score(scores_path, method, knob, feas, obj)
-            ckpt[key] = (feas, obj)
-            return feas, obj
+            append_score(scores_path, method, knob, feas, obj, solved)
+            ckpt[key] = (feas, obj, solved)
+            return feas, obj, solved
         return _score
 
     nom_build = _synth_build("nominal", config, model_type, model_params, seed)
-    _, nom_obj = make_scorer("nominal", nom_build)(0.0)
+    _, nom_obj, _ = make_scorer("nominal", nom_build)(0.0)
     knobs = {"nominal": 0.0}
     for method in [m for m in ("cp", "robust_reg", "wrapper") if m in methods and m in grids]:
         build = _synth_build(method, config, model_type, model_params, seed)

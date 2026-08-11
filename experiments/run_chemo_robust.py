@@ -848,18 +848,19 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
             key = (method, float(knob))
             if key in ckpt:
                 return ckpt[key]
-            feas, obj = cv_score_knob(build, knob, folds, oracle, instance,
+            feas, obj, solved = cv_score_knob(build, knob, folds, oracle, instance,
                                       constraint_names, contextual)
-            append_score(scores_path, method, knob, feas, obj)
-            ckpt[key] = (feas, obj)
-            return feas, obj
+            append_score(scores_path, method, knob, feas, obj, solved)
+            ckpt[key] = (feas, obj, solved)
+            return feas, obj, solved
         return _score
 
     # Nominal CV baseline (no robustness knob) -> objective budget reference.
     nom_build, _ = _method_build_map("nominal", settings, ranges, model_type,
                                      model_params, None, None)
-    nom_feas, nom_obj = make_scorer("nominal", nom_build)(0.0)
-    print(f"[cv] nominal: feas={nom_feas:.3f} obj={nom_obj:.3f}", flush=True)
+    nom_feas, nom_obj, nom_solved = make_scorer("nominal", nom_build)(0.0)
+    print(f"[cv] nominal: feas={nom_feas:.3f} obj={nom_obj:.3f} "
+          f"solved={nom_solved:.3f}", flush=True)
 
     knobs = {"nominal": 0.0}
     grids = cvc.get("knob_grids", {})
