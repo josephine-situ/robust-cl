@@ -868,6 +868,14 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
     # The scores CSV is keyed by a free-text `method` column and is resumable, so
     # this doubles stage-1 work but never redoes a cell.
     cells = cvc.get("coherence_cells", [True, False])
+    # CLI override, so a cluster run can narrow the cells without editing
+    # config.yaml (which would leave the checkout dirty and block the next pull).
+    _cell_arg = getattr(args, "coherence_cells", None)
+    if _cell_arg:
+        cells = {"coherent": [True], "incoherent": [False],
+                 "both": [True, False]}[_cell_arg]
+    print(f"[cv] coherence cells: "
+          f"{[('coherent' if c else 'incoherent') for c in cells]}", flush=True)
     # CP first (slowest / most likely to fail), then the rest.
     order = [m for m in ("cp", "robust_reg", "wrapper")
              if m in settings["methods_to_run"] and m in grids]
@@ -994,6 +1002,16 @@ def main():
         "--refresh-cv",
         action="store_true",
         help="With --calibrate-cv, delete the scores checkpoint + knobs JSON first (clean recompute).",
+    )
+    parser.add_argument(
+        "--coherence-cells",
+        choices=["coherent", "incoherent", "both"],
+        default=None,
+        help=(
+            "Which (method, coherence) cells --calibrate-cv scores. Overrides "
+            "cv_calibration.coherence_cells. 'coherent' halves stage-1 cost; keep "
+            "uncertainty.coherent: true so stage 2 consumes the matching theta*."
+        ),
     )
     parser.add_argument(
         "--pareto-center-cv",

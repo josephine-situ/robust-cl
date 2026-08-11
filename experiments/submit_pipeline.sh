@@ -20,6 +20,9 @@
 #             wrapper to keep stage-2's wrapper task CV-consistent -- slow).
 #   REFRESH=1 recompute stage-0/1 CV from scratch (else they resume the checkpoints).
 #   N_REAL    synthetic data draws in stage 0 (default 10).
+#   COHERENCE which (method, coherence) cells stage 1 calibrates:
+#             coherent | incoherent | both (default). "coherent" halves stage 1;
+#             keep uncertainty.coherent: true so stage 2 uses the matching theta*.
 #   STAGE2_ARRAY   stage-2 array spec (default "0-4%2"; e.g. "0-2,4%2" to skip wrapper).
 #   SKIP_SYNTHETIC=1  start at stage 1 (use when re-chaining gastric after a wall-clock
 #                     failure and synthetic has already passed).
@@ -51,7 +54,7 @@ else
 fi
 
 echo "Stage 1 (gastric CV calibration): METHODS='${METHODS}' REFRESH=${REFRESH:-0}${dep:+, ${dep}}"
-jid1=$(METHODS="${METHODS}" REFRESH="${REFRESH:-0}" \
+jid1=$(METHODS="${METHODS}" REFRESH="${REFRESH:-0}" COHERENCE="${COHERENCE:-both}" \
        sbatch --parsable ${dep} experiments/submit_cv_calibrate.sh)
 echo "  submitted stage 1 as job ${jid1}"
 jids="${jids:+${jids} }${jid1}"
