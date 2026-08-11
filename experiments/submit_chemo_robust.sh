@@ -36,22 +36,28 @@ RUN_MODE="${RUN_MODE:-probe}"
 N_REALIZATIONS="${N_REALIZATIONS:-20}"
 SUBSAMPLE_FRAC="${SUBSAMPLE_FRAC:-0.8}"
 RHS_GRID="${RHS_GRID:-0.3 0.4 0.5 0.6}"
+# Extra flags passed straight through, e.g. EXTRA_ARGS="--resume" to keep the
+# realization cells already in the long CSV after a crash or wall-clock kill.
+EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 if [[ "${RUN_MODE}" == "sweep" ]]; then
     python -u experiments/run_chemo_robust.py \
         --n-realizations "${N_REALIZATIONS}" \
         --subsample-frac "${SUBSAMPLE_FRAC}" \
         --rhs-grid ${RHS_GRID} \
-        --methods nominal robust_reg cp
+        --methods nominal robust_reg cp \
+        ${EXTRA_ARGS}
 else
     python -u experiments/run_chemo_robust.py \
         --n-realizations "${N_REALIZATIONS}" \
-        --subsample-frac "${SUBSAMPLE_FRAC}"
+        --subsample-frac "${SUBSAMPLE_FRAC}" \
+        ${EXTRA_ARGS}
 fi
 
 # Examples:
 #   sbatch experiments/submit_chemo_robust.sh                                  # probe, frac=0.8
 #   SUBSAMPLE_FRAC=0.5 sbatch experiments/submit_chemo_robust.sh               # probe sensitivity
 #   RUN_MODE=sweep N_REALIZATIONS=10 SUBSAMPLE_FRAC=0.5 sbatch experiments/submit_chemo_robust.sh
+#   EXTRA_ARGS=--resume sbatch experiments/submit_chemo_robust.sh                # continue after a crash
 
 echo "Finished at $(date)"
