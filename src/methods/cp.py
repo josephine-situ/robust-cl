@@ -1677,7 +1677,7 @@ class _CoherentSeparation:
         cap_label = "feasibility" if self.single_point else "coverage"
         print(
             f"Iter {iteration}: {cap_label} cap hit (no sampled scenario keeps "
-            f"p_infeas <= alpha {feas_alpha*100:.1f}%); stopping.",
+            f"p_infeas <= alpha {self.alpha*100:.1f}%); stopping.",
             flush=True,
         )
         return _StepResult(stop=True, status="coverage_cap", obj=last_obj,

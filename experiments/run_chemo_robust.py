@@ -702,11 +702,81 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
         df_r["strength"] = cons if cons is not None else "calibrated"
         return df_r
 
+    # Incremental output: write each realization's rows to disk as they complete
+    # so a mid-run crash (or wall-clock kill) keeps everything already computed.
+    os.makedirs("results/gastric", exist_ok=True)
+    tag = f"_{args.output_tag}" if getattr(args, "output_tag", None) else ""
+    suffix = tag + ("_sweep" if sweeping else "")
+    long_path = f"results/gastric/chemo_robust_realizations{suffix}.csv"
+
+    resume = getattr(args, "resume", False)
+
+    # Canonical string form of a grid value, matching how `_tag` stores it, so a
+    # cell computed this run keys identically to the same cell read back from CSV.
+    def _canon(v, none_label):
+        return none_label if v is None else str(v)
+
+    done_cells = set()  # (frac, rhs, realization) triples already on disk
+    if resume and os.path.exists(long_path):
+        prior = pd.read_csv(long_path)
+        # Guard: CRN reproducibility (sub_seed depends only on the realization
+        # index) only makes a resumed cell bit-identical to a fresh one when the
+        # methods and grids match. Refuse to blend incompatible configurations.
+        def _grid_canon(grid, none_label):
+            return {_canon(v, none_label) for v in grid}
+        mismatches = []
+        have_methods = set(prior["method"].astype(str).unique())
+        want_methods = {str(m) for m in settings["methods_to_run"]}
+        if have_methods != want_methods:
+            mismatches.append(f"methods {sorted(have_methods)} != {sorted(want_methods)}")
+        for col, grid, none_label in (
+            ("frac", frac_grid, "full"),
+            ("rhs", rhs_grid, "default"),
+            ("strength", cons_grid, "calibrated"),
+        ):
+            have = set(prior[col].astype(str).unique())
+            want = _grid_canon(grid, none_label)
+            if not have <= want:
+                mismatches.append(f"{col} {sorted(have)} not within {sorted(want)}")
+        if mismatches:
+            raise SystemExit(
+                f"--resume refused: existing {long_path} was produced with a "
+                f"different configuration:\n  - " + "\n  - ".join(mismatches) +
+                "\nDrop --resume to refresh (clean recompute), or pass a different "
+                "--output-tag to write a separate file."
+            )
+        for _, row in (prior[["frac", "rhs", "realization"]]
+                       .drop_duplicates().iterrows()):
+            done_cells.add((str(row["frac"]), str(row["rhs"]), str(row["realization"])))
+        print(f"[resume] {len(done_cells)} realization-cell(s) already present in "
+              f"{long_path}; computing only the remainder.", flush=True)
+    elif os.path.exists(long_path):
+        # Fresh run: don't append onto a stale file from a previous run.
+        os.remove(long_path)
+
     rows = []
+    flushed = 0  # index into `rows` of the first not-yet-written entry
+
+    def _flush_new_rows():
+        nonlocal flushed
+        if flushed >= len(rows):
+            return
+        new = pd.concat(rows[flushed:], ignore_index=True)
+        header = not os.path.exists(long_path)
+        new.to_csv(long_path, mode="a", header=header, index=False)
+        flushed = len(rows)
+        print(f"  [checkpoint] wrote {len(new)} rows to {long_path} "
+              f"({len(rows)} total so far)", flush=True)
+
     for frac in frac_grid:
         for rhs in rhs_grid:
             for r in range(n_real):
                 sub_seed = base_seed + 1000 * (r + 1)  # CRN: same across all axes
+                cell_key = (_canon(frac, "full"), _canon(rhs, "default"), str(r))
+                if resume and cell_key in done_cells:
+                    print(f"[resume] skip complete cell: frac={frac} rhs={rhs} "
+                          f"realization {r + 1}/{n_real}", flush=True)
+                    continue
                 if sweeping_cons:
                     # Two passes so every (method, strength) cell is scored on ONE
                     # shared samestore cohort (intersection over all method x strength
@@ -761,13 +831,16 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
                         cv_knobs=cv_knobs,
                     )
                     rows.append(_tag(df_r, r, sub_seed, rhs, frac, None))
+                # Persist this realization's rows before moving on.
+                _flush_new_rows()
 
-    df_long = pd.concat(rows, ignore_index=True)
-    os.makedirs("results/gastric", exist_ok=True)
-    tag = f"_{args.output_tag}" if getattr(args, "output_tag", None) else ""
-    suffix = tag + ("_sweep" if sweeping else "")
-    long_path = f"results/gastric/chemo_robust_realizations{suffix}.csv"
-    df_long.to_csv(long_path, index=False)
+    if resume:
+        # Resumed + newly computed rows are all on disk from the incremental
+        # flushes; read the union back so the summary covers everything.
+        df_long = pd.read_csv(long_path)
+    else:
+        df_long = pd.concat(rows, ignore_index=True)
+        df_long.to_csv(long_path, index=False)
 
     group_cols = ((["frac"] if sweeping_frac else [])
                   + (["rhs"] if sweeping_rhs else [])
@@ -1007,6 +1080,17 @@ def main():
         "--refresh-cv",
         action="store_true",
         help="With --calibrate-cv, delete the scores checkpoint + knobs JSON first (clean recompute).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume a realization sweep: keep the existing results/gastric/"
+            "chemo_robust_realizations*.csv and compute only the (frac, rhs, "
+            "realization) cells not already in it (safe under common random "
+            "numbers). Refuses to resume if methods/grids differ. Default (no "
+            "flag) is a clean refresh that recomputes from scratch."
+        ),
     )
     parser.add_argument(
         "--coherence-cells",
