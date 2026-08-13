@@ -1,0 +1,235 @@
+\documentclass{beamer}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{array}
+\usetheme{default}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}{\hfill\insertframenumber/\inserttotalframenumber\hspace{1.5em}}
+
+\title{Robust Constraint Learning: Research Update}
+\subtitle{One shared $\mathcal{D}$; CP converges on gastric}
+\date{10 August 2026}
+
+\begin{document}
+
+\begin{frame}
+  \titlepage
+  \begin{center}\footnotesize
+  Supersedes the 7 Aug deck. Standing method reference: \texttt{method.tex}.
+  \end{center}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{1. One $\mathcal{D}$, three methods}
+  \small
+  Was: each method had its own uncertainty notion. Method differences were partly
+  input differences.
+  \[
+    \mathcal D_c = \{\delta: |\delta_i|\le\varepsilon_c,\ \lVert\delta\rVert_1 \le
+      \texttt{budget\_frac}\cdot n\,\varepsilon_c\},
+    \qquad \varepsilon_c = \varepsilon_0\cdot\mathrm{scale}(y_c)
+  \]
+  \begin{center}\small
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    Method & Use of $\mathcal D$ & Dial \\
+    \midrule
+    Robust Reg. & robustifies the \emph{fit}       & \texttt{label\_eps} \\
+    Wrapper     & chance-constrains a sample       & $\alpha$ \\
+    CP (ours)   & separates \emph{lazily}          & $\tau$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+  \begin{itemize}
+    \item Draws are \textbf{vertices} --- where Robust Reg.'s inner max sits. No
+      method gets a weaker adversary.
+    \item \textbf{Coherence}: one flag, crossed with all three.
+    \item $\varepsilon_0$, \texttt{budget\_frac}: shared constants, not knobs.
+    \item Settles old open question 1: assumed noise, not bootstrap.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{2. Radius = unexplained spread, not marginal}
+  \small
+  $\delta$ perturbs labels \emph{before} retraining $\Rightarrow$ radius lives in
+  label space. Both candidates do; they measure different things.
+  \begin{center}\small
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    & $\mathrm{sd}(y)$ & OOF residual sd & unexplained \\
+    \midrule
+    Gastric toxicities & 0.288 & 0.249--0.293 & 0.78--1.02 \\
+    Synthetic ($\sigma_{\text{true}}=0.100$) & 0.545 & \textbf{0.128} & 0.235 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+  \begin{itemize}
+    \item $\mathrm{sd}(y)$ is mostly \emph{signal}. At $\varepsilon_0=1$ it corrupts
+      synthetic $4\times$ too hard --- CP would not converge.
+    \item Now $\varepsilon_0=1$ = \textbf{one unexplained sd}. Synthetic: $0.128$ vs
+      true noise $0.100$, without being told the DGP.
+    \item Validation of the estimator, never an input to it.
+    \item Caveat: conflates noise with misspecification. Gastric fits are poor, so
+      $\mathcal D$ stays wide there. \textbf{No coverage claim.}
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{3. CP was not converging on gastric --- 5 faults}
+  \small
+  Symptom: hit \texttt{max\_iterations} every run. Every $\tau\lesssim0.5$ gave an
+  identical run --- the knob was inert.
+  \begin{enumerate}
+    \item \textbf{Resampled each iteration}, but $d_0$ frozen at iteration 0. Stopping
+      rule compared different samples. Bank now drawn once.
+    \item \textbf{MIP gap hard-coded at 1\%} --- the biggest. Gastric objective
+      ${\approx}10$, so gap ${\approx}0.1$; separated distances ${\approx}0.007$.
+      Cuts below the solver's tolerance $\Rightarrow$ same incumbent. Now $10^{-4}$.
+    \item \textbf{Cut removal $\Rightarrow$ cycles.} Nothing is removed now; eligible
+      set strictly shrinks; terminates in $\le B$.
+    \item \textbf{Drifting coverage baseline} (a ratchet). Now pinned to the nominal
+      fit's servable anchors (8/10), set-wise.
+    \item \textbf{No rejection memory} --- rollbacks grew $8\to44$/iter. Caching is
+      exact once (4) holds. 113/200 draws rejected.
+  \end{enumerate}
+  \medskip
+  \footnotesize
+  Faults 1--2 are regime-specific: synthetic never hit the gap (objective
+  ${\approx}1.2$, distances ${\approx}0.1$).
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{4. Result: gastric converges}
+  \small
+  Worst distance by iteration, $\tau=0.1$:
+  \[
+    0.0101 \;\; 0.0124 \;\; 0.0098 \;\; 0.0055 \;\cdots\; 0.0010 \;\; 0.00074 \;\;
+    \mathbf{0.00038}
+  \]
+  \begin{itemize}
+    \item \texttt{status=optimal}, \textbf{19 iterations}. Reached the tolerance
+      ($0.00048$); did not exhaust iterations.
+    \item 0 cut-set repeats, 0 objective regressions. Was: exact period-4 cycle.
+    \item Final master: 26 cuts, 9{,}095 vars / 22{,}957 constrs, $B=200$.
+    \item Anchor infeasibility flat at the 8/10 baseline --- protected set never
+      breached.
+    \item Synthetic control unchanged: 6 iterations, objective $-1.23806$.
+  \end{itemize}
+  \medskip
+  \footnotesize
+  New diagnostics: cycle status + period, objective regressions, permanent
+  rejections, bound-blocked rate. Reported, never auto-acted on.
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{5. Two structural results}
+  \small
+  \textbf{CP $\equiv$ lazy wrapper at $\alpha=0$}
+  \begin{itemize}
+    \item Draw $b$ = pure function of $(\texttt{seed},b)$ $\Rightarrow$ wrapper's $P$
+      models are a \emph{prefix} of CP's bank.
+    \item At $B=P$: CP ($\tau\to0$) and wrapper ($\alpha=0$) agree,
+      $\max|\Delta x| = 0$.
+  \end{itemize}
+  \medskip
+  \textbf{$10\times$ the adversaries, $1/5$ the MIP}
+  \begin{center}\small
+  \begin{tabular}{@{}lrrr@{}}
+    \toprule
+    & adversaries & vars & constrs \\
+    \midrule
+    Wrapper & $P=20$  & 31{,}917 & 101{,}172 \\
+    CP      & $B=200$ & \textbf{6{,}380} & \textbf{20{,}236} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+  \begin{itemize}
+    \item Wrapper embeds all $P$; CP embeds one cut per iteration. The bank is a
+      separation \emph{pool}.
+    \item $d_0$ is now a 0.9 quantile, not the max --- the max grows with $B$, and
+      CP/wrapper run at different $B$ by design.
+    \item But the \emph{stopping statistic} is still the max, so iteration 0 fails
+      its own test: $\tau=1$ still separates the worst ${\sim}$decile.
+      \textbf{No $\tau$ in the grid reproduces nominal} --- run nominal for that
+      endpoint.
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{6. Evaluation and housekeeping}
+  \small
+  \begin{itemize}
+    \item \textbf{Synthetic draws were fake.} No seed was passed, so every
+      ``realization'' rebuilt the same dataset --- spread across draws was
+      identically \textbf{zero}. Now seeded, at CV-calibrated knobs.
+    \item \textbf{10 draws everywhere} (was 30 headline / 10 wrapper). That gap is why
+      the wrapper was never comparable and got dropped from the figures.
+    \item \textbf{Coherence crossed}, $\theta^\ast$ calibrated per cell --- coherent is
+      the stronger adversary, so one shared $\theta^\ast$ would confound coherence with
+      conservatism. Coherent Robust Reg.\ implemented.
+    \item \textbf{Wrapper restored} to gastric; OS robustification off by default.
+    \item \textbf{DLT-only dropped.} Retires a bug: \texttt{\_feas} read the
+      all-constraints row regardless of mode.
+    \item Synthetic figures now show a min--max band and the \textbf{worst-case edge}.
+    \item \textbf{Also landed today}: CV feasibility scored \emph{conditional on
+      solved} (ties $\to$ best objective); per-anchor warm starts;
+      \texttt{--coherence-cells}; CP trace opt-in.
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{7. Landed: cut the whole scenario}
+  \small
+  CP cut only the constraints breached at the current $x^\ast$. But a scenario is one
+  coherent relabeling --- if plausible, \emph{all} its constraints should hold.
+  \medskip
+
+  \texttt{cp.cut\_whole\_scenario: true} --- now the default; \textbf{not yet run}:
+  \begin{itemize}
+    \item Extends the wrapper equivalence to multi-constraint problems. The wrapper
+      already gates one indicator on all constraints.
+    \item Makes per-scenario exclusion sound. A partially-cut scenario can breach a
+      different constraint at a moved $x^\ast$ and never be re-separated.
+    \item Then the stopping rule covers the whole bank, not the scannable remainder.
+    \item Cost: ${\approx}5$ embedded models per accepted scenario, was ${\approx}1.4$.
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Summary and next}
+  \small
+  \textbf{Changed}
+  \begin{enumerate}
+    \item One shared $\mathcal D$ at one unexplained sd.
+    \item CP converges on gastric: 5 faults, MIP gap the biggest. $\tau$ is live for
+      the first time.
+    \item CP $\equiv$ wrapper at $\alpha=0$, exactly; $10\times$ adversaries in $1/5$
+      the MIP.
+    \item Synthetic multi-draw sweep was degenerate; now genuine.
+  \end{enumerate}
+  \medskip
+  \textbf{Next}
+  \begin{itemize}
+    \item Re-run the pipeline with whole-scenario cuts on; check master size.
+      Every old result number predates the fixes.
+    \item Sensitivity over $\varepsilon_0\in\{0.5,1,2\}$: show $\tau^\ast$, not
+      $\varepsilon_0$, drives CP.
+    \item Open: cuts per test point vs.\ over anchors. WFP setting still needs a
+      loader.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Initial results}
+  \small
+  \begin{itemize}
+    \item CP and wrapper have better OOF feasibility than robust regression.
+    \item Robust regression has better OOF objective.
+  \end{itemize}
+\end{frame}
+
+\end{document}

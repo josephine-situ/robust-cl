@@ -27,6 +27,10 @@ class MLModelData:
     y_true: Optional[np.ndarray] # (n,) - True noiseless values if available
     weight: float = 1.0        # Coefficient for this model in the constraint (w_i in sum(w_i * f_i(x)) <= b)
     obj_weight: float = 0.0    # Coefficient for this model in the objective
+    # Range y_train can plausibly take, used to clip label perturbations (see
+    # src/methods/uncertainty.py). Percentile-scored outcomes are (0.0, 1.0);
+    # None (synthetic, raw-scale OS) leaves perturbations unclipped.
+    label_bounds: Optional[tuple] = None
 
 @dataclass
 class LearnedConstraint:
@@ -531,6 +535,9 @@ def gastric_cancer(seed: int = 42,
             y_true=y_fit,
             weight=1.0,
             obj_weight=0.0,
+            # Percentile ranks: a label perturbation may not push a rank outside
+            # [0, 1] (src/methods/uncertainty.py clips against this).
+            label_bounds=(0.0, 1.0),
         )
         constraints.append(LearnedConstraint(
             name=f"{name}_constraint",

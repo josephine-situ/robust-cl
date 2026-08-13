@@ -30,6 +30,7 @@ def _synth_build(method, config, model_type, model_params, seed):
     from src.methods.robust_regression import solve_robust_regression
     from src.methods.wrapper import solve_wrapper
     from src.methods.cp import solve_cp
+    from src.methods.uncertainty import uncertainty_set_from_config
     unc = config["uncertainty"]
     rr = config["methods"].get("robust_reg", {})
     cp = config["methods"].get("cp", {})
@@ -40,11 +41,16 @@ def _synth_build(method, config, model_type, model_params, seed):
         return lambda knob: partial(
             solve_robust_regression, model_type=model_type, model_params=model_params,
             label_eps=knob, budget_frac=rr.get("budget_frac", 0.5), K=rr.get("K", 5),
-            seed=seed, rho=0.0)
+            seed=seed, rho=0.0, uncertainty_set=uncertainty_set_from_config(config))
     if method == "wrapper":
         return lambda knob: partial(
             solve_wrapper, model_type=model_type, model_params=model_params,
-            n_estimators=unc.get("n_bootstrap", 20), alpha=knob, seed=seed, rho=0.0)
+            n_estimators=config["methods"]["wrapper"].get("n_estimators", 20),
+            alpha=knob, seed=seed, rho=0.0,
+            scenario_source=config["methods"]["wrapper"].get("scenario_source", "noise"),
+            uncertainty_set=uncertainty_set_from_config(config),
+            robustify_objective=config["methods"]["wrapper"].get(
+                "robustify_objective", False))
     if method == "cp":
         return lambda knob: partial(
             solve_cp, model_type=model_type, model_params=model_params, rho=0.0,
@@ -57,7 +63,14 @@ def _synth_build(method, config, model_type, model_params, seed):
             # (The basic path previously ignored dist_tol entirely -- it cut every
             # violation > 1e-6 -- so synthetic CP had no robustness lever at all.)
             cp_alpha=0.0, cp_dist_tol_rel=knob,
-            cp_cut_eviction=cp.get("cut_eviction", "evict_slack"))
+            cp_cut_eviction=cp.get("cut_eviction", "evict_slack"),
+            cp_scenario_source=cp.get("scenario_source", "noise"),
+            cp_n_scenarios=cp.get("n_scenarios", 200),
+            cp_d0_quantile=cp.get("d0_quantile", 0.9),
+            cp_objective_monotone=cp.get("objective_monotone", False),
+            cp_mip_gap=float(cp.get("mip_gap", 1e-4)),
+            cp_cut_whole_scenario=cp.get("cut_whole_scenario", True),
+            cp_uncertainty=uncertainty_set_from_config(config))
     raise ValueError(f"unknown synthetic method {method}")
 
 
@@ -104,15 +117,15 @@ def run_cv_calibration_synthetic(config, methods=None, refresh=False):
             key = (method, float(knob))
             if key in ckpt:
                 return ckpt[key]
-            feas, obj = cv_score_knob(build, knob, folds, oracle, inst,
+            feas, obj, solved = cv_score_knob(build, knob, folds, oracle, inst,
                                       constraint_names=None, contextual=False)
-            append_score(scores_path, method, knob, feas, obj)
-            ckpt[key] = (feas, obj)
-            return feas, obj
+            append_score(scores_path, method, knob, feas, obj, solved)
+            ckpt[key] = (feas, obj, solved)
+            return feas, obj, solved
         return _score
 
     nom_build = _synth_build("nominal", config, model_type, model_params, seed)
-    _, nom_obj = make_scorer("nominal", nom_build)(0.0)
+    _, nom_obj, _ = make_scorer("nominal", nom_build)(0.0)
     knobs = {"nominal": 0.0}
     for method in [m for m in ("cp", "robust_reg", "wrapper") if m in methods and m in grids]:
         build = _synth_build(method, config, model_type, model_params, seed)
@@ -198,33 +211,87 @@ def run_gamma_sweep(gamma_values=None):
     return combined
 
 
-def run_noise_sweep(noise_values=None):
+def run_noise_sweep(noise_values=None, refresh=False, n_real=1):
     """
-    Sweep over label noise levels sigma.
+    Sweep over label noise levels sigma, across ``n_real`` independent data draws.
     Shows how each method degrades as noise increases.
+
+    Each draw gets seed ``base + 1000 * r``, so a "realization" is a genuinely
+    different dataset. Previously ``run_experiment`` was called without a seed, so
+    every repeat rebuilt the *same* synthetic instance and the spread across
+    realizations was identically zero.
+
+    Methods run at their CV-calibrated knobs when
+    ``results/cv/synthetic_robustness_knobs.json`` exists.
+
+    Written INCREMENTALLY: the CSV is rewritten after each (sigma, draw) cell, and
+    cells already present are skipped on re-entry (pass ``refresh=True`` to start
+    over). A single end-of-run write loses the whole sweep if the process is killed
+    partway -- which it was.
     """
     if noise_values is None:
         noise_values = [0.0, 0.05, 0.1, 0.2, 0.5]
 
     config = load_config()
-    all_rows = []
+    os.makedirs("results/synthetic", exist_ok=True)
+    out_path = "results/synthetic/noise_sweep_results.csv"
+    base_seed = config["uncertainty"].get("bootstrap_seed", 42)
+
+    knobs = _load_synth_knobs()
+
+    all_rows, done = [], set()
+    if refresh and os.path.exists(out_path):
+        os.remove(out_path)
+    elif os.path.exists(out_path):
+        prev = pd.read_csv(out_path)
+        # Only resume from a CSV matching the current method set; a stale run with
+        # different methods must not be silently spliced into the new one.
+        if "noise_std" in prev.columns and len(prev):
+            all_rows.append(prev)
+            # Pre-`draw` CSVs are treated as draw 0 so old sweeps still resume.
+            draws = (prev["draw"] if "draw" in prev.columns else 0)
+            done = set(zip(prev["noise_std"].astype(float),
+                           pd.Series(draws, index=prev.index).astype(int)))
+            print(f"[noise-sweep] resuming; {len(done)} (sigma, draw) cells already done",
+                  flush=True)
 
     for sigma in noise_values:
-        print(f"\n{'#' * 60}")
-        print(f"# NOISE_STD = {sigma}")
-        print(f"{'#' * 60}")
+        for r in range(int(n_real)):
+            if (float(sigma), r) in done:
+                print(f"[noise-sweep] skip sigma={sigma} draw={r} (already in {out_path})",
+                      flush=True)
+                continue
+            print(f"\n{'#' * 60}")
+            print(f"# NOISE_STD = {sigma}   DRAW {r + 1}/{n_real}")
+            print(f"{'#' * 60}")
 
-        config["data"]["noise_std"] = sigma
-        df, _ = run_experiment(config)
-        df["noise_std"] = sigma
-        all_rows.append(df)
+            config["data"]["noise_std"] = sigma
+            df, _ = run_experiment(config, seed=base_seed + 1000 * r, knobs=knobs)
+            df["noise_std"] = sigma
+            df["draw"] = r
+            all_rows.append(df)
+
+            pd.concat(all_rows, ignore_index=True).to_csv(out_path, index=False)
+            print(f"[noise-sweep] checkpointed sigma={sigma} draw={r} -> {out_path}",
+                  flush=True)
 
     combined = pd.concat(all_rows, ignore_index=True)
-    os.makedirs("results/synthetic", exist_ok=True)
-    combined.to_csv("results/synthetic/noise_sweep_results.csv", index=False)
-    print(f"\nSaved noise sweep to results/synthetic/noise_sweep_results.csv")
+    combined.to_csv(out_path, index=False)
+    print(f"\nSaved noise sweep to {out_path}")
 
     return combined
+
+
+def _load_synth_knobs(path="results/cv/synthetic_robustness_knobs.json"):
+    """CV-calibrated theta* per method, or ``None`` if --calibrate-cv hasn't run."""
+    if not os.path.exists(path):
+        print(f"[noise-sweep] no {path}; using config.yaml knobs "
+              f"(run --calibrate-cv for calibrated operating points)", flush=True)
+        return None
+    with open(path) as f:
+        knobs = json.load(f)
+    print(f"[noise-sweep] CV knobs from {path}: {knobs}", flush=True)
+    return knobs
 
 
 def plot_gamma_sweep(csv_path="results/synthetic/sweep_results.csv",
@@ -306,41 +373,56 @@ def plot_noise_sweep(csv_path="results/synthetic/noise_sweep_results.csv",
     colors = sns.color_palette("colorblind", len(methods))
     method_colors = dict(zip(methods, colors))
 
+    n_draws = df["draw"].nunique() if "draw" in df.columns else 1
+
+    def _band(ax, method, col, worst="max"):
+        """Mean line + worst-case band over the independent draws.
+
+        A mean alone hides the tail, and the tail is the whole claim -- robustness
+        is about the bad draw, not the average one. With a single draw the band
+        collapses onto the line.
+        """
+        sub = df[df["method"] == method].dropna(subset=[col])
+        if sub.empty:
+            return
+        g = sub.groupby("noise_std")[col]
+        mean, lo, hi = g.mean(), g.min(), g.max()
+        ax.plot(mean.index, mean.values, "o-", label=method,
+                color=method_colors[method])
+        if n_draws > 1:
+            ax.fill_between(mean.index, lo.values, hi.values,
+                            color=method_colors[method], alpha=0.15, lw=0)
+            edge = hi if worst == "max" else lo
+            ax.plot(edge.index, edge.values, ls=":", lw=1.2,
+                    color=method_colors[method])
+
     fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    band_note = f" (mean, band = min-max over {n_draws} draws)" if n_draws > 1 else ""
 
     # --- True feasibility vs noise (only if the column exists) ---
     ax = axes[0]
-    if "true_feasible" in df.columns:
+    if "true_feasible" in df.columns and df["true_feasible"].notna().any():
         for method in methods:
-            sub = df[df["method"] == method]
-            if sub["true_feasible"].notna().any():
-                ax.plot(sub["noise_std"],
-                        sub["true_feasible"].astype(float),
-                        "o-", label=method, color=method_colors[method])
+            _band(ax, method, "true_feasible", worst="min")
         ax.set_ylabel("True feasibility")
-        ax.set_title("Ground Truth Feasibility vs. Noise")
-        ax.legend(fontsize=8)
+        ax.set_title("Ground Truth Feasibility vs. Noise" + band_note)
     else:
         # Fall back to worst-case violation when no separate GT feasibility column.
         for method in methods:
-            sub = df[df["method"] == method]
-            ax.plot(sub["noise_std"], sub["worst_violation"].astype(float),
-                    "o-", label=method, color=method_colors[method])
+            _band(ax, method, "worst_violation")
         ax.set_ylabel("Worst-case violation")
-        ax.set_title("Worst-case Violation vs. Noise")
-        ax.legend(fontsize=8)
+        ax.set_title("Worst-case Violation vs. Noise" + band_note)
+    ax.legend(fontsize=8)
     ax.set_xlabel("Label noise $\\sigma$")
     ax.grid(alpha=0.3)
 
     # --- Held-out feasibility vs noise ---
     ax = axes[1]
     for method in methods:
-        sub = df[df["method"] == method]
-        ax.plot(sub["noise_std"], sub["feasibility_rate"],
-                "o-", label=method, color=method_colors[method])
+        _band(ax, method, "feasibility_rate", worst="min")
     ax.set_xlabel("Label noise $\\sigma$")
     ax.set_ylabel("Held-out feasibility rate")
-    ax.set_title("Empirical Feasibility vs. Noise")
+    ax.set_title("Empirical Feasibility vs. Noise" + band_note)
     ax.axhline(y=1.0, color="green", linestyle="--", alpha=0.3)
     ax.set_ylim(-0.05, 1.1)
     ax.legend(fontsize=8)
@@ -348,15 +430,12 @@ def plot_noise_sweep(csv_path="results/synthetic/noise_sweep_results.csv",
 
     # --- Objective vs noise ---
     ax = axes[2]
+    df = df[df["objective"].isna() | (df["objective"] < 1e6)]
     for method in methods:
-        sub = df[df["method"] == method]
-        sub = sub[sub["objective"] < 1e6]
-        if len(sub) > 0:
-            ax.plot(sub["noise_std"], sub["objective"],
-                    "o-", label=method, color=method_colors[method])
+        _band(ax, method, "objective")
     ax.set_xlabel("Label noise $\\sigma$")
     ax.set_ylabel("Objective $c^\\top x^*$")
-    ax.set_title("Objective Cost vs. Noise")
+    ax.set_title("Objective Cost vs. Noise" + band_note)
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
 
@@ -375,6 +454,8 @@ if __name__ == "__main__":
                         default="all")
     parser.add_argument("--plot-only", action="store_true",
                         help="Only plot from existing CSVs")
+    parser.add_argument("--refresh-sweep", action="store_true",
+                        help="Discard an existing noise_sweep_results.csv instead of resuming it")
     parser.add_argument("--calibrate-cv", action="store_true",
                         help="Synthetic robustness-parameter CV (KFold) -> synthetic_robustness_knobs.json")
     parser.add_argument("--refresh-cv", action="store_true",
@@ -382,7 +463,8 @@ if __name__ == "__main__":
     parser.add_argument("--pareto", action="store_true",
                         help="Synthetic CV-centered Pareto -> results/synthetic/synthetic_pareto.csv")
     parser.add_argument("--methods", nargs="+", default=None)
-    parser.add_argument("--n-real", type=int, default=8, help="Pareto noise realizations")
+    parser.add_argument("--n-real", type=int, default=8,
+                        help="Independent data draws (Pareto and --sweep noise)")
     args = parser.parse_args()
 
     os.makedirs("results/synthetic", exist_ok=True)
@@ -401,5 +483,5 @@ if __name__ == "__main__":
             run_gamma_sweep()
             plot_gamma_sweep()
         if args.sweep in ["noise", "all"]:
-            run_noise_sweep()
+            run_noise_sweep(refresh=args.refresh_sweep, n_real=args.n_real)
             plot_noise_sweep()

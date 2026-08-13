@@ -35,9 +35,15 @@ METHODS="${METHODS:-cp robust_reg}"     # add 'wrapper' if you can afford it (sl
 REFRESH_FLAG=""
 if [ "${REFRESH:-0}" = "1" ]; then REFRESH_FLAG="--refresh-cv"; fi
 
-echo "=== CV calibration: methods='${METHODS}' ${REFRESH_FLAG} ==="
+# Which (method, coherence) cells to calibrate: coherent | incoherent | both.
+# "coherent" halves stage-1 cost. Keep uncertainty.coherent: true in config.yaml
+# so stage 2 looks up the matching method@coherent theta*.
+COHERENCE="${COHERENCE:-both}"
+
+echo "=== CV calibration: methods='${METHODS}' cells='${COHERENCE}' ${REFRESH_FLAG} ==="
 python -u experiments/run_chemo_robust.py \
     --calibrate-cv ${REFRESH_FLAG} \
+    --coherence-cells "${COHERENCE}" \
     --methods ${METHODS}
 
 echo "Finished CV calibration at $(date)"
@@ -47,4 +53,5 @@ echo "Knobs:"; cat results/cv/gastric_robustness_knobs.json || true
 #   - Submit:            sbatch experiments/submit_cv_calibrate.sh
 #   - Clean recompute:   REFRESH=1 sbatch experiments/submit_cv_calibrate.sh
 #   - Include wrapper:   METHODS="cp robust_reg wrapper" sbatch experiments/submit_cv_calibrate.sh
+#   - Coherent only:     COHERENCE=coherent sbatch experiments/submit_cv_calibrate.sh
 #   - Then run stage 2 (submit_cp_final.sh) which auto-loads the knobs JSON.

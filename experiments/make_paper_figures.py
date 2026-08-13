@@ -24,11 +24,28 @@ OUT = "results/figures"
 os.makedirs(OUT, exist_ok=True)
 
 METHODS = ["nominal", "robust_reg", "wrapper", "cp"]
+# Gastric headline/trade-off: the wrapper cell (`final_wrapper`) is a Jul-11 run under
+# the LEGACY ALPHA calibration and pre-relative-tau code, at 10 draws vs 30 for the
+# rest -- not comparable, so it is excluded until a CV-calibrated wrapper rerun exists.
+GASTRIC_METHODS = ["nominal", "robust_reg", "cp"]
 LABEL = {"nominal": "Nominal", "robust_reg": "Robust Reg.", "wrapper": "Wrapper", "cp": "CP (ours)"}
 COLOR = {"nominal": "#595959", "robust_reg": "#E69F00", "wrapper": "#009E73", "cp": "#0072B2"}
 MARKER = {"nominal": "o", "robust_reg": "s", "wrapper": "^", "cp": "D"}
-MODES = ["all_constraints", "dlt_only"]
+# all_constraints only (config.yaml methods.chemo.constraint_modes). Every gastric
+# figure sizes its panel grid from len(MODES), so putting "dlt_only" back here (and
+# in the config) restores the two-panel layout with no other edit. That also retires
+# the mode-blind `_feas` bug below: it selected the `all_constraints` OUTCOME row
+# regardless of mode, so the dlt_only panel never showed DLT-only joint feasibility.
+MODES = ["all_constraints"]
 MODE_TITLE = {"all_constraints": "All toxicity constraints", "dlt_only": "DLT only"}
+
+
+def _panels(nrow=1, height=4.2, width=4.7, **kw):
+    """Panel grid sized from MODES; always returns a 2-D axes array."""
+    fig, axes = plt.subplots(nrow, len(MODES),
+                             figsize=(width * len(MODES) + 0.5, height * nrow),
+                             squeeze=False, **kw)
+    return fig, axes
 
 plt.rcParams.update({
     "figure.dpi": 140, "savefig.dpi": 300, "font.size": 11,
@@ -60,37 +77,36 @@ def _save(fig, name):
 
 # ---------------------------------------------------------------- headline ---
 def fig_headline():
-    conf = _load("final_confirm")
-    wrap = _load("final_wrapper")
-    allm = pd.concat([conf, wrap], ignore_index=True)
-    fig, axes = plt.subplots(1, 2, figsize=(9, 4.2), sharey=True)
-    for ax, mode in zip(axes, MODES):
+    allm = _load("final_confirm")
+    fig, axes = _panels(sharey=True)
+    for ax, mode in zip(axes[0], MODES):
         f = _feas(allm, mode).set_index("method")
-        xs = np.arange(len(METHODS))
-        for i, m in enumerate(METHODS):
+        xs = np.arange(len(GASTRIC_METHODS))
+        for i, m in enumerate(GASTRIC_METHODS):
             worst = f.loc[m, "worst_case"]; mean = f.loc[m, "prescribed_mean"]
             ax.bar(i, worst, width=0.62, color=COLOR[m], zorder=3)
             ax.plot(i, mean, marker=MARKER[m], color=COLOR[m], mec="white", mew=1.2,
                     ms=10, zorder=4, linestyle="none")
             ax.vlines(i, worst, mean, color=COLOR[m], lw=1.2, alpha=0.6, zorder=3)
-        ax.set_xticks(xs); ax.set_xticklabels([LABEL[m] for m in METHODS], rotation=20, ha="right")
+        ax.set_xticks(xs)
+        ax.set_xticklabels([LABEL[m] for m in GASTRIC_METHODS], rotation=20, ha="right")
         ax.set_title(MODE_TITLE[mode]); ax.set_ylim(0, 1.02)
-    axes[0].set_ylabel("Joint feasibility across draws\n(bar = worst-case, marker = mean)")
-    fig.suptitle("Joint toxicity feasibility at the reference threshold (rhs=0.6, frac=0.5)", y=1.02, fontsize=12)
+    axes[0][0].set_ylabel("Joint feasibility across draws\n(bar = worst-case, marker = mean)")
+    fig.suptitle("Joint toxicity feasibility at the reference threshold "
+                 "(rhs=0.6, frac=0.5, CV-calibrated, 30 draws)", y=1.02, fontsize=12)
     _save(fig, "fig_headline")
 
 
 # --------------------------------------------------------------- tradeoff ---
 def fig_tradeoff():
-    conf = _load("final_confirm"); wrap = _load("final_wrapper")
-    allm = pd.concat([conf, wrap], ignore_index=True)
+    allm = _load("final_confirm")
     # per-method label offsets (points) to avoid collisions when markers are close
-    OFF = {"nominal": (-8, -15), "robust_reg": (8, 7), "wrapper": (9, 4), "cp": (9, 4)}
-    HA = {"nominal": "right", "robust_reg": "left", "wrapper": "left", "cp": "left"}
-    fig, axes = plt.subplots(1, 2, figsize=(9, 4.2))
-    for ax, mode in zip(axes, MODES):
+    OFF = {"nominal": (-8, -15), "robust_reg": (8, 7), "cp": (9, 4)}
+    HA = {"nominal": "right", "robust_reg": "left", "cp": "left"}
+    fig, axes = _panels()
+    for ax, mode in zip(axes[0], MODES):
         f = _feas(allm, mode).set_index("method"); o = _os(allm, mode).set_index("method")
-        for m in METHODS:
+        for m in GASTRIC_METHODS:
             ax.scatter(f.loc[m, "worst_case"], o.loc[m, "prescribed_mean"],
                        s=130, color=COLOR[m], marker=MARKER[m], edgecolor="white",
                        linewidth=1.3, zorder=3)
@@ -99,9 +115,10 @@ def fig_tradeoff():
                         fontsize=9.5, color=COLOR[m], zorder=4)
         ax.set_title(MODE_TITLE[mode]); ax.set_xlabel("Worst-case joint feasibility")
         ax.margins(0.24)
-    axes[0].set_ylabel("Overall survival (months)")
+    axes[0][0].set_ylabel("Overall survival (months)")
     fig.suptitle("Robustness–survival trade-off (rhs=0.6, frac=0.5): right = more robust, up = "
-                 "higher survival\nCP buys large tail-robustness gains for a small survival cost",
+                 "higher survival\nCP trades survival for tail feasibility in both modes; "
+                 "the gain is far larger under all constraints",
                  y=1.05, fontsize=11)
     _save(fig, "fig_tradeoff")
 
@@ -113,7 +130,7 @@ def _frontier(tag, xcol, xlabel, fname, title, fixed=None):
         col, val = fixed
         df = df[np.isclose(pd.to_numeric(df[col], errors="coerce"), val)]
     methods = [m for m in ["nominal", "robust_reg", "cp"] if m in df.method.unique()]
-    fig, axes = plt.subplots(2, 2, figsize=(9.2, 7), sharex="col")
+    fig, axes = _panels(nrow=2, height=3.5, sharex="col")
     for col, mode in enumerate(MODES):
         for row, (getter, ylab, ylim) in enumerate([
             (_feas, "Worst-case joint feasibility", (0, 1.02)),
@@ -135,7 +152,7 @@ def _frontier(tag, xcol, xlabel, fname, title, fixed=None):
                 ax.set_xlabel(xlabel)
             if col == 0:
                 ax.set_ylabel(ylab)
-    axes[0][1].legend(loc="best", fontsize=9)
+    axes[0][-1].legend(loc="best", fontsize=9)
     fig.suptitle(title, y=1.01, fontsize=12)
     _save(fig, fname)
 
@@ -151,8 +168,8 @@ def fig_pareto(tag="final_pareto"):
         return
     df = pd.read_csv(path)
     swept = [m for m in ["robust_reg", "wrapper", "cp"] if m in df.method.unique()]
-    fig, axes = plt.subplots(1, 2, figsize=(9.4, 4.4))
-    for ax, mode in zip(axes, MODES):
+    fig, axes = _panels(height=4.4)
+    for ax, mode in zip(axes[0], MODES):
         f = _feas(df, mode); o = _os(df, mode)
         for m in swept:                                       # robust methods: frontier line
             fm = f[f.method == m].copy(); om = o[o.method == m].copy()
@@ -174,8 +191,8 @@ def fig_pareto(tag="final_pareto"):
                        edgecolor="white", linewidth=1.3, zorder=4, label="Nominal (no knob)")
         ax.set_title(MODE_TITLE[mode]); ax.set_xlabel("Worst-case joint feasibility")
         ax.margins(0.12)
-    axes[0].set_ylabel("Overall survival (months)")
-    axes[0].legend(loc="best", fontsize=9)
+    axes[0][0].set_ylabel("Overall survival (months)")
+    axes[0][0].legend(loc="best", fontsize=9)
     fig.suptitle("Conservativeness frontier (rhs=0.6, frac=0.5): up-right dominates.\n"
                  "A higher/right frontier $\\Rightarrow$ more efficient robustness (feasibility per unit OS)",
                  y=1.06, fontsize=11)
@@ -193,23 +210,72 @@ def fig_synthetic(csv="results/synthetic/noise_sweep_results.csv"):
     df = pd.read_csv(csv)
     methods = [m for m in METHODS if m in df.method.unique()]
     fig, axes = plt.subplots(1, 2, figsize=(9.2, 4.2))
+
+    # Left panel plots the VIOLATION max(0, f_true(x*) - b), not the feasibility
+    # indicator. metrics.py defines feasible as violation <= 1e-4, so violation
+    # contains the feasibility curve at its zero crossing -- strictly more
+    # information. The indicator collapsed every infeasible method onto a flat 0
+    # line (at sigma=0.5: nominal 0.54, robust_reg 0.83, wrapper 0.23 all read as
+    # "0.0"), and drew no-solution rows identically to solved-but-infeasible ones.
+    # Multiple independent data draws (run_sweep --n-real): plot the mean and shade
+    # the min-max band. Robustness is a claim about the BAD draw, so the worst-case
+    # edge is drawn explicitly rather than left to the shading.
+    n_draws = df["draw"].nunique() if "draw" in df.columns else 1
+
+    def _agg(s, col, worst="max"):
+        s = s.dropna(subset=[col])
+        if s.empty:
+            return None
+        g = s.groupby("noise_std")[col]
+        return g.mean(), g.min(), g.max(), (g.max() if worst == "max" else g.min())
+
+    no_sol = []
     for m in methods:
         s = df[df.method == m].sort_values("noise_std")
-        axes[0].plot(s["noise_std"], s["feasibility_rate"], marker=MARKER[m],
-                     color=COLOR[m], lw=2, ms=7, mec="white", mew=1,
-                     label=LABEL[m], zorder=3)
-        so = s[s["objective"] < 1e6]
-        axes[1].plot(so["noise_std"], so["objective"], marker=MARKER[m],
-                     color=COLOR[m], lw=2, ms=7, mec="white", mew=1,
-                     label=LABEL[m], zorder=3)
-    axes[0].set_ylabel("Held-out feasibility rate"); axes[0].set_ylim(-0.03, 1.03)
-    axes[0].set_title("Feasibility vs noise")
+        a = _agg(s, "worst_violation")
+        if a is not None:
+            mean, lo, hi, edge = a
+            axes[0].plot(mean.index, mean.values, marker=MARKER[m], color=COLOR[m],
+                         lw=2, ms=7, mec="white", mew=1, label=LABEL[m], zorder=3)
+            if n_draws > 1:
+                axes[0].fill_between(mean.index, lo.values, hi.values,
+                                     color=COLOR[m], alpha=0.15, lw=0, zorder=2)
+                axes[0].plot(edge.index, edge.values, ls=":", lw=1.3,
+                             color=COLOR[m], zorder=3)
+        # Rows where the MIP returned nothing: a gap in the line, flagged below,
+        # never a zero.
+        for sig in s[s["worst_violation"].isna()]["noise_std"].unique():
+            no_sol.append((float(sig), m))
+        so = s[s["objective"].notna() & (s["objective"] < 1e6)]
+        a = _agg(so, "objective")
+        if a is not None:
+            mean, lo, hi, _ = a
+            axes[1].plot(mean.index, mean.values, marker=MARKER[m], color=COLOR[m],
+                         lw=2, ms=7, mec="white", mew=1, label=LABEL[m], zorder=3)
+            if n_draws > 1:
+                axes[1].fill_between(mean.index, lo.values, hi.values,
+                                     color=COLOR[m], alpha=0.15, lw=0, zorder=2)
+
+    axes[0].axhline(0.0, color="#2E7D32", ls="--", lw=1.2, alpha=0.7, zorder=2)
+    lo, hi = axes[0].get_ylim()
+    axes[0].set_ylim(min(lo, -0.04 * hi), hi)
+    axes[0].text(axes[0].get_xlim()[1], 0.0, "feasible ", va="bottom", ha="right",
+                 fontsize=8.5, color="#2E7D32")
+    for sig, m in no_sol:
+        axes[0].plot([sig], [hi * 0.96], marker="X", ms=10, color=COLOR[m],
+                     mec="black", mew=1.1, ls="none", zorder=5)
+        axes[0].annotate("no solution", xy=(sig, hi * 0.96), xytext=(4, -3),
+                         textcoords="offset points", fontsize=8, color="#333")
+
+    axes[0].set_ylabel("Constraint violation $\\max(0,\\,f_{\\mathrm{true}}(x^{*})-b)$")
+    axes[0].set_title("Violation vs noise")
     axes[1].set_ylabel("Objective $c^{\\top}x$"); axes[1].set_title("Objective vs noise")
     for ax in axes:
         ax.set_xlabel("Label noise $\\sigma$")
     axes[0].legend(loc="best", fontsize=9)
-    fig.suptitle("Synthetic problem: CP stays feasible as label noise grows "
-                 "(model-robust baselines drift infeasible)", y=1.02, fontsize=11)
+    # No suptitle: on the slide the frame title carries it, and at slide scale a
+    # two-line suptitle renders illegibly small while stealing plot height. The
+    # findings belong in the frame bullets / paper caption.
     _save(fig, "fig_synthetic")
 
 

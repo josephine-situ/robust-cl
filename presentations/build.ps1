@@ -1,14 +1,13 @@
-# Compile every *.tex in presentations/ into presentations/build/
+# Compile every *.tex in presentations/.
+# Output locations come from presentations/.latexmkrc: the .pdf (and .synctex.gz)
+# land here next to the .tex, every other artifact goes to presentations/build/.
 $ErrorActionPreference = "Stop"
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$build = Join-Path $here "build"
-New-Item -ItemType Directory -Force -Path $build | Out-Null
 Push-Location $here
 try {
     foreach ($tex in Get-ChildItem -Path $here -Filter *.tex) {
-        pdflatex -interaction=nonstopmode -output-directory=build $tex.Name | Out-Null
-        pdflatex -interaction=nonstopmode -output-directory=build $tex.Name | Out-Null
-        Write-Host "Wrote $(Join-Path $build ($tex.BaseName + '.pdf'))"
+        latexmk -pdf -synctex=1 -interaction=nonstopmode $tex.Name | Out-Null
+        Write-Host "Wrote $(Join-Path $here ($tex.BaseName + '.pdf'))"
     }
 } finally {
     Pop-Location

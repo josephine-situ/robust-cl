@@ -1,5 +1,9 @@
 {
   "nominal": 0.0,
-  "cp": 0.1,
-  "robust_reg": 0.1
+  "cp@coherent": 0.1,
+  "robust_reg@coherent": 0.75,
+  "wrapper@coherent": 0.3,
+  "cp@incoherent": 0.1,
+  "robust_reg@incoherent": 0.25,
+  "wrapper@incoherent": 0.2
 }

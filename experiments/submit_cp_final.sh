@@ -32,7 +32,7 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # method's Pareto grid on theta* (--pareto-center-cv).
 #
 # JOB ARRAY (capped at 2 concurrent = the Gurobi session limit):
-#   0 : headline confirmation   nominal/robust_reg/cp, frac=0.5, rhs=0.6,      R=30
+#   0 : headline confirmation   nominal/robust_reg/cp, frac=0.5, rhs=0.6,      R=10
 #   1 : RHS frontier            nominal/robust_reg/cp, frac=0.5, rhs 0.4..0.8, R=10
 #   2 : frac (scarcity) frontier nominal/robust_reg/cp, rhs=0.6, frac 0.3..0.8, R=10
 #   3 : wrapper (headline cell)  wrapper,               frac=0.5, rhs=0.6,      R=10
@@ -42,10 +42,20 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # Outputs: results/gastric/chemo_robust_{realizations,robustness_summary}_<TAG>_sweep.csv
 # (frontier CSVs carry rhs, frac, and/or strength columns for the figures.)
 # ============================================================================
-R_CONFIRM="${R_CONFIRM:-30}"
+# 10 draws everywhere. The headline used to run 30 while the wrapper (task 3) ran
+# 10, so the wrapper was never comparable and had to be excluded from the figures.
+# Equal draws also stop tasks 1/2/4 hitting the 12h wall, which is what killed them
+# on 2026-08-10. Raise R_CONFIRM in a later run once the numbers are trusted -- the
+# only cost of 10 is a wider worst-case band.
+R_CONFIRM="${R_CONFIRM:-10}"
 R_SWEEP="${R_SWEEP:-10}"
 FRAC_GRID="${FRAC_GRID:-0.3 0.4 0.5 0.6 0.7 0.8}"   # uniform scarcity axis
 CONS_GRID="${CONS_GRID:-0 0.25 0.5 0.75 1.0}"       # conservativeness strengths
+# Extra flags passed straight through. EXTRA_ARGS="--resume" keeps the realization
+# cells already in a task's long CSV, so a task killed mid-run (crash or 12h wall)
+# restarts from where it stopped instead of from zero. Harmless when the CSV is
+# absent, so it costs nothing to leave on.
+EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 case "${SLURM_ARRAY_TASK_ID:-0}" in
   0) CMD="--subsample-frac 0.5 --rhs-grid 0.6";              METHODS="nominal robust_reg cp"; R="${R_CONFIRM}"; TAG="final_confirm" ;;
@@ -60,7 +70,8 @@ echo "=== task ${SLURM_ARRAY_TASK_ID}: methods='${METHODS}' [${CMD}] R=${R} tag=
 python -u experiments/run_chemo_robust.py \
     --n-realizations "${R}" ${CMD} \
     --methods ${METHODS} \
-    --output-tag "${TAG}"
+    --output-tag "${TAG}" \
+    ${EXTRA_ARGS}
 
 echo "Finished task ${SLURM_ARRAY_TASK_ID} at $(date)"
 
@@ -71,4 +82,8 @@ echo "Finished task ${SLURM_ARRAY_TASK_ID} at $(date)"
 #                             sbatch --array=1-2%2 experiments/submit_cp_final.sh   # frontiers only
 #   - Tasks 1 (5 rhs) and 2 (6 frac) are the heaviest (~5-6 x R builds); lower
 #     R_SWEEP or trim FRAC_GRID if either nears 12h.
-#   - Overridable via env: R_CONFIRM, R_SWEEP, FRAC_GRID.
+#   - Overridable via env: R_CONFIRM, R_SWEEP, FRAC_GRID, EXTRA_ARGS.
+#   - Re-run only what died: each task has its own --output-tag, so a missing
+#     results/gastric/chemo_robust_robustness_summary_<TAG>_sweep.csv identifies
+#     the failed task. Resubmit just those indices, e.g.
+#       EXTRA_ARGS=--resume sbatch --array=1,4%2 experiments/submit_cp_final.sh

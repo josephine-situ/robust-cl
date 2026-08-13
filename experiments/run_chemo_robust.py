@@ -30,6 +30,7 @@ from src.methods.wrapper import (
 )
 from src.methods.cp import solve_cp, select_anchor_contexts
 from src.methods.calibrate import calibrate_strength
+from src.methods.cv_calibrate import lookup_knob
 from src.evaluation.chemo_metrics import (
     evaluate_given_table6,
     evaluate_prescribed_table6,
@@ -104,13 +105,32 @@ def _resolve_run_settings(config, args):
 
     settings["cp_anchor_source"] = cp_cfg.get("anchor_source", "train")
     settings["cp_anchor_method"] = cp_cfg.get("anchor_method", "kmedoids")
-    settings["cp_trace_path"] = "results/gastric/cp_trace.csv"
+    # Off unless methods.cp.trace_path is set: every CP solve rewrites the same
+    # file, so over a robustness run only the last loop survives and nothing in it
+    # says which realization/RHS/mode it came from. The stdout log carries the same
+    # per-iteration numbers in context.
+    settings["cp_trace_path"] = cp_cfg.get("trace_path") or None
     settings["cp_distance"] = cp_cfg.get("distance", "full")
     settings["cp_dist_tol"] = cp_cfg.get("dist_tol", 1e-3)
     settings["cp_robustify_objective"] = cp_cfg.get("robustify_objective", True)
     settings["cp_eval_mode"] = cp_cfg.get("eval_mode", "global")
     settings["cp_nearest_distance"] = cp_cfg.get("nearest_distance", "context")
     settings["cp_cut_eviction"] = cp_cfg.get("cut_eviction", "reject")
+    settings["cp_scenario_source"] = cp_cfg.get("scenario_source", "noise")
+    settings["cp_d0_quantile"] = cp_cfg.get("d0_quantile", 0.9)
+    settings["cp_objective_monotone"] = cp_cfg.get("objective_monotone", False)
+    settings["cp_mip_gap"] = float(cp_cfg.get("mip_gap", 1e-4))
+    settings["cp_cut_whole_scenario"] = cp_cfg.get("cut_whole_scenario", True)
+    # B: CP embeds one extra scenario per iteration, so it can afford a bank far
+    # larger than the wrapper's P (which is embedded in full). --quick shrinks it.
+    settings["cp_n_scenarios"] = (
+        quick_cfg.get("cp_n_scenarios", 10) if args.quick
+        else cp_cfg.get("n_scenarios", 200)
+    )
+    # The shared uncertainty set D -- one object handed to cp, wrapper and
+    # robust_reg, so a difference between them is a difference in METHOD.
+    from src.methods.uncertainty import uncertainty_set_from_config
+    settings["uncertainty_set"] = uncertainty_set_from_config(config)
     settings["calibration_method"] = config.get("calibration", {}).get("method", "alpha")
     settings["pareto_center_factors"] = config.get("cv_calibration", {}).get(
         "pareto_center_factors", [0.5, 0.75, 1.0, 1.5, 2.0])
@@ -128,9 +148,13 @@ def _resolve_run_settings(config, args):
         settings["cp_eval_mode"] = args.cp_eval_mode
 
     settings["bootstrap_seed"] = unc.get("bootstrap_seed", 42)
+    settings["bootstrap_frac"] = unc.get("bootstrap_frac", 0.5)
     settings["embedding_mode"] = config["methods"].get("embedding_mode", "hard")
     settings["rf_alpha"] = config["methods"].get("chemo_wrapper", {}).get("alpha", 0.25)
-    settings["wrapper_alpha"] = config["methods"]["wrapper"].get("alpha", 0.1)
+    _wrap_cfg = config["methods"]["wrapper"]
+    settings["wrapper_alpha"] = _wrap_cfg.get("alpha", 0.1)
+    settings["wrapper_scenario_source"] = _wrap_cfg.get("scenario_source", "noise")
+    settings["wrapper_robustify_objective"] = _wrap_cfg.get("robustify_objective", False)
     settings["robust_rho"] = config["methods"].get("robust_param", {}).get("rho", 0.05)
     rr_cfg = config["methods"].get("robust_reg", {})
     settings["robust_reg_label_eps"] = rr_cfg.get("label_eps", 0.1)
@@ -200,6 +224,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             rho=0.0,
             embedding_mode=embedding_mode,
             rf_alpha=rf_alpha,
+            uncertainty_set=settings["uncertainty_set"],
         ),
         "wrapper": partial(
             solve_wrapper,
@@ -210,6 +235,10 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             seed=seed,
             rho=0.0,
             bootstrap_cache=bootstrap_cache,
+            bootstrap_frac=settings["bootstrap_frac"],
+            scenario_source=settings["wrapper_scenario_source"],
+            uncertainty_set=settings["uncertainty_set"],
+            robustify_objective=settings["wrapper_robustify_objective"],
         ),
         # Single driver; gastric (multiple toxicity constraints over many
         # patients) auto-selects coherent separation with the shared alpha as the
@@ -248,6 +277,13 @@ def _cp_solver(settings, model_type, model_params, cp_alpha=0.0,
         cp_eval_mode=settings["cp_eval_mode"],
         cp_nearest_distance=settings["cp_nearest_distance"],
         cp_cut_eviction=settings["cp_cut_eviction"],
+        cp_scenario_source=settings["cp_scenario_source"],
+        cp_n_scenarios=settings["cp_n_scenarios"],
+        cp_d0_quantile=settings["cp_d0_quantile"],
+        cp_objective_monotone=settings["cp_objective_monotone"],
+        cp_mip_gap=settings["cp_mip_gap"],
+        cp_cut_whole_scenario=settings["cp_cut_whole_scenario"],
+        cp_uncertainty=settings["uncertainty_set"],
     )
 
 
@@ -277,6 +313,10 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
             solve_wrapper, model_type=model_type, model_params=model_params,
             n_estimators=nb, alpha=knob, seed=seed, rho=0.0,
             bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
+            bootstrap_frac=settings["bootstrap_frac"],
+            scenario_source=settings["wrapper_scenario_source"],
+            uncertainty_set=settings["uncertainty_set"],
+            robustify_objective=settings["wrapper_robustify_objective"],
         )
     elif method == "tree_violation":
         amax = ranges["tree_alpha_max"]
@@ -308,13 +348,17 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
             label_eps=knob, budget_frac=settings["robust_reg_budget_frac"],
             K=settings["robust_reg_K"], seed=seed, rho=0.0,
             embedding_mode=em, rf_alpha=rf_alpha,
+            uncertainty_set=settings["uncertainty_set"],
         )
     elif method == "cp":
         # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, with
-        # d0 the problem's own iteration-0 worst distance. tau=1 stops at iteration 0
-        # (~nominal, the weak end); tau->0 cuts maximally. Relative units make one grid
-        # valid across datasets -- absolute dist_tol does not transfer, because
-        # anything above d0 (~0.017 on gastric) is a silent no-op that ties nominal.
+        # d0 a QUANTILE (cp.d0_quantile, default 0.9) of the problem's own iteration-0
+        # distances. tau->0 cuts maximally. tau=1 is the weak end but is NOT nominal:
+        # the stopping test compares the MAX distance over the bank against a
+        # q0.9-derived tolerance, so tau=1 still separates the bank's worst ~decile
+        # (see config.yaml's d0_quantile). Relative units make one grid valid across
+        # datasets -- absolute dist_tol does not transfer, because anything above d0
+        # (~0.017 on gastric) is a silent no-op that ties nominal.
         tmax = ranges.get("cp_dist_tol_rel_max", 1.0)
         tmin = ranges.get("cp_dist_tol_rel_min", 0.1)
         strength_to_knob = lambda s: tmax * (1.0 - s) + tmin * s  # s=1 -> tmin (strongest)
@@ -469,10 +513,12 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
     if settings["max_test_rows"]:
         print(f"Max test rows: {settings['max_test_rows']}")
 
-    # Shared coherent bootstrap relabelings (one set of resamples applied to every
-    # outcome) drive the coherent wrapper and robust_reg.
+    # Shared coherent bootstrap relabelings: one set of resamples applied to every
+    # outcome. Consumed only under methods.wrapper.scenario_source == "bootstrap";
+    # the default "noise" wrapper draws from ScenarioBank and ignores this cache.
     coherent_cache = _coherent_bootstrap_indices(
-        instance, settings["n_bootstrap"], settings["bootstrap_seed"]
+        instance, settings["n_bootstrap"], settings["bootstrap_seed"],
+        settings["bootstrap_frac"],
     )
     solvers = _build_solvers(config, settings, instance, coherent_cache)
 
@@ -500,11 +546,16 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
                 settings["n_bootstrap"], settings["bootstrap_seed"], coherent_cache,
             )
 
+    # theta* is stored per (method, coherence) cell; pick the cell matching the
+    # uncertainty set this run is actually using. lookup_knob falls back to a bare
+    # `method` key so pre-per-cell knobs JSONs still load.
+    _coherent = bool(getattr(settings.get("uncertainty_set"), "coherent", True))
+
     def _resolve_solver(method, sub):
         if conservativeness is not None:
             if pareto_center_cv and cv_knobs is not None:
                 # Centered Pareto: knob = CV theta* x factor (nominal has no knob).
-                theta = cv_knobs.get(method, 0.0)
+                theta = lookup_knob(cv_knobs, method, _coherent, 0.0)
                 return _solver_at_knob(
                     method, theta * conservativeness, settings, model_type,
                     model_params, coherent_cache, ensembles_cache,
@@ -518,9 +569,10 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
         if settings["calibration_method"] == "cv" and cv_knobs is not None:
             if method == "nominal":
                 return solvers[method]
-            if method in cv_knobs:
+            theta = lookup_knob(cv_knobs, method, _coherent)
+            if theta is not None:
                 return _solver_at_knob(
-                    method, cv_knobs[method], settings, model_type, model_params,
+                    method, theta, settings, model_type, model_params,
                     coherent_cache, ensembles_cache,
                 )
         if method in ("cp", "nominal") or not calibrate:
@@ -655,11 +707,81 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
         df_r["strength"] = cons if cons is not None else "calibrated"
         return df_r
 
+    # Incremental output: write each realization's rows to disk as they complete
+    # so a mid-run crash (or wall-clock kill) keeps everything already computed.
+    os.makedirs("results/gastric", exist_ok=True)
+    tag = f"_{args.output_tag}" if getattr(args, "output_tag", None) else ""
+    suffix = tag + ("_sweep" if sweeping else "")
+    long_path = f"results/gastric/chemo_robust_realizations{suffix}.csv"
+
+    resume = getattr(args, "resume", False)
+
+    # Canonical string form of a grid value, matching how `_tag` stores it, so a
+    # cell computed this run keys identically to the same cell read back from CSV.
+    def _canon(v, none_label):
+        return none_label if v is None else str(v)
+
+    done_cells = set()  # (frac, rhs, realization) triples already on disk
+    if resume and os.path.exists(long_path):
+        prior = pd.read_csv(long_path)
+        # Guard: CRN reproducibility (sub_seed depends only on the realization
+        # index) only makes a resumed cell bit-identical to a fresh one when the
+        # methods and grids match. Refuse to blend incompatible configurations.
+        def _grid_canon(grid, none_label):
+            return {_canon(v, none_label) for v in grid}
+        mismatches = []
+        have_methods = set(prior["method"].astype(str).unique())
+        want_methods = {str(m) for m in settings["methods_to_run"]}
+        if have_methods != want_methods:
+            mismatches.append(f"methods {sorted(have_methods)} != {sorted(want_methods)}")
+        for col, grid, none_label in (
+            ("frac", frac_grid, "full"),
+            ("rhs", rhs_grid, "default"),
+            ("strength", cons_grid, "calibrated"),
+        ):
+            have = set(prior[col].astype(str).unique())
+            want = _grid_canon(grid, none_label)
+            if not have <= want:
+                mismatches.append(f"{col} {sorted(have)} not within {sorted(want)}")
+        if mismatches:
+            raise SystemExit(
+                f"--resume refused: existing {long_path} was produced with a "
+                f"different configuration:\n  - " + "\n  - ".join(mismatches) +
+                "\nDrop --resume to refresh (clean recompute), or pass a different "
+                "--output-tag to write a separate file."
+            )
+        for _, row in (prior[["frac", "rhs", "realization"]]
+                       .drop_duplicates().iterrows()):
+            done_cells.add((str(row["frac"]), str(row["rhs"]), str(row["realization"])))
+        print(f"[resume] {len(done_cells)} realization-cell(s) already present in "
+              f"{long_path}; computing only the remainder.", flush=True)
+    elif os.path.exists(long_path):
+        # Fresh run: don't append onto a stale file from a previous run.
+        os.remove(long_path)
+
     rows = []
+    flushed = 0  # index into `rows` of the first not-yet-written entry
+
+    def _flush_new_rows():
+        nonlocal flushed
+        if flushed >= len(rows):
+            return
+        new = pd.concat(rows[flushed:], ignore_index=True)
+        header = not os.path.exists(long_path)
+        new.to_csv(long_path, mode="a", header=header, index=False)
+        flushed = len(rows)
+        print(f"  [checkpoint] wrote {len(new)} rows to {long_path} "
+              f"({len(rows)} total so far)", flush=True)
+
     for frac in frac_grid:
         for rhs in rhs_grid:
             for r in range(n_real):
                 sub_seed = base_seed + 1000 * (r + 1)  # CRN: same across all axes
+                cell_key = (_canon(frac, "full"), _canon(rhs, "default"), str(r))
+                if resume and cell_key in done_cells:
+                    print(f"[resume] skip complete cell: frac={frac} rhs={rhs} "
+                          f"realization {r + 1}/{n_real}", flush=True)
+                    continue
                 if sweeping_cons:
                     # Two passes so every (method, strength) cell is scored on ONE
                     # shared samestore cohort (intersection over all method x strength
@@ -714,13 +836,16 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
                         cv_knobs=cv_knobs,
                     )
                     rows.append(_tag(df_r, r, sub_seed, rhs, frac, None))
+                # Persist this realization's rows before moving on.
+                _flush_new_rows()
 
-    df_long = pd.concat(rows, ignore_index=True)
-    os.makedirs("results/gastric", exist_ok=True)
-    tag = f"_{args.output_tag}" if getattr(args, "output_tag", None) else ""
-    suffix = tag + ("_sweep" if sweeping else "")
-    long_path = f"results/gastric/chemo_robust_realizations{suffix}.csv"
-    df_long.to_csv(long_path, index=False)
+    if resume:
+        # Resumed + newly computed rows are all on disk from the incremental
+        # flushes; read the union back so the summary covers everything.
+        df_long = pd.read_csv(long_path)
+    else:
+        df_long = pd.concat(rows, ignore_index=True)
+        df_long.to_csv(long_path, index=False)
 
     group_cols = ((["frac"] if sweeping_frac else [])
                   + (["rhs"] if sweeping_rhs else [])
@@ -760,9 +885,10 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
     """Stage 1: select each method's single robustness knob by held-out CV (temporal
     folds for gastric, KFold for synthetic), writing ``*_robustness_knobs.json`` +
     a resumable scores checkpoint. See ``src/methods/cv_calibrate``."""
+    import dataclasses
     from src.methods.cv_calibrate import (
         make_folds, make_cv_oracle, cv_score_knob, select_knob_cv,
-        load_score_checkpoint, append_score, write_knobs,
+        load_score_checkpoint, append_score, write_knobs, knob_key,
     )
     settings = _resolve_run_settings(config, args)
     cvc = config.get("cv_calibration", {})
@@ -803,33 +929,53 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
             key = (method, float(knob))
             if key in ckpt:
                 return ckpt[key]
-            feas, obj = cv_score_knob(build, knob, folds, oracle, instance,
+            feas, obj, solved = cv_score_knob(build, knob, folds, oracle, instance,
                                       constraint_names, contextual)
-            append_score(scores_path, method, knob, feas, obj)
-            ckpt[key] = (feas, obj)
-            return feas, obj
+            append_score(scores_path, method, knob, feas, obj, solved)
+            ckpt[key] = (feas, obj, solved)
+            return feas, obj, solved
         return _score
 
     # Nominal CV baseline (no robustness knob) -> objective budget reference.
     nom_build, _ = _method_build_map("nominal", settings, ranges, model_type,
                                      model_params, None, None)
-    nom_feas, nom_obj = make_scorer("nominal", nom_build)(0.0)
-    print(f"[cv] nominal: feas={nom_feas:.3f} obj={nom_obj:.3f}", flush=True)
+    nom_feas, nom_obj, nom_solved = make_scorer("nominal", nom_build)(0.0)
+    print(f"[cv] nominal: feas={nom_feas:.3f} obj={nom_obj:.3f} "
+          f"solved={nom_solved:.3f}", flush=True)
 
     knobs = {"nominal": 0.0}
     grids = cvc.get("knob_grids", {})
+    # theta* is calibrated PER (method, coherence) cell -- see cv_calibrate.knob_key.
+    # The scores CSV is keyed by a free-text `method` column and is resumable, so
+    # this doubles stage-1 work but never redoes a cell.
+    cells = cvc.get("coherence_cells", [True, False])
+    # CLI override, so a cluster run can narrow the cells without editing
+    # config.yaml (which would leave the checkout dirty and block the next pull).
+    _cell_arg = getattr(args, "coherence_cells", None)
+    if _cell_arg:
+        cells = {"coherent": [True], "incoherent": [False],
+                 "both": [True, False]}[_cell_arg]
+    print(f"[cv] coherence cells: "
+          f"{[('coherent' if c else 'incoherent') for c in cells]}", flush=True)
     # CP first (slowest / most likely to fail), then the rest.
     order = [m for m in ("cp", "robust_reg", "wrapper")
              if m in settings["methods_to_run"] and m in grids]
-    for method in order:
-        build, _ = _method_build_map(method, settings, ranges, model_type,
-                                     model_params, None, None)
-        theta, _rows = select_knob_cv(
-            build, grids[method], folds, oracle, instance, os_tol, nom_obj,
-            constraint_names=constraint_names, contextual=contextual, method=method,
-            score_fn=make_scorer(method, build),
+    for coherent in cells:
+        cell_settings = dict(settings)
+        cell_settings["uncertainty_set"] = dataclasses.replace(
+            settings["uncertainty_set"], coherent=bool(coherent)
         )
-        knobs[method] = float(theta)
+        print(f"\n[cv] === coherence cell: coherent={coherent} ===", flush=True)
+        for method in order:
+            key = knob_key(method, coherent)
+            build, _ = _method_build_map(method, cell_settings, ranges, model_type,
+                                         model_params, None, None)
+            theta, _rows = select_knob_cv(
+                build, grids[method], folds, oracle, instance, os_tol, nom_obj,
+                constraint_names=constraint_names, contextual=contextual, method=key,
+                score_fn=make_scorer(key, build),
+            )
+            knobs[key] = float(theta)
 
     write_knobs(knobs_path, knobs)
     return knobs
@@ -898,8 +1044,10 @@ def main():
         default=None,
         metavar="S",
         help=(
-            "Fixed-threshold Pareto sweep: strengths in [0,1] (0=weakest ~nominal, "
-            "1=strongest). Each method's OWN knob is set per strength (no "
+            "Fixed-threshold Pareto sweep: strengths in [0,1] (0=weakest, "
+            "1=strongest; s=0 is ~nominal for every method EXCEPT cp, whose tau=1 "
+            "still cuts the bank's worst ~decile). Each method's OWN knob is set "
+            "per strength (no "
             "calibration): robust_param->rho, cp->alpha, robust_reg->label_eps, "
             "wrapper->alpha. Traces per-method OS vs worst-case-feasibility frontiers "
             "to separate robustness from mere conservatism. E.g. 0 0.25 0.5 0.75 1."
@@ -937,6 +1085,27 @@ def main():
         "--refresh-cv",
         action="store_true",
         help="With --calibrate-cv, delete the scores checkpoint + knobs JSON first (clean recompute).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume a realization sweep: keep the existing results/gastric/"
+            "chemo_robust_realizations*.csv and compute only the (frac, rhs, "
+            "realization) cells not already in it (safe under common random "
+            "numbers). Refuses to resume if methods/grids differ. Default (no "
+            "flag) is a clean refresh that recomputes from scratch."
+        ),
+    )
+    parser.add_argument(
+        "--coherence-cells",
+        choices=["coherent", "incoherent", "both"],
+        default=None,
+        help=(
+            "Which (method, coherence) cells --calibrate-cv scores. Overrides "
+            "cv_calibration.coherence_cells. 'coherent' halves stage-1 cost; keep "
+            "uncertainty.coherent: true so stage 2 consumes the matching theta*."
+        ),
     )
     parser.add_argument(
         "--pareto-center-cv",
