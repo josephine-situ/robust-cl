@@ -62,6 +62,35 @@ def _get_inner_model(ml_model):
     return ml_model
 
 
+# Width of the band excluded at each split threshold so that adjacent leaf boxes
+# do not OVERLAP. A tree's split is a strict inequality on one side, which a MIP
+# cannot express: encoding both children as closed boxes makes x == threshold
+# admissible in BOTH leaves, and the optimizer then parks x exactly on the
+# threshold and selects whichever leaf relaxes the constraint -- systematic, not
+# measure-zero, because it is the optimizer's PREFERRED point (observed: leaf
+# spreads of 0.09-0.14 on gastric xgb).
+#
+# Sizing it is a two-sided constraint:
+#   - it must EXCEED the solver's feasibility tolerance, or the solver accepts
+#     x == threshold into the strict-side box anyway and the tie survives;
+#   - it must stay BELOW the distance from real data to a threshold, or genuine
+#     points fall into the band and NO leaf is admissible. XGBoost keeps
+#     thresholds in float32, so training rows land within ~7e-8 of a split
+#     (measured: gastric constitutional, tree 8, |z - thr| = 6.9e-8).
+# Gurobi's default FeasibilityTol (1e-6) leaves no gap between those two, so the
+# tolerance is tightened alongside the band wherever leaves are embedded.
+SPLIT_EPS = 1e-8
+
+# Feasibility tolerance required for SPLIT_EPS to actually bind. Applied to any
+# Gurobi model that receives an embedded tree (see _embed_leaves).
+EMBED_FEASTOL = 1e-9
+
+
+def _split_gap(threshold: float) -> float:
+    """Absolute width of the excluded band at ``threshold`` (scale-aware)."""
+    return SPLIT_EPS * max(1.0, abs(float(threshold)))
+
+
 def _extract_tree_structure(tree):
     """
     Extract leaves and their defining split conditions.
@@ -89,14 +118,16 @@ def _extract_tree_structure(tree):
         feature = tree_.feature[node]
         threshold = tree_.threshold[node]
 
-        # Left child: x[feature] <= threshold
+        # sklearn convention: left is x[feature] <= threshold (CLOSED, exact),
+        # right is x[feature] > threshold (STRICT). Encoding the right child as
+        # the closed x >= threshold would let x == threshold satisfy BOTH leaves;
+        # sklearn sends it left, so the right child is pushed off the boundary.
         ub_left = ub.copy()
         ub_left[feature] = min(ub_left[feature], threshold)
         recurse(tree_.children_left[node], lb, ub_left)
 
-        # Right child: x[feature] > threshold
         lb_right = lb.copy()
-        lb_right[feature] = max(lb_right[feature], threshold)
+        lb_right[feature] = max(lb_right[feature], threshold + _split_gap(threshold))
         recurse(tree_.children_right[node], lb_right, ub)
 
     lb_init = np.full(n_features, -np.inf)
@@ -327,6 +358,14 @@ def _embed_leaves(model: gp.Model,
     Each leaf dict must have keys: 'value', 'bounds_lower', 'bounds_upper'.
     This is the core embedding shared by embed_single_tree and embed_xgb.
     """
+    # The SPLIT_EPS band that keeps sibling leaf boxes disjoint is narrower than
+    # Gurobi's default FeasibilityTol, so without this the solver would still
+    # admit x == threshold on the strict side and the leaf tie would survive.
+    # Set here rather than at each call site so every path that embeds a tree
+    # (nominal, CP master, wrapper, prediction checks) stays consistent.
+    if model.Params.FeasibilityTol > EMBED_FEASTOL:
+        model.Params.FeasibilityTol = EMBED_FEASTOL
+
     d = len(x_vars)
 
     z = {}
@@ -575,8 +614,12 @@ def _parse_xgb_json_tree(node: dict,
 
     children_by_id = {int(c["nodeid"]): c for c in node.get("children", [])}
 
+    # XGBoost sends x == threshold down the "no" branch (yes is the STRICT
+    # x < threshold), so "no" keeps the closed x >= threshold and "yes" is pushed
+    # off the boundary. Closing both would make x == threshold admissible in two
+    # leaves at once and let the optimizer choose the more favourable one.
     ub_yes = ub.copy()
-    ub_yes[feat_idx] = min(ub_yes[feat_idx], threshold)
+    ub_yes[feat_idx] = min(ub_yes[feat_idx], threshold - _split_gap(threshold))
     _parse_xgb_json_tree(children_by_id[yes_id], lb.copy(), ub_yes, n_features, leaves)
 
     lb_no = lb.copy()
@@ -603,8 +646,21 @@ def embed_xgb(model: gp.Model,
     dump = booster.get_dump(dump_format="json")
     n_features = len(x_vars)
 
-    # Calibrate base_score empirically to be robust across XGBoost versions
-    base_score = getattr(ml_model, "base_score", None) or 0.5
+    # The intercept. XGBoost >= 2.0 leaves the sklearn attribute None and keeps
+    # the LEARNED intercept (the label mean for squared loss) in the booster
+    # config, as a bracketed string like '[5.015625E-1]'. Falling back to 0.5
+    # biased every embedded xgb prediction by |mean(y) - 0.5|; the old
+    # ``getattr(...) or 0.5`` also silently replaced a legitimate base_score=0.0.
+    base_score = None
+    try:
+        cfg = json.loads(booster.save_config())
+        raw = cfg["learner"]["learner_model_param"]["base_score"]
+        base_score = float(str(raw).strip("[]"))
+    except (KeyError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    if base_score is None:
+        attr = getattr(ml_model, "base_score", None)
+        base_score = 0.5 if attr is None else float(attr)
 
     tree_pred_vars = []
     for t_idx, tree_str in enumerate(dump):
