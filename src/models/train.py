@@ -288,10 +288,24 @@ def retrain_on_bootstrap(X: np.ndarray,
     return train_model(X[indices], y[indices], model_type, params)
 
 
-def generate_bootstrap_samples(n: int, P: int, seed: int = 42) -> list:
-    """Generate P fixed bootstrap index vectors of length n."""
+def generate_bootstrap_samples(n: int, P: int, seed: int = 42,
+                               frac: float = 0.5) -> list:
+    """Generate P fixed bootstrap index vectors, each of length ``round(frac*n)``.
+
+    ``frac`` is the proportion of the training rows drawn per replicate, with
+    replacement. The default 0.5 matches Maragno et al. (2025) Sec. 4.4.1, which
+    specifies "a bootstrap sample (proportion = 0.5) of the underlying data" for
+    the model-wrapper ensemble; ``frac=1.0`` is the classical n-out-of-n
+    bootstrap. Half-size replicates overlap less (an n-out-of-n draw carries only
+    ~63.2% unique rows), so the P models spread wider and the (1-alpha)-of-P
+    constraint binds harder at matched (P, alpha).
+
+    Only the legacy ``scenario_source: "bootstrap"`` path reaches this; the
+    production wrapper draws from the shared set D via ``ScenarioBank``.
+    """
     rng = np.random.RandomState(seed)
-    return [rng.choice(n, size=n, replace=True) for _ in range(P)]
+    m = max(1, int(round(frac * n)))
+    return [rng.choice(n, size=m, replace=True) for _ in range(P)]
 
 
 def train_bootstrap_models(X: np.ndarray,

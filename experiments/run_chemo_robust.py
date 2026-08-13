@@ -148,6 +148,7 @@ def _resolve_run_settings(config, args):
         settings["cp_eval_mode"] = args.cp_eval_mode
 
     settings["bootstrap_seed"] = unc.get("bootstrap_seed", 42)
+    settings["bootstrap_frac"] = unc.get("bootstrap_frac", 0.5)
     settings["embedding_mode"] = config["methods"].get("embedding_mode", "hard")
     settings["rf_alpha"] = config["methods"].get("chemo_wrapper", {}).get("alpha", 0.25)
     _wrap_cfg = config["methods"]["wrapper"]
@@ -234,6 +235,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             seed=seed,
             rho=0.0,
             bootstrap_cache=bootstrap_cache,
+            bootstrap_frac=settings["bootstrap_frac"],
             scenario_source=settings["wrapper_scenario_source"],
             uncertainty_set=settings["uncertainty_set"],
             robustify_objective=settings["wrapper_robustify_objective"],
@@ -311,6 +313,7 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
             solve_wrapper, model_type=model_type, model_params=model_params,
             n_estimators=nb, alpha=knob, seed=seed, rho=0.0,
             bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
+            bootstrap_frac=settings["bootstrap_frac"],
             scenario_source=settings["wrapper_scenario_source"],
             uncertainty_set=settings["uncertainty_set"],
             robustify_objective=settings["wrapper_robustify_objective"],
@@ -510,10 +513,12 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
     if settings["max_test_rows"]:
         print(f"Max test rows: {settings['max_test_rows']}")
 
-    # Shared coherent bootstrap relabelings (one set of resamples applied to every
-    # outcome) drive the coherent wrapper and robust_reg.
+    # Shared coherent bootstrap relabelings: one set of resamples applied to every
+    # outcome. Consumed only under methods.wrapper.scenario_source == "bootstrap";
+    # the default "noise" wrapper draws from ScenarioBank and ignores this cache.
     coherent_cache = _coherent_bootstrap_indices(
-        instance, settings["n_bootstrap"], settings["bootstrap_seed"]
+        instance, settings["n_bootstrap"], settings["bootstrap_seed"],
+        settings["bootstrap_frac"],
     )
     solvers = _build_solvers(config, settings, instance, coherent_cache)
 

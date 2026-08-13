@@ -52,7 +52,14 @@ returns a `SolutionResult`.
 - **`robust_regression.py`** — train one noise-robust model, embed it.
 - **`wrapper.py`** — Maragno et al. ensemble chance constraint: require
   $(1-\alpha)$ of $P$ models to satisfy the constraint. Also provides
-  `solve_tree_violation_wrapper` and the bootstrap-index helpers.
+  `solve_tree_violation_wrapper` and the bootstrap-index helpers. **The P models
+  do not come from bootstrap under the default**: `scenario_source` defaults to
+  `"noise"`, so they are a prefix of CP's `ScenarioBank`. The bootstrap helpers
+  (and `uncertainty.bootstrap_frac`) are reached only under
+  `scenario_source: "bootstrap"`. `run_all.py:96` and `run_chemo_robust.py:515`
+  build a bootstrap cache unconditionally and pass it in; under `"noise"` it is
+  **dead** — same shape as the `cp_alpha` dead argument documented below, and it
+  is not evidence the production wrapper bootstraps.
 - **`cp.py`** — Cutting Planes (the contribution). See below.
 
 ### `uncertainty.py` — the shared uncertainty set D
@@ -89,7 +96,57 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
   nested prefix of CP's B** — which is what makes the α=0 ≡ τ→0 equivalence exact.
 - **`coherent`** — one flag, all three methods. Coherent shares one standardized
   direction across outcomes (scaled by each `eps_c`); incoherent draws
-  independently. Vacuous on synthetic (one outcome).
+  independently. Vacuous on synthetic (one outcome) — literally, not
+  approximately: with one `MLModelData` both branches make the same single
+  `_vertex_direction` call against the same rng, so the banks are bit-identical.
+
+  **OPEN QUESTION (raised 2026-08-11, unresolved — do not treat the two bullets
+  above as settled).** Two objections, both open:
+
+  1. **Does coherence mean anything across different targets?** What is shared is
+     a dimensionless ±1 direction over *rows*, not a label shift — all six
+     gastric outcomes are built on the same `X_fit` in the same row order
+     (`generate.py:533`, `:552`), so row *i* is the same trial arm everywhere,
+     and magnitudes stay per-outcome via `eps_c`. The story that justifies it is
+     *record-level* mismeasurement: a study that under-reports adverse events
+     under-reports across all five toxicity endpoints. **That story does not
+     cover OS.** Sign is per-outcome-label, not clinical valence: `+1` on a
+     toxicity percentile is worse, `+1` on OS months is better, so a coherent
+     draw is not "these arms get uniformly worse" — it is "these arms shift up
+     in each column's own signed units." Whether OS belongs on the shared
+     direction at all is unresolved. Note the cross-outcome residual
+     correlation is never estimated: coherent asserts +1, incoherent asserts 0,
+     and the truth is in between.
+  2. **Incoherent is not the per-constraint worst case, though it should
+     arguably be.** Its *set* is the product `D_1 × … × D_C` and does strictly
+     contain coherent's diagonal — but the separation never exploits that. The
+     loop scores one scenario index at a time and pulls every constraint's model
+     from `bank.models_for(b)` at one shared `b` (`cp.py:1468`,
+     `uncertainty.py:366`), then cuts that whole `b` (`cp.py:1523`). Outcome 1
+     from draw 3 cannot be paired with outcome 2 from draw 17, so the adversary
+     searches B joint points, not `B^C` combinations — a legal region of its own
+     D that it never visits. **No flag reaches the mixed adversary**;
+     `cut_whole_scenario=False` still cuts a single `b`.
+  3. **The flag means structurally different things in CP and the wrapper**,
+     which follows from (2). The wrapper's incoherent arm gives each constraint
+     its own indicator `z[c, p]` (`wrapper.py:232`, `:234-235`), so different
+     constraints may be satisfied by *different* replicates — close to the
+     per-constraint worst case objection (2) asks for. CP's incoherent arm has
+     no analogue: independent draws, but still one shared `b` per cut. So
+     incoherent CP is a strictly weaker object than incoherent wrapper, while
+     coherent CP and coherent wrapper match by construction. **The α=0 ≡ τ→0
+     equivalence is therefore a coherent-arm result** — `cp.py:1511-1514`
+     derives it precisely from the whole-scenario cut matching the wrapper's
+     single joint indicator. Whether it survives on the incoherent arm has not
+     been tested, and the reasoning above suggests it does not.
+
+  Changing (2) is not free: the shared-`b` cut is what makes CP at τ→0 identical
+  to the wrapper at α=0 and what makes permanent scenario exclusion sound
+  (reasoning at `cp.py:1506-1522`). A per-constraint argmax would break both and
+  would defend against points that correspond to no single relabeling of one
+  trial. Cheapest next step is measurement, not a rewrite: build both banks at
+  the same seed and B, score every draw at the nominal $x^*$, and compare the max
+  and the full distance distribution — a bank scan, no MIP resolves.
 - `uncertainty.eps_0` and `budget_frac` are shared **constants, not knobs** —
   each method keeps exactly one conservatism dial (CP τ, wrapper α, robust_reg
   `label_eps`). `eps_0` is deliberately *not* pinned to robust_reg's calibrated
@@ -262,10 +319,20 @@ for `--quick`. Cross-validated model selections are read from
 
 **Robustness-knob CV is per (method, coherence) cell**, keyed
 `method@coherent` / `method@incoherent` (`cv_calibrate.knob_key` / `lookup_knob`,
-which falls back to a bare `method` key for older JSONs). A coherent draw is the
-stronger adversary at a fixed radius, so reusing one θ* across both would
-confound coherence with conservatism. `cv_calibration.coherence_cells` controls
+which falls back to a bare `method` key for older JSONs). The two cells are not
+interchangeable — coherence and conservatism would be confounded by reusing one
+θ* — so they are calibrated separately. `cv_calibration.coherence_cells` controls
 which cells run; synthetic stays single-cell (coherence is vacuous there).
+
+Which cell is the *stronger* adversary is **not settled** (see the OPEN QUESTION
+under `uncertainty.py`). Coherent is stronger under the implementation as it
+stands — finite B covers the diagonal far better than the product set, and the
+mean-over-cells scoring (`cp.py:1481-1504`) has a heavier right tail when the
+per-outcome exceedances move together. That is a property of *(mean scoring ×
+shared `b` × finite B)*, not of the sets: incoherent's set strictly contains
+coherent's, so under max-over-outcomes scoring or a per-constraint argmax the
+ordering would flip. Earlier revisions of this file asserted coherent-is-stronger
+flatly; that was underspecified.
 
 ## Presentations (`presentations/`)
 
@@ -312,6 +379,17 @@ Both:
 - Uncertainty is the **shared set D** (`src/methods/uncertainty.py`), scaled per
   outcome by the out-of-fold residual sd. The older data-driven bootstrap
   resampling survives as the `scenario_source: "bootstrap"` ablation.
+- **`uncertainty.bootstrap_frac` (default 0.5) is the rows drawn per bootstrap
+  replicate**, as a proportion of `n_train`. 0.5 is what Maragno et al. (2025)
+  Sec. 4.4.1 actually specifies — "a bootstrap sample (proportion = 0.5) of the
+  underlying data" — for the WFP wrapper experiment; the paper gives **no**
+  proportion for the chemo case study, because §5 never uses the wrapper (Table 6
+  there comes from one selected model per outcome, not an ensemble). Applying the
+  wrapper to gastric at all is our extension. Half-size replicates carry ~39%
+  unique rows against ~63% for n-out-of-n, so they overlap less, the P models
+  spread wider, and the constraint binds harder: measured on synthetic at P=5,
+  `obj = -1.2533` at 0.5 vs `-1.2769` at 1.0. Set `1.0` to reproduce results
+  predating this knob.
 - **`eps_0` is in units of the scale, so it interacts with `scale_stat`.**
   `eps_0 = 1` under `oof_sd` is the intended operating point; `eps_0 = 1` under
   marginal `"sd"` is 4× too wide on synthetic and CP will not converge. If you

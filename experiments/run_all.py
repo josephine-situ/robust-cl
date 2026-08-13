@@ -87,14 +87,19 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
     unc = config["uncertainty"]
     n_bootstrap = unc.get("n_bootstrap", 25)
     bootstrap_seed = unc.get("bootstrap_seed", 42)
+    bootstrap_frac = unc.get("bootstrap_frac", 0.5)
     cp_k_neighbors_frac = unc.get("cp_k_neighbors_frac", 0.1)
     cp_k_neighbors_min = unc.get("cp_k_neighbors_min", 1)
     cp_n_candidates = unc.get("cp_n_candidates", 20)
 
     from functools import partial
 
+    # Only consumed when methods.wrapper.scenario_source == "bootstrap"; under the
+    # default "noise" the wrapper takes its P models from ScenarioBank and this
+    # cache is built and discarded.
     bootstrap_cache = _get_shared_bootstrap_indices(
-        instance, model_type, model_params, n_bootstrap, bootstrap_seed
+        instance, model_type, model_params, n_bootstrap, bootstrap_seed,
+        bootstrap_frac,
     )
 
     # CV-calibrated operating points override the config defaults, so every method
@@ -139,6 +144,7 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
         alpha=knobs.get("wrapper", wrapper_cfg["alpha"]),
         seed=bootstrap_seed,
         bootstrap_cache=bootstrap_cache,
+        bootstrap_frac=bootstrap_frac,
         # Same D, same seeded draw sequence CP separates over -- the wrapper's P
         # models are a prefix of CP's bank, so alpha=0 and tau->0 are comparable.
         scenario_source=wrapper_cfg.get("scenario_source", "noise"),

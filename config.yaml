@@ -19,8 +19,15 @@ optimization:
   variable_bounds: [0.0, 1.0]
 
 uncertainty:
-  n_bootstrap: 20  # P — shared fixed resamples for wrapper + robust_reg
+  n_bootstrap: 20  # P — number of wrapper replicates / ScenarioBank prefix length
   bootstrap_seed: 42
+  # Rows drawn (with replacement) per bootstrap replicate, as a proportion of
+  # n_train. 0.5 matches Maragno et al. (2025) Sec. 4.4.1 ("a bootstrap sample
+  # (proportion = 0.5) of the underlying data"); 1.0 is the classical n-out-of-n
+  # bootstrap and reproduces results from before this knob existed. Reaches ONLY
+  # the legacy `methods.wrapper.scenario_source: "bootstrap"` path — the default
+  # "noise" wrapper draws vertices of D via ScenarioBank and never bootstraps.
+  bootstrap_frac: 0.5
   # --- the SHARED uncertainty set D (src/methods/uncertainty.py) ---------------
   # D_c = {|dy_i| <= eps_c, ||dy||_1 <= budget_frac * n * eps_c}, eps_c = eps_0 *
   # scale(y_c). Shape is shared by cp / wrapper / robust_reg; each keeps its own

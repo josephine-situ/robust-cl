@@ -41,6 +41,9 @@
   \begin{itemize}
     \item $\delta$ perturbs \emph{labels}; the model is \textbf{retrained}. Not a
       post-hoc perturbation of predictions.
+    \item Trees enter the MIP \textbf{exactly}: sibling leaf boxes disjoint at
+      each split --- else $x$ on a threshold satisfies two leaves and the solver
+      takes the cheaper one. Verified $\le10^{-7}$ vs sklearn.
   \end{itemize}
 \end{frame}
 
@@ -275,7 +278,7 @@
 
 \begin{frame}{Wrapper --- chance-constrain a sample of $\mathcal D$}
   \begin{itemize}
-    \item $P=20$ bank draws; $P$ replicates of each learned model, \textbf{all embedded}.
+    \item $P=20$ bank draws (each from half of the full set); $P$ replicates of each learned model, \textbf{all embedded}.
     \item Coherent: $z_p=1$ iff $x$ satisfies \emph{every} constraint under replicate
       $p$ (one indicator per draw). Incoherent: $z_{c,p}$ per constraint.
     \item Chance constraint: $\tfrac1P\sum_p z_p \ge 1-\alpha$.
@@ -462,6 +465,33 @@
   $10\times$ the adversaries in $1/5$ the MIP.
 \end{frame}
 
+% ===========================================================================
+\begin{frame}{Related: conformal MICL (\textbf{not implemented})}
+  \small
+  Ovalle et al.\ 2025. Same goal --- ground-truth feasibility --- by conformal
+  prediction rather than an ensemble.
+  \begin{itemize}
+    \item Fit $\hat h$; fit $\hat u$ on $|\hat h(x)-y|$; take $\hat q_{1-\alpha}$
+      of $|\hat h-y|/\hat u$ on a \emph{held-out} calibration set. Embed
+      $\hat h(x)\pm\hat q_{1-\alpha}\hat u(x)\subseteq[\underline y,\overline y]$.
+    \item \textbf{Two models, not $P$}; formulation size independent of $N$.
+    \item Guarantee is \textbf{marginal} over $\mathcal P_{XY}$ and rests on
+      feasibility $\perp$ coverage $\mid$ GT feasibility. Our $x^\ast$ is an
+      argmin, not a random draw.
+    \item $\hat u$ is scale-free ($\hat q$ absorbs any uniform bias); only
+      \emph{shape} error hurts.
+  \end{itemize}
+  \medskip
+  \textbf{Why we expect it to be infeasible on gastric}: unexplained ratio
+  $0.78$--$1.02$ $\Rightarrow$ $\hat u\approx\mathrm{sd}(y)$ $\Rightarrow$
+  ${\approx}1.65\,\mathrm{sd}(y)$ half-width on 5 constraints at once. CP absorbs
+  the same poor fit by cutting the worst scenario instead.
+  \medskip
+  \footnotesize
+  Not implemented: no calibration split, no $\hat u$, and our folds are
+  \emph{temporal} --- conformal needs exchangeability.
+\end{frame}
+
 \begin{frame}{Open questions}
   \textbf{Method}
   \begin{itemize}
@@ -478,6 +508,10 @@
     \item Sensitivity over $\varepsilon_0\in\{0.5,1,2\}$: show $\tau^\ast$, not
       $\varepsilon_0$, drives CP.
     \item Re-enable pruning/eviction behind \texttt{objective\_monotone}.
+    \item Add \textbf{C-MICL as a fifth method} --- expect gastric infeasibility;
+      reporting that is the result.
+    \item Bank scan, coherent vs incoherent at the nominal $x^\ast$: which
+      adversary is actually stronger? No MIP resolves needed.
     \item Add the WFP problem setting (needs a loader).
   \end{itemize}
 \end{frame}

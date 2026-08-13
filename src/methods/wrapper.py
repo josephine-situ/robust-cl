@@ -25,8 +25,14 @@ from src.models.train import generate_bootstrap_samples, train_bootstrap_models
 from src.models.embed import embed_model
 
 
-def _get_shared_bootstrap_indices(instance, model_type, model_params, n_bootstrap, seed):
-    """Fixed P bootstrap index vectors per MLModelData (shared by wrapper and robust_reg)."""
+def _get_shared_bootstrap_indices(instance, model_type, model_params, n_bootstrap, seed,
+                                  bootstrap_frac=0.5):
+    """Fixed P bootstrap index vectors per MLModelData.
+
+    Consumed only by the legacy ``scenario_source: "bootstrap"`` wrapper path -
+    ``robust_reg`` takes ``label_eps`` + the shared set D and never bootstraps.
+    ``bootstrap_frac`` is the per-replicate row proportion (Maragno 0.5).
+    """
     cache = {}
     config_idx = 0
     for constraint in instance.constraints:
@@ -35,23 +41,24 @@ def _get_shared_bootstrap_indices(instance, model_type, model_params, n_bootstra
             if md_id not in cache:
                 n = len(model_data.y_train)
                 cache[md_id] = generate_bootstrap_samples(
-                    n, n_bootstrap, seed + config_idx * 100
+                    n, n_bootstrap, seed + config_idx * 100, bootstrap_frac
                 )
             config_idx += 1
     return cache
 
 
-def _coherent_bootstrap_indices(instance, n_bootstrap, seed):
+def _coherent_bootstrap_indices(instance, n_bootstrap, seed, bootstrap_frac=0.5):
     """One shared set of P bootstrap index vectors assigned to EVERY MLModelData.
 
     Because all gastric outcomes share the same patients (rows of X_train),
     resampling rows once and applying it to every outcome makes replicate ``p`` a
     single coherent trial relabeling across all constraints and the objective -
     the bootstrap analogue of CP's shared scenario. Assumes every MLModelData has
-    the same number of training rows.
+    the same number of training rows. ``bootstrap_frac`` is the per-replicate row
+    proportion (Maragno 0.5).
     """
     n = len(instance.constraints[0].models_data[0].y_train)
-    shared = generate_bootstrap_samples(n, n_bootstrap, seed)
+    shared = generate_bootstrap_samples(n, n_bootstrap, seed, bootstrap_frac)
     cache = {}
     for constraint in instance.constraints:
         for model_data in constraint.models_data:
@@ -65,16 +72,18 @@ def train_bootstrap_ensembles_for_instance(instance,
                                            n_bootstrap,
                                            seed,
                                            bootstrap_cache=None,
-                                           ensembles_cache=None):
+                                           ensembles_cache=None,
+                                           bootstrap_frac=0.5):
     """Train P bootstrap models per MLModelData; optionally reuse index cache.
 
     If ``ensembles_cache`` (md_id -> trained models) is provided, it is reused
     directly without retraining - handy when calibration evaluates several
     robustness settings that do not change the underlying models.
+    ``bootstrap_frac`` applies only when ``bootstrap_cache`` is built here.
     """
     if bootstrap_cache is None:
         bootstrap_cache = _get_shared_bootstrap_indices(
-            instance, model_type, model_params, n_bootstrap, seed
+            instance, model_type, model_params, n_bootstrap, seed, bootstrap_frac
         )
     if ensembles_cache is not None:
         return ensembles_cache, bootstrap_cache
@@ -117,6 +126,7 @@ def solve_wrapper(instance: ProblemInstance,
                   rho: float = 0.0,
                   bootstrap_cache=None,
                   ensembles_cache=None,
+                  bootstrap_frac: float = 0.5,
                   scenario_source: str = "noise",
                   uncertainty_set=None,
                   bank=None,
@@ -132,7 +142,10 @@ def solve_wrapper(instance: ProblemInstance,
       pure function of ``(seed, b)``, the wrapper's P models are a genuine
       *prefix* of CP's bank -- so ``alpha=0`` here and ``tau->0`` in CP face
       identical adversaries and must agree.
-    - ``"bootstrap"``: the legacy bootstrap replicates.
+    - ``"bootstrap"``: the legacy bootstrap replicates. Each draws
+      ``bootstrap_frac`` of the rows with replacement (default 0.5, matching
+      Maragno et al. 2025 Sec. 4.4.1); ignored when ``bootstrap_cache`` is
+      supplied, since the caller already fixed the indices.
 
     P is capped by MIP size, because unlike CP -- which embeds one extra scenario
     per iteration and evicts -- the wrapper embeds **all** P models at once.
@@ -175,7 +188,7 @@ def solve_wrapper(instance: ProblemInstance,
     else:
         trained_ensembles_cache, _ = train_bootstrap_ensembles_for_instance(
             instance, model_type, model_params, n_bootstrap, seed,
-            bootstrap_cache, ensembles_cache,
+            bootstrap_cache, ensembles_cache, bootstrap_frac,
         )
 
     trained_constraints = []
