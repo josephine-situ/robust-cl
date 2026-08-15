@@ -269,7 +269,15 @@ methods:
     # draws of the SAME seeded sequence CP uses, so it is a nested prefix of CP's
     # bank -- which is what makes the alpha=0 / tau->0 equivalence test meaningful.
     n_estimators: 20
-    alpha: 0.1  # violation fraction across models
+    # Violation fraction across the P models: at most alpha*P may violate.
+    # 0.2 is in Maragno et al.'s own WFP grid (alpha in {0, 0.1, 0.2, 0.5}; the
+    # chemo case study never uses the wrapper, so it publishes no alpha), and it
+    # is where gastric held-out feasibility peaks: measured 0.879 coherent /
+    # 0.938 incoherent, against 0.818/0.863 at 0.1 and 0.678/0.673 at 0.0.
+    # Feasibility is NON-MONOTONE in alpha and falls off a cliff at 0 -- which is
+    # also the CP-collapse corner, since alpha=0 with tau->0 makes the wrapper and
+    # CP the same solver at B=P. 0.2 is clear of both.
+    alpha: 0.2
     scenario_source: "noise"   # "noise" (shared D, prefix of CP's bank) | "bootstrap"
     # false = one nominal objective model, matching CP's default. true rebuilds the
     # worst-case epigraph over all P (legacy), which handed the wrapper conservatism

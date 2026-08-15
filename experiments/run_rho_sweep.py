@@ -180,7 +180,7 @@ def run_sweep(config, args):
         uncertainty_set_from_config(config),
         geometry="ellipsoid", coherent=bool(args.coherent),
     )
-    knobs = _fixed_knobs(problem, args)
+    knobs = _fixed_knobs(problem, args, config)
     grid = [float(r) for r in (args.rho_grid or DEFAULT_GRID)]
     methods = args.methods or ["nominal", "cp", "wrapper", "robust_reg"]
 
@@ -320,32 +320,58 @@ def _pick_ablation_rho(star, grid):
     return float(np.median(grid))
 
 
-def _fixed_knobs(problem, args):
+def _fixed_knobs(problem, args, config):
     """Each method's own dial, held fixed across the sweep.
 
-    Defaults come from the stage-1 CV selections so the fixed points are the ones
-    the pipeline already defends. Two must not sit at the degenerate end together:
-    tau -> 0 with alpha = 0 makes CP identical to the wrapper (the alpha=0 / tau->0
+    Read from **config.yaml**, not from ``*_robustness_knobs.json``. Under the rho
+    parameterization tau and alpha are fixed CONSTANTS with their own ablations --
+    the thing being calibrated is rho -- so the stage-1 CV selections are no longer
+    the right source. Worse, they would be silently mis-scaled: those tau values
+    were selected under ``tolerance_basis: "d0"``, where tau is a fraction of a
+    bank quantile, while tau is now a multiple of the label scale. tau=0.1 means
+    two different things in the two regimes.
+
+    ``--knobs-from-cv`` restores the old behaviour for reproducing prior runs;
+    ``--knobs`` overrides everything explicitly.
+
+    Whatever the source, the pair must not sit at the degenerate corner: tau -> 0
+    with alpha = 0 makes CP identical to the wrapper (the alpha=0 / tau->0
     equivalence), collapsing two of the three methods into one solver and leaving
-    nothing to compare on decisions. The CV picks (tau=0.1, alpha=0.2-0.3) are
-    clear of that corner.
+    nothing to compare on decisions.
     """
     if args.knobs:
-        return {k: float(v) for k, v in
-                (kv.split("=") for kv in args.knobs.split(","))}
-    path = f"results/cv/{problem}_robustness_knobs.json"
-    if not os.path.exists(path):
-        raise SystemExit(
-            f"no {path}; run the stage-1 knob CV first or pass "
-            f"--knobs cp=0.1,wrapper=0.3")
-    raw = json.load(open(path))
-    coherent = bool(args.coherent)
-    out = {}
-    for m in ("cp", "wrapper", "robust_reg"):
-        v = lookup_knob(raw, m, coherent)
-        if v is not None:
-            out[m] = float(v)
-    out["nominal"] = 0.0
+        out = {k: float(v) for k, v in
+               (kv.split("=") for kv in args.knobs.split(","))}
+        out.setdefault("nominal", 0.0)
+        _warn_if_degenerate(out)
+        return out
+
+    if args.knobs_from_cv:
+        path = f"results/cv/{problem}_robustness_knobs.json"
+        if not os.path.exists(path):
+            raise SystemExit(f"no {path}; drop --knobs-from-cv or pass --knobs")
+        raw = json.load(open(path))
+        out = {}
+        for m in ("cp", "wrapper", "robust_reg"):
+            v = lookup_knob(raw, m, bool(args.coherent))
+            if v is not None:
+                out[m] = float(v)
+        out["nominal"] = 0.0
+        print("[rho-sweep] WARNING: --knobs-from-cv reads tau selected under the "
+              "d0 basis; it is NOT the same quantity as tau under "
+              "tolerance_basis='scale'.", flush=True)
+        _warn_if_degenerate(out)
+        return out
+
+    methods_cfg = (config or {}).get("methods", {}) or {}
+    out = {
+        "nominal": 0.0,
+        "cp": float((methods_cfg.get("cp", {}) or {}).get("dist_tol_rel", 0.01)),
+        "wrapper": float((methods_cfg.get("wrapper", {}) or {}).get("alpha", 0.2)),
+        # robust_reg's knob tracks rho and is overwritten per cell; the value here
+        # is never used, but is kept so the printed dict is not misleadingly empty.
+        "robust_reg": float("nan"),
+    }
     _warn_if_degenerate(out)
     return out
 
@@ -430,8 +456,14 @@ def main():
                    help=f"rho values to sweep (default {DEFAULT_GRID})")
     p.add_argument("--methods", nargs="+", default=None)
     p.add_argument("--knobs", default=None,
-                   help="fixed dials, e.g. 'cp=0.1,wrapper=0.3'; default reads "
-                        "results/cv/{problem}_robustness_knobs.json")
+                   help="fixed dials, e.g. 'cp=0.01,wrapper=0.2'; default reads "
+                        "methods.cp.dist_tol_rel and methods.wrapper.alpha from "
+                        "config.yaml")
+    p.add_argument("--knobs-from-cv", action="store_true",
+                   help="read the fixed dials from "
+                        "results/cv/{problem}_robustness_knobs.json instead. Those "
+                        "tau values were selected under tolerance_basis='d0' and "
+                        "are NOT the same quantity as tau under 'scale'")
     p.add_argument("--feas-target", type=float, default=0.9,
                    help="held-out feasibility target defining rho* (default 0.9)")
     p.add_argument("--min-solved", type=float, default=0.5,
