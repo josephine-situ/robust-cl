@@ -72,6 +72,38 @@ rows, 0 elsewhere (:func:`worst_case_label_shift`). Sampling the interior would
 hand CP and the wrapper a systematically weaker adversary than robust_reg at the
 *same* D, confounding the comparison this module exists to enable.
 
+**Why the draws are nonetheless RANDOM in direction, while robust_reg's adversary
+is DIRECTED. This asymmetry is deliberate.** The three methods are matched in
+*magnitude* -- every draw is a boundary point of D, spending the same budget
+robust_reg's inner max spends -- but they are not matched in *alignment*. CP and
+the wrapper draw directions at random; robust_reg aims its shift along the
+residuals (:func:`worst_case_label_shift` / :func:`l2_worst_case_shift`).
+
+The reason is structural, and it is about feasibility rather than fairness. CP and
+the wrapper turn each scenario into *embedded constraints*: CP adds a cut per
+accepted scenario, the wrapper requires (1-alpha) of P models to hold jointly. A
+directed adversary would make each of those constraints as tight as D allows, and
+tight constraints accumulate -- the master stops admitting any prescription at all.
+That is not hypothetical: it is the failure ``run_adversary_probe.py`` Part C/D
+exists to measure ("with EVERY constraint at its own worst case simultaneously, is
+the master still feasible at each anchor?"), and it is what CP's rollback and
+permanent-rejection machinery already spends effort containing at *random* draws.
+
+robust_reg is exposed to none of that, because the adversary never becomes a
+constraint. It shapes the *fit*: one model per outcome is retrained on the shifted
+labels, and that single model is what gets embedded. A worst-case shift moves
+where the model sits; it cannot make the optimization infeasible. So robust_reg can
+afford a directed adversary at the same D that would render CP and the wrapper
+unsolvable.
+
+The cost of the asymmetry is real and should be reported, not hidden: random
+sampling recovers only part of the attainable worst case. Measured on synthetic by
+the probe, the best of B random draws reaches ``1.07 eps`` against a directed
+adversary's ``1.67 eps`` (~64%), and the gap *widens* under ``"ellipsoid"``,
+since ``g'u`` has the same sd under both geometries while the attainable maximum
+rises. So "shared D" guarantees a shared *set*, and equal *budget*, but not equal
+adversary strength -- by design.
+
 **Geometry (``uncertainty.geometry``, default ``"box_l1"``).** ``"ellipsoid"``
 replaces the box-cap-L1 set with the ball ``||d||_2 <= R_c = rho*scale*sqrt(n)``.
 Draws become uniform on the unit sphere (:func:`_sphere_direction`); the

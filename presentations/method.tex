@@ -175,8 +175,39 @@
   \begin{itemize}
     \item Size is a shared \textbf{constant}, not a knob. One dial per method.
     \item Draws are \textbf{vertices} (box) / uniform on the sphere (ellipsoid) ---
-      where Robust Reg.'s inner max sits. No method gets a weaker adversary.
+      the same budget Robust Reg.'s inner max spends.
     \item \textbf{Coherence} is a \emph{grouping}, crossed with all three methods.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Matched in magnitude, not in direction --- on purpose}
+  \small
+  \begin{center}\small
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    Method & Worst case found by & Scenario becomes \\
+    \midrule
+    Robust Reg. & \textbf{directed} (top-$m$ / $Rr/\lVert r\rVert$) & the \emph{fit} \\
+    CP          & \textbf{random} draws, cut the argmax  & a \emph{cut} \\
+    Wrapper     & \textbf{random} draws, chance constraint & $P$ \emph{constraints} \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+  \begin{itemize}
+    \item \textbf{Why:} CP/wrapper embed scenarios as \emph{constraints}. A
+      directed adversary makes each as tight as $\mathcal D$ allows; they
+      accumulate until the master admits no prescription. Probe Part C/D measures
+      exactly this.
+    \item Robust Reg.\ is immune --- its adversary never becomes a constraint. It
+      retrains \textbf{one model per outcome}; a worst-case shift moves where the
+      model sits, it cannot cause infeasibility.
+    \item \textbf{Cost, reported not hidden}: best-of-$B$ random reaches
+      $1.07\varepsilon$ vs directed $1.67\varepsilon$ ($\approx$64\%, synthetic).
+      Gap \emph{widens} under \texttt{ellipsoid}.
+    \item $\Rightarrow$ shared $\mathcal D$ = shared \emph{set} and equal
+      \emph{budget}, \textbf{not} equal adversary strength.
   \end{itemize}
 \end{frame}
 

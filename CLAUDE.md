@@ -155,9 +155,32 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
   never be used as a conservatism dial. A real claim would come from the
   measurement rather than the fit (per-row binomial σ_i, weighted ellipsoid); that
   is a genuinely narrower D and a different paper, not a drop-in.
+- **How each method samples the worst case — matched in magnitude, deliberately
+  NOT in direction.** robust_reg uses a **directed** adversary (`worst_case_label_shift`
+  greedy top-m by residual, or the closed form `R·r/‖r‖` under `ellipsoid`). CP and
+  the wrapper use **random** boundary draws from the bank. Same D, same budget
+  spent, different alignment — and that asymmetry is intentional.
+
+  The reason is feasibility, not fairness. CP and the wrapper turn scenarios into
+  *embedded constraints* — CP a cut per accepted scenario, the wrapper a joint
+  chance constraint over P models. A directed adversary makes each of those as
+  tight as D allows, and they accumulate until the master admits no prescription
+  at all. That is exactly what `run_adversary_probe.py` Part C/D measures, and
+  what CP's rollback / permanent-rejection machinery already contains at *random*
+  draws. robust_reg is immune because its adversary never becomes a constraint: it
+  shapes the **fit**, one model per outcome is retrained on the shifted labels, and
+  that single model is embedded. A worst-case shift moves where the model sits; it
+  cannot make the optimization infeasible.
+
+  The cost is real and should be reported rather than hidden: the best of B random
+  draws reaches **1.07 eps** against a directed adversary's **1.67 eps** on
+  synthetic (~64%), and the gap *widens* under `"ellipsoid"` (`g'u` has the same sd
+  under both geometries while the attainable max rises). **"Shared D" guarantees a
+  shared set and equal budget, not equal adversary strength.**
+
 - **`ScenarioBank`** draws B **vertices** of D (±eps on `budget_frac`·n rows, 0
-  elsewhere — matching robust_reg's adversary; interior draws would be a weaker
-  adversary at the same D) and trains one model per draw per outcome, with
+  elsewhere — matching robust_reg's adversary in magnitude; interior draws would be
+  weaker still at the same D) and trains one model per draw per outcome, with
   `random_state` fixed across members so the scenario is the only variation.
   Draw *b* is a pure function of `(seed, b)`, so **the wrapper's P models are a
   nested prefix of CP's B** — which is what makes the α=0 ≡ τ→0 equivalence exact.
