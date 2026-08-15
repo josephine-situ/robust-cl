@@ -37,6 +37,7 @@ from src.methods.nominal import (
     resolve_constraint_config,
     add_domain_constraints,
     build_decision_vars,
+    model_X_ref,
 )
 from src.models.train import (
     train_model,
@@ -173,6 +174,7 @@ class IncrementalMaster:
                     self.opt, ml_model, self.x,
                     self.instance.variable_lb, self.instance.variable_ub,
                     name_prefix=m_prefix, rho=rho,
+                    X_ref=model_X_ref(self.instance, c_idx, m_idx),
                 )
                 self.embedded_models_cache[m_id] = f_s
                 created_ids.append(m_id)
@@ -507,6 +509,7 @@ def _build_master_with_nominal(instance, model_type, model_params, rho,
                     master.opt, ml_model, master.x,
                     instance.variable_lb, instance.variable_ub,
                     name_prefix=f"cp_obj_c{c_idx}_m{m_idx}", rho=rho,
+                    X_ref=model_X_ref(instance, c_idx, m_idx),
                 )
             nominal_obj_terms.append(obj_weight * master.embedded_models_cache[m_id])
 
@@ -766,6 +769,28 @@ class _SepEnv:
     # None restores the legacy localized-bootstrap path.
     bank: Optional[object] = None
     d0_quantile: float = 0.9
+    # What tau is a fraction OF.
+    #
+    # "scale" (default): the label scale of each outcome -- the same
+    #   scale(y_c) that sets D's radius. Each exceedance is divided by its own
+    #   scale_c and averaged over (anchor x outcome) cells, so tau reads directly
+    #   as "stop when the mean exceedance is below tau UNEXPLAINED STANDARD
+    #   DEVIATIONS". Three things this fixes. tau becomes a physical quantity in
+    #   the SAME units as rho, rather than a ratio to a bank statistic. It no
+    #   longer depends on the bank, the seed, or B. And a large enough tau makes
+    #   iteration 0 pass its own test, so the grid genuinely spans nominal ->
+    #   worst-case, which no d0-relative tau could (see below).
+    #
+    # "d0": tolerance = tau * q_{d0_quantile} of the iteration-0 distances. The
+    #   legacy basis, kept so prior results reproduce. Its documented wart: the
+    #   stopping statistic is the MAX over the bank while d0 is a q0.9, so
+    #   iteration 0 fails its own test and NO tau in [0.1, 1.0] reproduces
+    #   nominal.
+    #
+    # Note "scale" also retires the per-cell divisor max(1, |rhs|), which was a
+    # no-op on gastric: rhs = 0.6 there, so max(1, 0.6) = 1 and the "normalized"
+    # distances were raw percentile units all along.
+    tolerance_basis: str = "scale"
     # Smallest normalized distance worth separating. The master is solved to
     # `mip_gap` relative optimality, so cuts whose effect falls below that leave
     # x* unmoved -- separating there burns iterations for nothing. Expressed in
@@ -821,6 +846,44 @@ def _report_cp_diagnostics(strategy, status: str) -> None:
             "tau grid over this configuration is uninformative.",
             flush=True,
         )
+
+
+def _build_scale_map(inst: ProblemInstance, bank) -> dict:
+    """``{c_idx -> scale(y_c)}`` for the constraint outcomes, from the bank.
+
+    The same per-outcome label scale that sets D's radius, so a distance divided
+    by it is in units of unexplained standard deviations -- comparable to rho and
+    comparable across outcomes whose labels live on different scales (percentile
+    toxicities vs OS in months). Empty when there is no bank (the legacy
+    localized-bootstrap path), which falls back to the rhs divisor.
+    """
+    out = {}
+    if bank is None:
+        return out
+    scales = getattr(bank, "scales", {}) or {}
+    for c_idx, constraint in enumerate(inst.constraints):
+        for md in constraint.models_data:
+            if md.obj_weight == 0.0:
+                s = scales.get(id(md))
+                if s and np.isfinite(s) and s > 0:
+                    out[c_idx] = float(s)
+                break
+    return out
+
+
+def _cell_divisor(scale_map: dict, c_idx: int, rhs: float, basis: str) -> float:
+    """Denominator for one (anchor, outcome) exceedance.
+
+    ``"scale"`` divides by the outcome's own label scale; ``"d0"`` keeps the
+    legacy ``max(1, |rhs|)``. The fallback matters: without a bank there is no
+    scale to divide by, and silently switching bases would make tau mean two
+    different things in one run.
+    """
+    if basis == "scale":
+        s = scale_map.get(c_idx)
+        if s:
+            return s
+    return max(1.0, abs(float(rhs)))
 
 
 def _resolve_d0(distances, quantile: float) -> float:
@@ -1085,8 +1148,19 @@ class _BasicSeparation:
         # data.synthetic.n_features > 2 makes rhs exceed 1.
         if self._tol is None:
             if self.dist_tol_rel is not None and all_viol:
-                d0 = _resolve_d0(all_viol, env.d0_quantile)
-                raw = float(self.dist_tol_rel) * d0
+                # Violations stay RAW on this path, so under basis="scale" tau is
+                # converted into constraint units by the outcome's own label scale
+                # -- the same scale(y_c) that sets D's radius, so "tau = 0.05"
+                # means the same thing here and on the coherent path even though
+                # the two log different units.
+                scale_map = _build_scale_map(inst, env.bank)
+                scale_basis = env.tolerance_basis == "scale" and bool(scale_map)
+                if scale_basis:
+                    s_c = max(scale_map.values())
+                    d0, raw = None, float(self.dist_tol_rel) * s_c
+                else:
+                    d0 = _resolve_d0(all_viol, env.d0_quantile)
+                    raw = float(self.dist_tol_rel) * d0
                 # Never separate below what the master is solved to: the solver
                 # returns any incumbent within `mip_gap` of optimal, so a cut whose
                 # effect is smaller leaves x* unmoved. 1e-6 is the absolute backstop
@@ -1096,16 +1170,26 @@ class _BasicSeparation:
                 # Report a floored tolerance explicitly, as the coherent path does:
                 # it means every tau below that point gives the SAME run, so a tau
                 # grid must be spanned above it to be informative.
-                note = "" if raw >= floor else (
-                    f"  [FLOORED at solver resolution {floor:.6f}; "
-                    f"tau<={raw / d0 if d0 else 0:.3g} all give this run]"
-                )
-                print(
-                    f"    [cp] d0={d0:.4f} (q{env.d0_quantile:g} of {len(all_viol)} "
-                    f"iter-0 scenario violations; max={max_violation:.4f}); "
-                    f"tau={self.dist_tol_rel:g} -> tol={self._tol:.6f}{note}",
-                    flush=True,
-                )
+                if raw >= floor:
+                    note = ""
+                else:
+                    cut = floor / s_c if scale_basis else (raw / d0 if d0 else 0)
+                    note = (f"  [FLOORED at solver resolution {floor:.6f}; "
+                            f"tau<={cut:.3g} all give this run]")
+                if scale_basis:
+                    print(
+                        f"    [cp] basis=scale (scale={s_c:.4f}); max iter-0 "
+                        f"violation={max_violation:.4f} over {len(all_viol)} draws; "
+                        f"tau={self.dist_tol_rel:g} -> tol={self._tol:.6f}{note}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"    [cp] d0={d0:.4f} (q{env.d0_quantile:g} of {len(all_viol)} "
+                        f"iter-0 scenario violations; max={max_violation:.4f}); "
+                        f"tau={self.dist_tol_rel:g} -> tol={self._tol:.6f}{note}",
+                        flush=True,
+                    )
             else:
                 self._tol = 1e-6
 
@@ -1463,6 +1547,17 @@ class _CoherentSeparation:
         candidates = []   # (total_dist, raw_max_exceed, cuts, scenario_key)
         all_dists = []    # EVERY scanned scenario, including the non-violating ones,
                           # so d0's quantile describes the bank and not just its tail
+        scale_map = _build_scale_map(inst, env.bank)
+        # The objective outcome is excluded from scale_map by construction (it has
+        # obj_weight != 0), so fetch its scale separately -- otherwise under
+        # robustify_objective the objective cell would be normalized by |t_val|
+        # while every constraint cell is normalized by scale_c, and the mean would
+        # be averaging two different units.
+        obj_scale = None
+        if has_obj and env.bank is not None:
+            _s = [getattr(env.bank, "scales", {}).get(id(md)) for _, md in obj_specs]
+            _s = [v for v in _s if v and np.isfinite(v) and v > 0]
+            obj_scale = max(_s) if _s else None
         for scenario in scenarios:
             if env.bank is not None:
                 model_map = env.bank.models_for(scenario)
@@ -1488,14 +1583,17 @@ class _CoherentSeparation:
                 for c_idx, (models, rhs) in per_constraint_models.items():
                     exceed = sum(w * th.predict(xs2d)[0] for w, th in models) - rhs
                     if exceed > 1e-6:
-                        sum_norm_exceed += exceed / max(1.0, abs(rhs))
+                        sum_norm_exceed += exceed / _cell_divisor(
+                            scale_map, c_idx, rhs, env.tolerance_basis)
                         raw_max_exceed = max(raw_max_exceed, exceed)
                         violated_constraints.add(c_idx)
                 if has_obj:
                     obj_pred = sum(ow * th.predict(xs2d)[0] for ow, th in obj_models)
                     exceed = obj_pred - t_val
                     if exceed > 1e-6:
-                        sum_norm_exceed += exceed / max(1.0, abs(t_val))
+                        sum_norm_exceed += exceed / (
+                            obj_scale if (env.tolerance_basis == "scale" and obj_scale)
+                            else max(1.0, abs(t_val)))
                         raw_max_exceed = max(raw_max_exceed, exceed)
                         obj_violated = True
 
@@ -1550,8 +1648,18 @@ class _CoherentSeparation:
         # distances, so a single tau grid transfers across datasets AND bank sizes.
         if self._tol is None:
             if self.dist_tol_rel is not None:
-                d0 = _resolve_d0(all_dists, env.d0_quantile)
-                raw = float(self.dist_tol_rel) * d0
+                scale_basis = env.tolerance_basis == "scale" and bool(scale_map)
+                if scale_basis:
+                    # tau IS the tolerance: distances are already in units of
+                    # unexplained sd, averaged over (anchor x outcome) cells. No
+                    # bank statistic enters, so tau does not move with the seed,
+                    # with B, or with how severe this particular draw set happened
+                    # to be -- and a tau above the iteration-0 distance stops
+                    # immediately, which is nominal.
+                    d0, raw = None, float(self.dist_tol_rel)
+                else:
+                    d0 = _resolve_d0(all_dists, env.d0_quantile)
+                    raw = float(self.dist_tol_rel) * d0
                 # Never separate below what the master is solved to. The solver
                 # returns any incumbent within `mip_gap` of optimal, so a cut whose
                 # effect is smaller than that leaves x* unmoved and the iteration
@@ -1560,16 +1668,29 @@ class _CoherentSeparation:
                 # must be spanned above it to be informative.
                 floor = env.resolution_floor
                 self._tol = max(raw, floor)
-                note = "" if raw >= floor else (
-                    f"  [FLOORED at solver resolution {floor:.5f}; "
-                    f"tau<={raw / d0 if d0 else 0:.3g} all give this run]"
-                )
-                print(
-                    f"    [cp] d0={d0:.4f} (q{env.d0_quantile:g} of {len(all_dists)} "
-                    f"iter-0 scenario distances; max={best_dist:.4f}); "
-                    f"tau={self.dist_tol_rel:g} -> dist_tol={self._tol:.5f}{note}",
-                    flush=True,
-                )
+                if raw >= floor:
+                    note = ""
+                elif scale_basis:
+                    note = (f"  [FLOORED at solver resolution {floor:.5f}; "
+                            f"tau<={floor:.3g} all give this run]")
+                else:
+                    note = (f"  [FLOORED at solver resolution {floor:.5f}; "
+                            f"tau<={raw / d0 if d0 else 0:.3g} all give this run]")
+                if scale_basis:
+                    print(
+                        f"    [cp] basis=scale (tau in unexplained-sd units); "
+                        f"max iter-0 dist={best_dist:.4f} over {len(all_dists)} "
+                        f"scenarios; tau={self.dist_tol_rel:g} -> "
+                        f"dist_tol={self._tol:.5f}{note}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"    [cp] d0={d0:.4f} (q{env.d0_quantile:g} of {len(all_dists)} "
+                        f"iter-0 scenario distances; max={best_dist:.4f}); "
+                        f"tau={self.dist_tol_rel:g} -> dist_tol={self._tol:.5f}{note}",
+                        flush=True,
+                    )
             else:
                 self._tol = self.dist_tol
 
@@ -1704,6 +1825,7 @@ def _run_cp_loop(instance: ProblemInstance,
                  cp_scenario_source: str = "noise",
                  cp_n_scenarios: int = 200,
                  cp_d0_quantile: float = 0.9,
+                 cp_tolerance_basis: str = "scale",
                  cp_objective_monotone: bool = False,
                  cp_cut_whole_scenario: bool = True,
                  cp_mip_gap: float = 1e-4,
@@ -1752,6 +1874,7 @@ def _run_cp_loop(instance: ProblemInstance,
         rho=rho, seed=seed,
         k_neighbors_min=cp_k_neighbors_min,
         bank=bank, d0_quantile=cp_d0_quantile,
+        tolerance_basis=cp_tolerance_basis,
         resolution_floor=cp_mip_gap,
     )
 
@@ -1889,6 +2012,7 @@ def solve_cp(instance: ProblemInstance,
              cp_scenario_source: str = "noise",
              cp_n_scenarios: int = 200,
              cp_d0_quantile: float = 0.9,
+             cp_tolerance_basis: str = "scale",
              cp_objective_monotone: bool = False,
              cp_cut_whole_scenario: bool = True,
              cp_mip_gap: float = 1e-4,
@@ -1949,6 +2073,7 @@ def solve_cp(instance: ProblemInstance,
         cp_scenario_source=cp_scenario_source,
         cp_n_scenarios=cp_n_scenarios,
         cp_d0_quantile=cp_d0_quantile,
+        cp_tolerance_basis=cp_tolerance_basis,
         cp_objective_monotone=cp_objective_monotone,
         cp_cut_whole_scenario=cp_cut_whole_scenario,
         cp_mip_gap=cp_mip_gap,

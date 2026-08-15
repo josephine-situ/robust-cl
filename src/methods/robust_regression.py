@@ -43,17 +43,28 @@ from src.methods.nominal import (
 )
 from src.models.train import train_model, retrain_on_perturbed
 from src.methods.uncertainty import label_scale, instance_folds
-from src.utils.perturbations import worst_case_label_shift
+from src.utils.perturbations import worst_case_label_shift, l2_worst_case_shift
 
 
-def _label_robust_linear(X, y, params, eps_abs, gamma):
-    """Exact convex label-robust ElasticNet counterpart, solved as a QP.
+def _label_robust_linear(X, y, params, eps_abs, gamma,
+                         geometry="box_l1", radius=None):
+    """Exact convex label-robust ElasticNet counterpart, solved as a QP (SOCP for
+    the ellipsoid).
 
     Returns a fitted ``Pipeline(StandardScaler, ElasticNet)`` whose coefficients
     minimize ``(1/2n)[sum r_i^2 + 2 eps * (sum of m largest |r_i|)] + enet_penalty``
     with ``r = y - beta^T z - b0`` on standardized features ``z`` and
     ``m = gamma / eps_abs``. Matches sklearn's ElasticNet objective scaling so it is
     comparable to the nominal fit.
+
+    Under ``geometry="ellipsoid"`` the inner maximum has an even simpler exact
+    form: ``max_{||d||_2 <= R} ||r + d||_2^2 = (||r||_2 + R)^2``, attained at
+    ``d = R r/||r||``. So the data term becomes ``(1/2n)(||r||_2 + R)^2``, modelled
+    with an epigraph variable ``nr >= ||r||_2`` (a second-order cone). The
+    relaxation is tight because ``(nr + R)^2`` is increasing in ``nr >= 0`` and we
+    minimize -- the optimum never buys slack it is charged for. Unlike the box
+    case there is no top-m sum, so this arm is exact without the ``q``/``t``
+    epigraph machinery.
     """
     n, p = X.shape
     scaler = StandardScaler().fit(X)
@@ -82,8 +93,17 @@ def _label_robust_linear(X, y, params, eps_abs, gamma):
         qp.addConstr(babs[j] >= -beta[j])
 
     sq = gp.quicksum(r[i] * r[i] for i in range(n))
-    top_m = m * t + gp.quicksum(q[i] for i in range(n))
-    data_term = (1.0 / (2.0 * n)) * (sq + 2.0 * eps_abs * top_m)
+    if geometry == "ellipsoid":
+        R = float(radius or 0.0)
+        # nr >= ||r||_2 as a second-order cone; tight at the optimum (see docstring).
+        nr = qp.addVar(lb=0.0, name="nr")
+        qp.addQConstr(sq <= nr * nr, name="soc_resid_norm")
+        # (||r|| + R)^2 = nr^2 + 2 R nr + R^2; the constant R^2 is kept so the
+        # objective value stays on the same scale as the box arm's.
+        data_term = (1.0 / (2.0 * n)) * (nr * nr + 2.0 * R * nr + R * R)
+    else:
+        top_m = m * t + gp.quicksum(q[i] for i in range(n))
+        data_term = (1.0 / (2.0 * n)) * (sq + 2.0 * eps_abs * top_m)
     l1_term = alpha * l1_ratio * gp.quicksum(babs[j] for j in range(p))
     l2_term = 0.5 * alpha * (1.0 - l1_ratio) * gp.quicksum(beta[j] * beta[j] for j in range(p))
     qp.setObjective(data_term + l1_term + l2_term, GRB.MINIMIZE)
@@ -99,17 +119,28 @@ def _label_robust_linear(X, y, params, eps_abs, gamma):
     return Pipeline([("scaler", scaler), ("model", enet)])
 
 
-def _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K):
+def _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K,
+                       geometry="box_l1", radius=None):
     """Adversarial-training approximation of the label-robust counterpart for model
     classes with no closed form (trees, xgb, mlp). Alternates: find the worst-case
-    label shift for the current model, retrain on the shifted labels, repeat."""
+    label shift for the current model, retrain on the shifted labels, repeat.
+
+    Under ``geometry="ellipsoid"`` the inner argmax is ``radius * r / ||r||_2``
+    instead of the greedy top-m vertex -- same alternation, different set. Keeping
+    both here is what preserves the property the scenario bank relies on: CP and
+    the wrapper draw from the same D that robust_reg is trained against."""
     model = train_model(X, y, m_type, m_params)
-    if eps_abs <= 0 or gamma <= 0:
+    ellipsoid = geometry == "ellipsoid"
+    if ellipsoid:
+        if not radius or radius <= 0:
+            return model
+    elif eps_abs <= 0 or gamma <= 0:
         return model
     prev = None
     for _ in range(K):
         residuals = y - model.predict(X)
-        delta = worst_case_label_shift(residuals, eps_abs, gamma)
+        delta = (l2_worst_case_shift(residuals, radius) if ellipsoid
+                 else worst_case_label_shift(residuals, eps_abs, gamma))
         if prev is not None and np.allclose(delta, prev, atol=1e-12):
             break
         model = retrain_on_perturbed(X, y, delta, m_type, m_params)
@@ -118,7 +149,7 @@ def _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K):
 
 
 def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K,
-                              scale_stat="oof_sd", folds=None):
+                              scale_stat="oof_sd", folds=None, geometry="box_l1"):
     """One label-robust model for a single outcome; dispatch on model class."""
     y = np.asarray(y, dtype=float)
     n = len(y)
@@ -126,15 +157,24 @@ def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K,
                         model_params=m_params, folds=folds)
     eps_abs = label_eps * scale                        # per-outcome radius (unitless knob)
     gamma = budget_frac * n * eps_abs
+    # Ellipsoid: R = label_eps * scale * sqrt(n), matching ScenarioBank's
+    # UncertaintySet.radius so CP and the wrapper draw from the same D this is
+    # trained against -- label_eps plays rho's role here. NOT sqrt(m)*eps: the
+    # ball has no budget to spend, and pinning it to budget_frac would reintroduce
+    # exactly the non-identifiability rho exists to remove.
+    radius = float(np.sqrt(n)) * eps_abs
     if label_eps <= 0 or scale == 0.0:
         return train_model(X, y, m_type, m_params)
     if m_type == "linear":
-        return _label_robust_linear(X, y, m_params or {}, eps_abs, gamma)
-    return _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K)
+        return _label_robust_linear(X, y, m_params or {}, eps_abs, gamma,
+                                    geometry=geometry, radius=radius)
+    return _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K,
+                              geometry=geometry, radius=radius)
 
 
 def _train_coherent_label_robust(specs, label_eps, budget_frac, K,
-                                 scale_stat="oof_sd", folds=None):
+                                 scale_stat="oof_sd", folds=None,
+                                 geometry="box_l1"):
     """Label-robust models for ALL outcomes against one **shared** row set.
 
     The incoherent default (``solve_robust_regression``'s per-outcome loop) lets
@@ -176,7 +216,24 @@ def _train_coherent_label_robust(specs, label_eps, budget_frac, K,
             r = y - model.predict(X)
             resid.append(r)
             norm += np.abs(r) / (s if s > 0 else 1.0)
-        S = np.argsort(-norm / len(specs))[:m]
+        norm /= len(specs)
+        if geometry == "ellipsoid":
+            # The ellipsoidal analogue of "shared rows, own signs": a shared
+            # MAGNITUDE PROFILE (the same mean normalized residual that picks the
+            # row set below, un-thresholded) with per-outcome signs, renormalized
+            # so each outcome spends exactly its own R_c = label_eps*s_c*sqrt(n).
+            # The box arm is the special case where the profile is 0/1 on the top m.
+            w = norm / (np.linalg.norm(norm) or 1.0)
+            if prev is not None and np.allclose(w, prev, atol=1e-12):
+                break
+            prev = w
+            models = []
+            for (X, _, mt, mp), y, r, s in zip(specs, ys, resid, scales):
+                u = w * np.where(r >= 0, 1.0, -1.0)
+                delta = (np.sqrt(n) * label_eps * s) * u / (np.linalg.norm(u) or 1.0)
+                models.append(retrain_on_perturbed(X, y, delta, mt, mp))
+            continue
+        S = np.argsort(-norm)[:m]
         if prev is not None and np.array_equal(np.sort(S), prev):
             break
         prev = np.sort(S)
@@ -217,13 +274,17 @@ def solve_robust_regression(
         coherent = bool(getattr(uncertainty_set, "coherent", False))
     if scale_stat is None:
         scale_stat = str(getattr(uncertainty_set, "scale_stat", "oof_sd"))
+    # D's geometry comes from the shared set, never from this method's own args --
+    # robust_reg must be trained against the same D the bank draws from, or the
+    # scenario bank stops matching its adversary.
+    geometry = str(getattr(uncertainty_set, "geometry", "box_l1"))
     # Out-of-fold scales need a fold scheme; use the problem's own (temporal on
     # gastric) so the scale estimate cannot leak future information.
     folds = None if scale_stat == "sd" else instance_folds(instance, seed)
     print(
         f"    [robust_reg] Training label-robust models "
         f"(label_eps={label_eps:.3f}, budget_frac={budget_frac}, K={K}, "
-        f"coherent={coherent})...",
+        f"coherent={coherent}, geometry={geometry})...",
         flush=True,
     )
 
@@ -243,7 +304,8 @@ def solve_robust_regression(
                 config_idx += 1
             layout.append(row)
         models = _train_coherent_label_robust(
-            specs, label_eps, budget_frac, K, scale_stat=scale_stat, folds=folds
+            specs, label_eps, budget_frac, K, scale_stat=scale_stat, folds=folds,
+            geometry=geometry,
         )
         it = iter(models)
         trained_constraints = [
@@ -259,7 +321,7 @@ def solve_robust_regression(
                 model = _train_label_robust_model(
                     model_data.X_train, model_data.y_train,
                     m_type, m_params, label_eps, budget_frac, K,
-                    scale_stat=scale_stat, folds=folds,
+                    scale_stat=scale_stat, folds=folds, geometry=geometry,
                 )
                 row.append((model_data.weight, model, model_data.obj_weight))
                 config_idx += 1

@@ -168,8 +168,17 @@ def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
 def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
                   folds, oracle, base: ProblemInstance,
                   constraint_names: Optional[List[str]] = None,
-                  contextual: bool = True) -> tuple[float, float, float]:
+                  contextual: bool = True,
+                  return_details: bool = False):
     """Mean held-out ``(feasibility, objective, solved_frac)`` for one knob.
+
+    With ``return_details=True`` returns a dict instead, adding the solver
+    ``status`` across folds, how many folds hit ``max_iterations``, and the wall
+    clock split into the **master** phase (train + build + solve to the final
+    master; for CP the whole cut loop) and the **test-point** phase (one prescribe
+    solve per held-out context). The split matters because the two scale
+    differently: CP pays up front in the cut loop and prescribes from a small
+    master, while the wrapper embeds all P models and pays on every test point.
 
     Both feasibility and objective are scored **conditional on the optimizer
     returning a prescription**, over that knob's own solved contexts. Nothing is
@@ -187,22 +196,33 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
     survivors right scores 1.0. Callers must report it, and treat a high
     feasibility at a low solved fraction as the artefact it is.
     """
+    import time as _time
     solver_fn = build_solver(knob)
     fold_feas, fold_obj, fold_solved = [], [], []
+    # Detail channels, reported only when return_details is set. Kept out of the
+    # 3-tuple so existing callers are untouched.
+    statuses, master_times, test_times, test_points = [], [], [], []
     for train_idx, val_idx in folds:
         val_rows = base.X_train[val_idx] if (contextual and base.X_train is not None) else None
         fi = _fold_instance(base, train_idx, val_rows)
         if constraint_names is not None:
             fi = filter_constraints(fi, constraint_names)
+        # MASTER phase: train + build + solve to the final master. For CP this is
+        # the whole cut loop, which is why it is timed separately from prescribing.
+        _t0 = _time.time()
         result = solver_fn(fi)
+        master_times.append(_time.time() - _t0)
         # solve_cp returns (SolutionResult, history); the baselines return a bare
         # SolutionResult. Unwrap as calibrate.infeasible_fraction does -- otherwise
         # the contextual path raises (tuple has no .x) and the single-decision path
         # silently scores NaN via getattr(result, "x_opt", None).
         if isinstance(result, tuple):
             result = result[0]
+        statuses.append(str(getattr(result, "status", "unknown")))
         if contextual:
             feas_vals, obj_vals, n_total = [], [], 0
+            # TEST-POINT phase: one prescribe solve per held-out context.
+            _t1 = _time.time()
             for row in val_rows:
                 n_total += 1
                 _, x_opt = solve_for_test_cohort(result, fi, row)
@@ -210,6 +230,8 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
                     continue           # unsolvable: excluded, counted in solved_frac
                 feas_vals.append(1.0 if oracle.feasible(x_opt) else 0.0)
                 obj_vals.append(oracle.objective(x_opt))
+            test_times.append(_time.time() - _t1)
+            test_points.append(n_total)
             if feas_vals:
                 fold_feas.append(float(np.mean(feas_vals)))
             if obj_vals:
@@ -217,6 +239,11 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
             if n_total:
                 fold_solved.append(len(feas_vals) / n_total)
         else:
+            # Single-decision: the master IS the prescription, so there is no
+            # separate test-point solve to time. Recorded as 0 rather than NaN so
+            # the column means "no prescribe phase", not "not measured".
+            test_times.append(0.0)
+            test_points.append(1)
             x_opt = getattr(result, "x_opt", None)
             solved = x_opt is not None and np.all(np.isfinite(x_opt))
             if solved:
@@ -226,7 +253,22 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
     feas = float(np.mean(fold_feas)) if fold_feas else float("nan")
     obj = float(np.mean(fold_obj)) if fold_obj else float("nan")
     solved = float(np.mean(fold_solved)) if fold_solved else float("nan")
-    return feas, obj, solved
+    if not return_details:
+        return feas, obj, solved
+    n_pts = float(np.sum(test_points)) or 1.0
+    return {
+        "feas": feas, "obj": obj, "solved": solved,
+        # Distinct statuses across folds, joined. A cell showing
+        # "max_iterations|optimal" converged on some folds and hit the cap on
+        # others -- which is exactly the thing a single mean would hide.
+        "status": "|".join(sorted(set(statuses))) if statuses else "unknown",
+        "n_capped": int(sum(s == "max_iterations" for s in statuses)),
+        "master_time_s": float(np.mean(master_times)) if master_times else float("nan"),
+        "test_time_s": float(np.mean(test_times)) if test_times else float("nan"),
+        # Per-point, so gastric's 96 contexts and synthetic's single decision are
+        # comparable numbers rather than a fold total dominated by cohort size.
+        "test_time_per_point_s": float(np.sum(test_times)) / n_pts,
+    }
 
 
 def select_knob_cv(build_solver: Callable[[float], Callable], knob_grid: Sequence[float],
@@ -324,17 +366,85 @@ def load_score_checkpoint(path: str) -> dict:
     return out
 
 
+DETAIL_COLS = ("status", "n_capped", "master_time_s", "test_time_s",
+               "test_time_per_point_s")
+
+
+def load_detail_checkpoint(path: str) -> dict:
+    """``{(method, knob): detail_dict}`` for checkpoints written with details.
+
+    Separate from :func:`load_score_checkpoint` so the plain 3-tuple resume path
+    keeps working against old files; cells lacking the detail columns are simply
+    absent here and get re-scored rather than resumed with fabricated timings.
+    """
+    import pandas as pd
+    if not os.path.exists(path):
+        return {}
+    df = pd.read_csv(path)
+    if not all(c in df.columns for c in DETAIL_COLS):
+        return {}
+    out = {}
+    for _, r in df.iterrows():
+        if pd.isna(r.get("status")):
+            continue
+        out[(str(r["method"]), float(r["knob"]))] = {
+            "feas": float(r["feas"]), "obj": float(r["obj"]),
+            "solved": float(r["solved"]), "status": str(r["status"]),
+            "n_capped": int(r["n_capped"]),
+            "master_time_s": float(r["master_time_s"]),
+            "test_time_s": float(r["test_time_s"]),
+            "test_time_per_point_s": float(r["test_time_per_point_s"]),
+        }
+    return out
+
+
 def append_score(path: str, method: str, knob: float, feas: float, obj: float,
-                 solved: float = float("nan")) -> None:
-    """Append one scored cell to the checkpoint CSV (header written once)."""
+                 solved: float = float("nan"), detail: Optional[dict] = None) -> None:
+    """Append one scored cell to the checkpoint CSV (header written once).
+
+    ``detail`` adds the status/timing columns from ``cv_score_knob(...,
+    return_details=True)``. Files are written with the detail columns either way,
+    so a checkpoint never changes shape mid-run.
+    """
     import csv
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    header = ["method", "knob", "feas", "obj", "solved", *DETAIL_COLS]
+    _migrate_score_header(path, header)
     new = not os.path.exists(path)
+    d = detail or {}
     with open(path, "a", newline="") as f:
         w = csv.writer(f)
         if new:
-            w.writerow(["method", "knob", "feas", "obj", "solved"])
-        w.writerow([method, knob, feas, obj, solved])
+            w.writerow(header)
+        w.writerow([method, knob, feas, obj, solved,
+                    *(d.get(c, "") for c in DETAIL_COLS)])
+
+
+def _migrate_score_header(path: str, header: list) -> None:
+    """Widen an older checkpoint in place so appends stay column-aligned.
+
+    The header is written only for a NEW file, so appending today's wider rows to
+    a checkpoint written before ``solved`` / the detail columns existed would
+    silently shift every field. Rewrite once with the new header, back-filling the
+    missing columns as blank, rather than corrupting a resumable file.
+    """
+    import csv as _csv
+    if not os.path.exists(path):
+        return
+    with open(path, newline="") as f:
+        rows = list(_csv.reader(f))
+    if not rows or rows[0] == header:
+        return
+    old = rows[0]
+    idx = {c: i for i, c in enumerate(old)}
+    with open(path, "w", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(header)
+        for r in rows[1:]:
+            if not r:
+                continue
+            w.writerow([r[idx[c]] if c in idx and idx[c] < len(r) else ""
+                        for c in header])
 
 
 def knob_key(method: str, coherent: Optional[bool]) -> str:

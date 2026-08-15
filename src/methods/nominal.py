@@ -115,6 +115,19 @@ def _add_rf_tree_violation(opt, rf_model, x, instance, rhs, alpha, prefix, rho, 
     return T
 
 
+def model_X_ref(instance: ProblemInstance, c_idx: int, m_idx: int):
+    """Training matrix behind one constraint model, for embed_model's X_ref.
+
+    Only used to clamp tree split bands away from real rows, so a stale or
+    resampled matrix is harmless -- it can cost a row its leaf but never
+    misroutes one (see the SPLIT_EPS note in src/models/embed.py).
+    """
+    try:
+        return instance.constraints[c_idx].models_data[m_idx].X_train
+    except (AttributeError, IndexError, TypeError):
+        return None
+
+
 def embed_constraints(opt: gp.Model,
                       x,
                       instance: ProblemInstance,
@@ -147,6 +160,7 @@ def embed_constraints(opt: gp.Model,
                     embedded_cache[m_id] = embed_model(
                         opt, ml_model, x, instance.variable_lb, instance.variable_ub,
                         name_prefix=prefix, rho=rho,
+                        X_ref=model_X_ref(instance, c_idx, m_idx),
                     )
                     models_embedded += 1
                 obj_terms.append(obj_weight * embedded_cache[m_id])
@@ -163,6 +177,7 @@ def embed_constraints(opt: gp.Model,
                     embedded_cache[m_id] = embed_model(
                         opt, ml_model, x, instance.variable_lb, instance.variable_ub,
                         name_prefix=prefix, rho=rho,
+                        X_ref=model_X_ref(instance, c_idx, m_idx),
                     )
                     models_embedded += 1
                 f_pred_vars.append(weight * embedded_cache[m_id])

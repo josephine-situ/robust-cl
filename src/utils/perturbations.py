@@ -1,7 +1,33 @@
 """
 Label perturbation utilities.
 
-Uncertainty set D = {delta : |delta_i| <= delta_bar_i, ||delta||_1 <= Gamma}
+Two geometries for the label-uncertainty set D, selected by
+``uncertainty.geometry`` (see :mod:`src.methods.uncertainty`):
+
+- ``box_l1``   D = {delta : |delta_i| <= eps, ||delta||_1 <= Gamma}
+- ``ellipsoid`` D = {delta : ||delta||_2 <= R}
+
+The two are matched in size at ``R = sqrt(m) * eps``, ``m = Gamma / eps`` -- the
+L2 length of a box-cap-L1 vertex (m entries at +/-eps). At that matching the
+ellipsoid is the stronger set against a linear objective: by Cauchy-Schwarz
+``sum_{top m}|g_i| <= sqrt(m) ||g||_2``.
+
+Equality needs ``g`` to have **exactly m entries of equal magnitude, and the rest
+zero** -- the one shape the box budget fits perfectly. Both deviations open a gap,
+for different reasons:
+
+- ``nnz(g) > m`` (gastric: 313-320 nonzero of n = 320): the box can only reach m
+  of the influential rows and must abandon the rest. The gap approaches
+  ``sqrt(n/m)`` as g flattens -- 1.41 at budget_frac 0.5 for flat g, ~1.11 for
+  Gaussian g, where the top half of |g_i| already carries most of the mass.
+- ``nnz(g) < m`` (synthetic: 57 nonzero against m = 100): the box exhausts the
+  influential rows and *wastes* the remaining budget on rows that cannot move
+  f(x*) at all, while the ellipsoid spends every unit of R on the support.
+  Measured on synthetic: 1.675 -> 3.389 eps, a 2.0x gain.
+
+So "which geometry is stronger" is settled (ellipsoid, always, at matched size);
+"by how much" is a property of the influence vector's shape and has to be
+measured per problem.
 """
 
 import numpy as np
@@ -57,6 +83,30 @@ def worst_case_label_shift(residuals: np.ndarray,
         delta[i] = sign * shift
         budget -= shift
     return delta
+
+
+def l2_worst_case_shift(direction: np.ndarray, radius: float) -> np.ndarray:
+    """Worst-case additive label shift over the BALL D = {||dy||_2 <= radius}.
+
+    The maximizer of a linear objective ``g'dy`` over an L2 ball is closed form,
+    ``radius * g / ||g||_2`` -- no sort, no budget bookkeeping, no vertex
+    enumeration, unlike the greedy top-m search :func:`worst_case_label_shift`
+    needs for box-cap-L1. ``direction`` is whatever is being maximized along:
+
+    - the influence vector ``d f(x*) / d delta`` for a decision-localized
+      adversary (the separation oracle), or
+    - the residual vector ``r = y - f(X)`` for the squared-loss training
+      adversary, since ``max_{||d||_2 <= R} sum_i (r_i + d_i)^2`` is attained at
+      ``R r / ||r||_2`` and equals ``(||r||_2 + R)^2``.
+
+    Returns zeros for a zero-length direction: every point of the ball is then
+    equally bad, so spending the radius would be arbitrary rather than adversarial.
+    """
+    g = np.asarray(direction, dtype=float)
+    nrm = float(np.linalg.norm(g))
+    if radius <= 0 or nrm <= 0:
+        return np.zeros(g.shape[0])
+    return (float(radius) / nrm) * g
 
 
 def project_l1_ball(v: np.ndarray, radius: float) -> np.ndarray:

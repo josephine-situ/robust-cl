@@ -174,6 +174,7 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
         cp_scenario_source=cp_cfg.get("scenario_source", "noise"),
         cp_n_scenarios=cp_cfg.get("n_scenarios", 200),
         cp_d0_quantile=cp_cfg.get("d0_quantile", 0.9),
+        cp_tolerance_basis=cp_cfg.get("tolerance_basis", "scale"),
         cp_objective_monotone=cp_cfg.get("objective_monotone", False),
         cp_mip_gap=float(cp_cfg.get("mip_gap", 1e-4)),
         cp_cut_whole_scenario=cp_cfg.get("cut_whole_scenario", True),

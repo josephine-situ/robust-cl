@@ -67,6 +67,7 @@ def _synth_build(method, config, model_type, model_params, seed):
             cp_scenario_source=cp.get("scenario_source", "noise"),
             cp_n_scenarios=cp.get("n_scenarios", 200),
             cp_d0_quantile=cp.get("d0_quantile", 0.9),
+            cp_tolerance_basis=cp.get("tolerance_basis", "scale"),
             cp_objective_monotone=cp.get("objective_monotone", False),
             cp_mip_gap=float(cp.get("mip_gap", 1e-4)),
             cp_cut_whole_scenario=cp.get("cut_whole_scenario", True),

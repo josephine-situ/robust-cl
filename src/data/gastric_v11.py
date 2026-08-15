@@ -13,6 +13,9 @@ import pandas as pd
 from sklearn.experimental import enable_iterative_imputer  # noqa: F401
 from sklearn.impute import IterativeImputer
 
+# Decimals kept on the context block after imputation -- see build_gastric_cohort.
+CTX_DECIMALS = 6
+
 # utils_gastric.py (constraint-learning v11)
 GASTRIC_CTX_COLS = [
     "Pub_Year", "Asia", "N_Patient", "FRAC_MALE", "AGE_MED",
@@ -231,6 +234,14 @@ def build_gastric_cohort(df: pd.DataFrame) -> pd.DataFrame:
         columns=df_x.columns,
         index=df.index,
     )
+    # Collapse float32 round-trip duplicates. FRAC_MALE arrives with both 0.69
+    # and float32(0.69) = 0.689999998 present as distinct float64 values, and
+    # trees then split between two copies of the same number -- a split that
+    # fits nothing and that no leaf-box separation can be made safe against
+    # (see the SPLIT_EPS note in src/models/embed.py). These are proportions and
+    # counts over at most a few hundred patients, so their real resolution is
+    # ~1/N_Patient; six decimals is orders finer than the data supports.
+    df_x = df_x.round(CTX_DECIMALS)
 
     df_tx = _build_tx_wide(df)
     outcomes = _build_outcomes(df)

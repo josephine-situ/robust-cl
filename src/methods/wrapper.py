@@ -20,8 +20,11 @@ from src.methods.nominal import (
     build_and_set_objective,
     build_and_set_robust_objective,
     embed_constraints,
+    model_X_ref,
 )
-from src.models.train import generate_bootstrap_samples, train_bootstrap_models
+from src.models.train import (
+    generate_bootstrap_samples, train_bootstrap_models, train_model,
+)
 from src.models.embed import embed_model
 
 
@@ -193,6 +196,23 @@ def solve_wrapper(instance: ProblemInstance,
 
     trained_constraints = []
     config_idx = 0
+    # Nominal (unperturbed) models for the OBJECTIVE outcomes only. Every entry of
+    # trained_ensembles_cache is a retrain_on_perturbed output -- draw 0 included,
+    # since _draw(0) produces a nonzero delta -- so "embed ensemble[0]" would put an
+    # arbitrary perturbed model in the objective, not the nominal one. Measured on
+    # gastric: draw 0's OS model differs from nominal by up to 1.08 months. CP under
+    # robustify_objective=False maximizes the true nominal OS, so using draw 0 here
+    # made the two methods optimize different objectives at the same D.
+    nominal_obj_models = {}
+    _cfg_idx = 0
+    for constraint in instance.constraints:
+        for model_data in constraint.models_data:
+            if model_data.obj_weight != 0.0 and id(model_data) not in nominal_obj_models:
+                m_type, m_params = resolve_constraint_config(
+                    instance, _cfg_idx, model_type, model_params)
+                nominal_obj_models[id(model_data)] = train_model(
+                    model_data.X_train, model_data.y_train, m_type, m_params)
+            _cfg_idx += 1
     for c_idx, constraint in enumerate(instance.constraints):
         row = []
         for model_data in constraint.models_data:
@@ -201,6 +221,7 @@ def solve_wrapper(instance: ProblemInstance,
                 model_data.weight,
                 model_data.obj_weight,
                 trained_ensembles_cache[md_id],
+                nominal_obj_models.get(md_id),
             ))
             config_idx += 1
         trained_constraints.append(row)
@@ -217,7 +238,7 @@ def solve_wrapper(instance: ProblemInstance,
     obj_scenarios = [[] for _ in range(P)]   # per replicate: objective terms
     models_embedded = 0
 
-    def _embed(ml_model, prefix):
+    def _embed(ml_model, prefix, c_idx=None, m_idx=None):
         nonlocal models_embedded
         m_id = id(ml_model)
         if m_id not in embedded_models_cache:
@@ -225,6 +246,8 @@ def solve_wrapper(instance: ProblemInstance,
                 opt, ml_model, x,
                 instance.variable_lb, instance.variable_ub,
                 name_prefix=prefix, rho=rho,
+                X_ref=(None if c_idx is None
+                       else model_X_ref(instance, c_idx, m_idx)),
             )
             models_embedded += 1
         return embedded_models_cache[m_id]
@@ -252,19 +275,30 @@ def solve_wrapper(instance: ProblemInstance,
         is_obj = any(md.obj_weight != 0 for md in constraint.models_data)
 
         if is_obj:
-            # Nominal objective (default): embed ONE model, not P. CP's default is
-            # a nominal objective too, so robustifying here would hand the wrapper
-            # extra conservatism CP does not carry -- and cost P OS embeddings.
-            reps = range(P) if robustify_objective else [0]
-            for p in reps:
-                for m_idx, (weight, obj_weight, ensemble) in enumerate(constraint_ensembles):
-                    f_p = _embed(ensemble[p], f"wrapper_c{c_idx}_m{m_idx}_p{p}")
-                    obj_scenarios[p].append(obj_weight * weight * f_p)
+            # Nominal objective (default): embed ONE model, not P, and that model is
+            # the NOMINAL fit -- not bank draw 0, which is itself perturbed. CP's
+            # default is a nominal objective too, so robustifying here would hand
+            # the wrapper extra conservatism CP does not carry -- and cost P OS
+            # embeddings.
+            if robustify_objective:
+                for p in range(P):
+                    for m_idx, (weight, obj_weight, ensemble, _nom) in enumerate(
+                            constraint_ensembles):
+                        f_p = _embed(ensemble[p], f"wrapper_c{c_idx}_m{m_idx}_p{p}",
+                                     c_idx, m_idx)
+                        obj_scenarios[p].append(obj_weight * weight * f_p)
+            else:
+                for m_idx, (weight, obj_weight, ensemble, nom) in enumerate(
+                        constraint_ensembles):
+                    f_nom = _embed(nom if nom is not None else ensemble[0],
+                                   f"wrapper_c{c_idx}_m{m_idx}_nominal", c_idx, m_idx)
+                    obj_scenarios[0].append(obj_weight * weight * f_nom)
         else:
             for p in range(P):
                 f_pred_vars = []
-                for m_idx, (weight, _, ensemble) in enumerate(constraint_ensembles):
-                    f_p = _embed(ensemble[p], f"wrapper_c{c_idx}_m{m_idx}_p{p}")
+                for m_idx, (weight, _, ensemble, _nom) in enumerate(constraint_ensembles):
+                    f_p = _embed(ensemble[p], f"wrapper_c{c_idx}_m{m_idx}_p{p}",
+                                 c_idx, m_idx)
                     f_pred_vars.append(weight * f_p)
                 opt.addConstr(
                     gp.quicksum(f_pred_vars) <= constraint.rhs + M_val * (1 - _z(c_idx, p)),

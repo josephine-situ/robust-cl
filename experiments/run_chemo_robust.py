@@ -118,6 +118,7 @@ def _resolve_run_settings(config, args):
     settings["cp_cut_eviction"] = cp_cfg.get("cut_eviction", "reject")
     settings["cp_scenario_source"] = cp_cfg.get("scenario_source", "noise")
     settings["cp_d0_quantile"] = cp_cfg.get("d0_quantile", 0.9)
+    settings["cp_tolerance_basis"] = cp_cfg.get("tolerance_basis", "scale")
     settings["cp_objective_monotone"] = cp_cfg.get("objective_monotone", False)
     settings["cp_mip_gap"] = float(cp_cfg.get("mip_gap", 1e-4))
     settings["cp_cut_whole_scenario"] = cp_cfg.get("cut_whole_scenario", True)
@@ -280,6 +281,7 @@ def _cp_solver(settings, model_type, model_params, cp_alpha=0.0,
         cp_scenario_source=settings["cp_scenario_source"],
         cp_n_scenarios=settings["cp_n_scenarios"],
         cp_d0_quantile=settings["cp_d0_quantile"],
+        cp_tolerance_basis=settings.get("cp_tolerance_basis", "scale"),
         cp_objective_monotone=settings["cp_objective_monotone"],
         cp_mip_gap=settings["cp_mip_gap"],
         cp_cut_whole_scenario=settings["cp_cut_whole_scenario"],

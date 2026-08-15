@@ -49,6 +49,11 @@ FW_STEPS="${FW_STEPS:-3}"
 BUDGET_FRACS="${BUDGET_FRACS:-1.0 0.5 0.25 0.0}"
 LOOP_ITERS="${LOOP_ITERS:-8}"
 LOOP_BUDGET_FRACS="${LOOP_BUDGET_FRACS:-1.0 0.5 0.25 0.1}"
+# "" = config.yaml's uncertainty.geometry. Set box_l1 / ellipsoid to override; the
+# two sets are matched in L2 size, so a pair of runs at the same seed and B is a
+# controlled comparison of SHAPE alone. Outputs are tagged with the geometry, so
+# the pair does not overwrite itself (box_l1 keeps the historical filenames).
+GEOMETRY="${GEOMETRY:-}"
 # Extra flags passed straight through, e.g. EXTRA_ARGS="--skip-feasibility"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
@@ -60,6 +65,7 @@ python -u experiments/run_adversary_probe.py \
     --budget-fracs ${BUDGET_FRACS} \
     --loop-iters "${LOOP_ITERS}" \
     --loop-budget-fracs ${LOOP_BUDGET_FRACS} \
+    ${GEOMETRY:+--geometry ${GEOMETRY}} \
     ${EXTRA_ARGS}
 
 # Examples:
@@ -68,6 +74,9 @@ python -u experiments/run_adversary_probe.py \
 #   N_SCENARIOS=50 FW_STEPS=5 sbatch experiments/submit_adversary_probe.sh
 #   LOOP_ITERS=0 sbatch experiments/submit_adversary_probe.sh                    # skip Part D
 #   LOOP_BUDGET_FRACS="0.2 0.1 0.05" sbatch experiments/submit_adversary_probe.sh  # refine the threshold
+#   # geometry A/B -- Part A/B only is the cheap half (C and D dominate the wall clock):
+#   GEOMETRY=box_l1    LOOP_ITERS=0 EXTRA_ARGS=--skip-feasibility sbatch experiments/submit_adversary_probe.sh
+#   GEOMETRY=ellipsoid LOOP_ITERS=0 EXTRA_ARGS=--skip-feasibility sbatch experiments/submit_adversary_probe.sh
 #   EXTRA_ARGS=--skip-feasibility sbatch experiments/submit_adversary_probe.sh   # A/B/D only
 #
 # Outputs (results/adversary_probe/):

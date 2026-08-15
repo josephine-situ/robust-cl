@@ -41,9 +41,22 @@
   \begin{itemize}
     \item $\delta$ perturbs \emph{labels}; the model is \textbf{retrained}. Not a
       post-hoc perturbation of predictions.
-    \item Trees enter the MIP \textbf{exactly}: sibling leaf boxes disjoint at
-      each split --- else $x$ on a threshold satisfies two leaves and the solver
-      takes the cheaper one. Verified $\le10^{-7}$ vs sklearn.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Trees enter the MIP exactly}
+  \begin{itemize}
+    \item Leaf boxes separated by a $\le10^{-5}$ band on \emph{both} sides of each
+      split, clamped so no training row loses its leaf. Verified
+      $\le3\times10^{-7}$ vs the trained model, over all rows and perturbed refits.
+    \item Both sides needed: a bound left at $\theta$ is still met at
+      $\theta-$\texttt{FeasibilityTol}, routing $x$ to the wrong leaf.
+    \item Branches routed in \texttt{float32} --- both libraries traverse there,
+      so $x$ within an ulp of $\theta$ goes the way the model sends it.
+    \item \texttt{IntFeasTol}$=10^{-9}$: big-M turns integrality slack into
+      $M\!\cdot\!$\texttt{IntFeasTol} of $x$-slack ($M\!\approx\!46$). At the
+      $10^{-5}$ default a free-$x$ adversary extracts $1.6\times10^{-2}$.
   \end{itemize}
 \end{frame}
 
@@ -68,15 +81,15 @@
 \begin{frame}{Problem settings: gastric}
   \small
   \textbf{A row is a published trial arm.} Meta-analysis of gastric-cancer
-  chemotherapy studies; $z$, $x$ and the labels are all arm-level \emph{aggregates}.
+  chemotherapy studies; $z$, $x$ and labels are all arm-level \emph{aggregates}.
   \begin{itemize}
-    \item \textbf{416 arms}, split by publication year:
+    \item \textbf{416 arms} by publication year:
       \textbf{320 train} ($\le$ 2008) / \textbf{96 test} (2009--2012).
     \item $x$: drug doses, in the hull of observed arms; one LP per arm.
     \item $y$: \% of the arm with grade-3/4 toxicity, per category; median OS.
     \item All 6 models fit the \emph{same} 320 arms $\Rightarrow$ one relabeling
-      $\delta$ moves them together (\textbf{coherent}); \textbf{incoherent} gives
-      each outcome its own $\delta_c$.
+      $\delta$ can move them together (\textbf{coherent}); \textbf{incoherent}
+      gives each its own $\delta_c$. OS always independent.
   \end{itemize}
   \[
     \max_{x\,\in\,\mathrm{hull}(X_\text{train})} \widehat{\text{OS}}(x,z;\theta_\text{os})
@@ -94,8 +107,8 @@
   \end{tabular}
   \end{center}
   \footnotesize
-  All \emph{fractions of the arm} except \texttt{Pub\_Year}, \texttt{N\_Patient}
-  (11--521), \texttt{AGE\_MED} (yrs), \texttt{ECOG\_MEAN} (grade 0--4).
+  All \emph{arm fractions} except \texttt{Pub\_Year}, \texttt{N\_Patient}
+  (11--521), \texttt{AGE\_MED}, \texttt{ECOG\_MEAN} (0--4).
 \end{frame}
 
 % ---------------------------------------------------------------------------
@@ -140,9 +153,12 @@
   Was: each method carried its own uncertainty notion, so method differences were
   partly input differences.
   \[
-    \mathcal D_c = \{\delta: |\delta_i|\le\varepsilon_c,\ \lVert\delta\rVert_1 \le
-      \texttt{budget\_frac}\cdot n\,\varepsilon_c\},
-    \qquad \varepsilon_c = \varepsilon_0\cdot\mathrm{scale}(y_c)
+    \underbrace{\{\delta: |\delta_i|\le\varepsilon_c,\ \lVert\delta\rVert_1 \le
+      \texttt{budget\_frac}\cdot n\,\varepsilon_c\}}_{\texttt{box\_l1}:\
+      \varepsilon_c=\varepsilon_0\mathrm{scale}(y_c)}
+    \qquad
+    \underbrace{\{\delta: \lVert\delta\rVert_2\le R_c\}}_{\texttt{ellipsoid}:\
+      R_c=\rho\,\mathrm{scale}(y_c)\sqrt n}
   \]
   \begin{center}\small
   \begin{tabular}{@{}lll@{}}
@@ -157,16 +173,31 @@
   \end{center}
   \medskip
   \begin{itemize}
-    \item $\varepsilon_0=1$, \texttt{budget\_frac}$=0.5$: shared \textbf{constants},
-      not knobs. One conservatism dial per method.
-    \item CP / wrapper draw at $\varepsilon_0$ exactly; Robust Reg.'s
-      \texttt{label\_eps} is the \emph{same} multiplier, calibrated
-      ($\texttt{label\_eps}=\varepsilon_0 \Rightarrow$ identical set). Pinning it to
-      $\varepsilon_0$ would define $\mathcal D$ from one method's tuning.
-    \item Draws are \textbf{vertices} of $\mathcal D$ ($\pm\varepsilon$ on
-      $\texttt{budget\_frac}\cdot n$ rows) --- where Robust Reg.'s inner max sits.
-      No method gets a weaker adversary.
-    \item \textbf{Coherence}: one flag, crossed with all three methods.
+    \item Size is a shared \textbf{constant}, not a knob. One dial per method.
+    \item Draws are \textbf{vertices} (box) / uniform on the sphere (ellipsoid) ---
+      where Robust Reg.'s inner max sits. No method gets a weaker adversary.
+    \item \textbf{Coherence} is a \emph{grouping}, crossed with all three methods.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{$\rho$: one size parameter, swept not tuned}
+  \small
+  \begin{itemize}
+    \item \texttt{budget\_frac} cannot constrain a ball --- no L1 face, no
+      support restriction --- so it only scaled the radius:
+      $(\varepsilon_0,\texttt{budget\_frac})$ was \textbf{non-identifiable}.
+      $\rho$ replaces both, losing nothing.
+    \item $\sqrt n$, not $\sqrt m$: $\rho=1$ = L2 norm of iid noise at one
+      unexplained sd/row. Transfers across $n{=}200$ and $n{=}320$.
+    \item \textbf{Not the old operating point}: $\sqrt2\times$ wider than
+      $\varepsilon_0{=}1$, ball $2.0\times$ stronger $\Rightarrow\approx2.8\times$
+      the old adversary. Expect $\rho^\ast\ll1$.
+    \item \textbf{Swept, never selected.} Per-method $\rho^\ast$ dissolves
+      shared-$\mathcal D$; global selection has no honest criterion (GT ensemble
+      $=$ the judge; synthetic $\sigma_{\text{true}}$ $=$ the DGP).
+    \item \textbf{Primary} reading: the whole axis, dials fixed.
+      \textbf{Derived}: $\rho^\ast(\text{method})$ at a fixed feasibility target.
   \end{itemize}
 \end{frame}
 
@@ -206,13 +237,43 @@
       $\Rightarrow$ a bank of size $P<B$ is a genuine \emph{prefix} of one of size $B$.
     \item \texttt{random\_state} fixed across members: the scenario is the
       \emph{only} source of variation.
-    \item Coherent: one standardized direction shared across outcomes, scaled by
-      each $\varepsilon_c$. Incoherent: independent draws.
+    \item Coherent: one standardized direction shared across the \emph{group},
+      scaled by each outcome's own radius. Incoherent: independent draws.
     \item Percentile labels are clipped to $[0,1]$ (clipping only shrinks
       $|\delta_i|$, so the draw stays in $\mathcal D$).
     \item \textbf{Built once}, not per iteration: with the draws fixed,
       $\theta(\delta_b)$ no longer depends on $x^\ast$, so CP's
       worst-violation-over-the-bank is monotone and $\tau$ means something.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Coherence is a grouping --- measured, not asserted}
+  \small
+  Coherent asserts residual correlation $+1$ across outcomes; incoherent asserts
+  $0$. Neither was ever checked. OOF residuals, same rows / folds / frozen
+  configs the bank uses ($n=145$, forward-chaining):
+  \begin{center}\small
+  \begin{tabular}{@{}lcc@{}}
+    \toprule
+    & percentile labels & raw labels \\
+    \midrule
+    Toxicity pairs (excl.\ DLT) & $+0.28$ & $+0.22$ \\
+    OS vs.\ every toxicity      & $+0.06$ & $+0.02$ \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \medskip
+  \begin{itemize}
+    \item \textbf{OS is uncoupled} --- 3 of 5 pairs negative on raw. Coherent's
+      $+1$ was the least defensible claim in $\mathcal D$.
+    \item $\Rightarrow$ \texttt{coherent\_exclude}: toxicities share a direction,
+      OS draws independently. A \emph{grouping}, not a flag.
+    \item DLT excluded: $\text{DLT}=1-\prod_c(1-y_c)$, so its $+0.44$--$0.80$ row
+      is construction, not evidence.
+    \item Matches the story that licenses coherence --- under-reporting adverse
+      events spans toxicity endpoints, never survival.
+    \item Still \emph{asserted}: truth is $+0.28$, we impose $+1$ in-group.
   \end{itemize}
 \end{frame}
 
@@ -340,22 +401,32 @@
   \small
   \textbf{$\tau$ --- stopping tolerance} (the robustness dial)
   \begin{itemize}
-    \item Dimensionless: \texttt{tolerance} $=\tau\cdot d_0$, with $d_0$ = the
-      \textbf{0.9 quantile} of the iteration-0 distances, \emph{not} their max
-      (the max grows with $B$; CP runs at $B{=}200$, the wrapper at $P{=}20$).
-    \item $\tau\to 0$ cuts maximally. \textbf{$\tau=1$ is the weak end, not
-      nominal}: the tolerance is $q_{0.9}$ while the stopping statistic is the
-      \emph{max}, so iteration 0 fails its own test. Run nominal for that endpoint.
-    \item $\tau$ is a ratio to each problem's \emph{own} $d_0$ --- not a shared
-      physical quantity. The two paths don't share units (basic: raw signed
-      violations; coherent: normalized, anchor-averaged distances).
+    \item In \textbf{unexplained sd}: exceedance $\div\,\mathrm{scale}(y_c)$ ---
+      \emph{per outcome}, the same scale that sets $\mathcal D$'s radius ---
+      meaned over (anchor $\times$ outcome) cells. Shares units with $\rho$.
+    \item \textbf{Grid spans nominal}: $\tau$ above the iter-0 distance cuts
+      nothing. Synthetic (scale $0.1281$, max $0.1259$): $\tau{=}1$ is nominal
+      exactly. Legacy \texttt{d0}: no $\tau\le1$ was.
+    \item Mean is \textbf{anchor-count stable} (numerator scales with
+      denominator): gastric $n_a{=}4/8/16 \to 0.031/0.032/0.018$, no $1/n$.
+      Breadth is the point --- 2 of 20 cells broken beats 20 of 20.
+    \item One grid, \textbf{log-spaced}: coherent scores (violating fraction)
+      $\times$ (mean exceedance), basic has 1 cell and no fraction --- gastric
+      $0.03$ vs synthetic $0.98$. Range, not meaning.
   \end{itemize}
-  \medskip
-  \textbf{Coverage}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Cutting Planes: coverage}
   \begin{itemize}
     \item Adding cuts can make the master infeasible at some anchor.
     \item A cut breaking the protected set is \textbf{rolled back and its draw
       permanently rejected}. So $\tau$ is CP's only robustness knob.
+    \item The protected set is \textbf{fixed}, not recomputed per iteration ---
+      the anchors the \emph{nominal} fit could serve (8/10 on gastric), tested
+      set-wise so CP cannot trade one patient's feasibility for another's.
+    \item Rejections are \textbf{cached} (113/200 draws on gastric); a fixed
+      protected set plus a monotone master makes that sound.
   \end{itemize}
 \end{frame}
 
@@ -387,32 +458,28 @@
 \end{frame}
 
 % ===========================================================================
-\begin{frame}{Calibration: one knob each, matched across methods}
+\begin{frame}{Calibration: the target is $\rho^\ast$, not each knob}
   \small
-  $\kappa$ = a method's knob ($\varepsilon$ RR, $\alpha$ wrapper, $\tau$ CP).
-  Nominal has none. Held-out CV, run \emph{after} model selection:
+  Held-out CV, run \emph{after} model selection. Under the $\rho$ parameterization
+  it sweeps the \textbf{shared} $\rho$ with every method's own dial \emph{fixed}
+  ($\tau{=}0.01$, $\alpha{=}0.2$):
   \begin{itemize}
-    \item $\kappa^\ast$ = max held-out feasibility s.t.\ objective within 10\% of
-      nominal; ties broken by objective.
-    \item Both scores \textbf{conditional on the solve returning a prescription};
-      \texttt{solved\_frac} logged beside them.
+    \item $\rho^\ast(\text{method})$ = largest $\rho$ still meeting the held-out
+      feasibility target. How much assumed uncertainty each method absorbs.
+    \item $\tau$, $\alpha$ become \textbf{ablations at one $\rho$} --- enough to
+      show the fixed values were not cherry-picked.
+    \item Scores \textbf{conditional} on the solve returning a prescription;
+      \texttt{solved\_frac} beside them. \texttt{max\_iterations} cells excluded
+      from $\rho^\ast$.
     \item \textbf{Train-only} oracle. Gastric: temporal forward-chaining folds;
-      synthetic: KFold (analytic truth reserved for final evaluation).
-    \item Per \textbf{(method, coherence) cell} --- coherent is the stronger
-      adversary at fixed radius, so one shared $\kappa^\ast$ would confound
-      coherence with conservatism.
+      synthetic: KFold. Per (method, coherence) cell.
+    \item $\rho$ is never \emph{selected} --- the curve is the result.
+    \item Every cell records \textbf{status} + wall clock split: \emph{master}
+      phase (for CP the whole cut loop) vs \emph{test-point} phase. CP pays up
+      front then prescribes from a small master; the wrapper pays per point.
   \end{itemize}
-  \begin{center}\footnotesize
-  \begin{tabular}{@{}lccc@{}}
-    \toprule
-    $\kappa^\ast$ & CP $\tau$ & Robust Reg.\ $\varepsilon$ & Wrapper $\alpha$ \\
-    \midrule
-    Gastric coherent   & 0.10 & 0.75 & 0.30 \\
-    Gastric incoherent & 0.10 & 0.25 & 0.20 \\
-    Synthetic          & 0.10 & 1.00 & 0.00 \\
-    \bottomrule
-  \end{tabular}
-  \end{center}
+  \footnotesize\emph{Legacy per-method $\kappa^\ast$ (d\textsubscript{0}-basis
+  $\tau$): gastric coh.\ $0.10/0.75/0.30$, incoh.\ $0.10/0.25/0.20$. Superseded.}
 \end{frame}
 
 % ===========================================================================
@@ -493,26 +560,25 @@
 \end{frame}
 
 \begin{frame}{Open questions}
+  \small
   \textbf{Method}
   \begin{itemize}
-    \item Cuts per test point, or once over train anchors (now)? Anchors are
-      offline, but $x^\ast_1..x^\ast_{10}$ may not represent test contexts.
-    \item Localization is retired with the bootstrap path --- does a
-      \emph{local} $\mathcal D$ buy anything the global one does not?
-    \item $\mathcal D$ conflates label noise with misspecification. Anything better
-      that stays in label space?
+    \item Cuts per test point, or once over train anchors (now)?
+    \item Does a \emph{local} $\mathcal D$ buy anything the global one does not?
+    \item $\mathcal D$ is $\approx90\%$ misspecification on gastric. Binomial
+      $\sigma_i=\sqrt{p_i(1-p_i)/N_i}$ is nameable ($1.7$--$3.1\times$ smaller).
+    \item In-group coherence still \emph{asserted} at $+1$ (truth $+0.28$).
   \end{itemize}
   \medskip
   \textbf{Experiments}
   \begin{itemize}
-    \item Sensitivity over $\varepsilon_0\in\{0.5,1,2\}$: show $\tau^\ast$, not
-      $\varepsilon_0$, drives CP.
+    \item $\rho$ sweep on gastric: both cells, $\pm$\texttt{--match-bank}.
+    \item Does the bank's spread contain the outer-subsample refit spread?
+      The falsification test for $\mathcal D$'s size.
     \item Re-enable pruning/eviction behind \texttt{objective\_monotone}.
-    \item Add \textbf{C-MICL as a fifth method} --- expect gastric infeasibility;
-      reporting that is the result.
-    \item Bank scan, coherent vs incoherent at the nominal $x^\ast$: which
-      adversary is actually stronger? No MIP resolves needed.
-    \item Add the WFP problem setting (needs a loader).
+    \item \textbf{C-MICL as a fifth method} --- expect gastric infeasibility.
+    \item Bank scan, coherent vs incoherent: which adversary is stronger?
+    \item Add the WFP setting (needs a loader).
   \end{itemize}
 \end{frame}
 
