@@ -31,7 +31,9 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # units of scale(y), so it tracks rho rather than staying fixed. Holding it fixed
 # would train its adversary against a different set than the bank draws from.
 #
-# Three outputs:
+# Three outputs. Each name carries a CELL suffix -- _coh/_incoh, plus _matchbank
+# under MATCH_BANK -- so the coherent/incoherent and B=200/B=P runs below coexist
+# instead of one resuming from and overwriting the other:
 #   {problem}_rho_curve.csv  PRIMARY -- feasibility/objective per (method, rho)
 #   {problem}_rho_star.csv   DERIVED -- rho*(method), the largest rho still
 #                            meeting FEAS_TARGET, i.e. how much assumed
@@ -48,9 +50,10 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # pays again per test point -- that trade is the point of the split. Cells with
 # n_capped > 0 hit max_iterations; they are KEPT and flagged, not dropped.
 #
-# rho* is a REPORTING choice and can be re-derived later with no re-solving:
-#   python experiments/run_rho_sweep.py --problem gastric --rho-star-only \
-#       --feas-target 0.8 --out-suffix _t080
+# rho* is a REPORTING choice and can be re-derived later with no re-solving. Pass
+# the same cell flags the sweep used -- they select which curve is read:
+#   python experiments/run_rho_sweep.py --problem gastric --coherent \
+#       --rho-star-only --feas-target 0.8 --out-suffix _t080
 # The curve CSV carries every column the criteria could need, and the chosen
 # criteria are written back as columns so a table is never ambiguous.
 #
@@ -60,7 +63,9 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 # roughly |grid| x (wrapper fold solves) and raise --time before raising the grid.
 #
 # The score CSV is a resumable checkpoint keyed by (method@rho, knob), so a
-# requeued job skips finished cells. Pass EXTRA_ARGS=--refresh to discard it.
+# requeued job skips finished cells. That key does NOT carry coherence or
+# match-bank -- the filename suffix above is what keeps the cells apart, so do not
+# collapse them back onto one name. Pass EXTRA_ARGS=--refresh to discard it.
 PROBLEM="${PROBLEM:-gastric}"
 RHO_GRID="${RHO_GRID:-0.05 0.1 0.2 0.3 0.5 0.75 1.0}"
 METHODS="${METHODS:-nominal cp wrapper robust_reg}"

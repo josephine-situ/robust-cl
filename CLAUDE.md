@@ -487,11 +487,20 @@ Cells with `n_capped > 0` hit `max_iterations`; they are **kept and flagged**, n
 dropped — the incumbent is still usable, and the flag travels with the row.
 
 **ρ\* is a reporting choice and is re-derivable without re-solving.**
-`{problem}_rho_curve.csv` carries every column the criteria could need, and
+`{problem}_rho_curve{cell}.csv` carries every column the criteria could need, and
 `--rho-star-only` recomputes the table from it under a new `--feas-target` /
 `--min-solved` / `--exclude-capped`, writing to `--out-suffix` so several criteria
 coexist. The chosen criteria are written back as columns, so no ρ\* table is
 ambiguous about the rule that produced it.
+
+**Every sweep output is scoped by its cell** — `_coh`/`_incoh`, plus `_matchbank`
+under `--match-bank` (`_variant_suffix`). The coherent/incoherent and B=200/B=P
+runs are *different experiments* that the workflow asks you to run as a pair, and
+sharing one filename failed silently in both directions: the resume checkpoint is
+keyed `(method@rho, knob)` **only**, so a second cell resumed the first's rows and
+reported them as its own, and the curve is written rather than appended, so the
+second cell overwrote the first. `--rho-star-only` takes the same cell flags to
+pick which curve it reads.
 
 **CP is exempt, and does not read `uncertainty.alpha`.** Its coverage cap
 `cp_alpha` is **pinned at 0 at every call site** (`run_all.py`, `run_sweep.py`,
