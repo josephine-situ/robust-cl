@@ -56,11 +56,15 @@ from src.methods.cp import (
     _is_constraint_constraint,
 )
 from src.methods.nominal import resolve_constraint_config
+from dataclasses import replace as _dc_replace
+
 from src.methods.uncertainty import (
+    GEOMETRIES,
     ScenarioBank,
     uncertainty_set_from_config,
     _clip_to_bounds,
 )
+from src.utils.perturbations import l2_worst_case_shift
 from src.models.train import retrain_on_perturbed, train_model
 from experiments.run_chemo_robust import load_config
 
@@ -153,15 +157,24 @@ def influence_vector(model, X_train, x_star):
 # ---------------------------------------------------------------------------
 # The directed adversary
 # ---------------------------------------------------------------------------
-def directed_delta(g, eps, gamma, model_data):
-    """argmax_{delta in D} g'delta -- greedy top-m at +/-eps, then clipped.
+def directed_delta(g, eps, gamma, model_data, geometry="box_l1", radius=None):
+    """argmax_{delta in D} g'delta, then clipped to the label bounds.
 
-    Exact for the linearised objective: the maximum of a linear function over
-    {|d_i| <= eps, ||d||_1 <= gamma} is at a vertex, so sort by |g_i| and spend
-    the budget on the largest entries in their own sign direction. Same routine
-    as `worst_case_label_shift`, ranking by influence-at-x* instead of residual.
+    ``box_l1``: greedy top-m at +/-eps. Exact for the linearised objective -- the
+    maximum of a linear function over {|d_i| <= eps, ||d||_1 <= gamma} is at a
+    vertex, so sort by |g_i| and spend the budget on the largest entries in their
+    own sign direction. Same routine as `worst_case_label_shift`, ranking by
+    influence-at-x* instead of residual.
+
+    ``ellipsoid``: the closed form ``radius * g/||g||_2`` -- no sort, no budget
+    bookkeeping. At the matched radius ``sqrt(m)*eps`` this achieves at least as
+    much as the greedy vertex (Cauchy-Schwarz), with equality only if the top-m
+    |g_i| are equal and the rest vanish. Clipping is safe under both: it shrinks
+    every |delta_i|, hence both the L1 and the L2 norm, so the result stays in D.
     """
     g = np.asarray(g, dtype=float)
+    if geometry == "ellipsoid":
+        return _clip_to_bounds(model_data, l2_worst_case_shift(g, radius or 0.0))
     delta = np.zeros(g.shape[0])
     if eps <= 0 or gamma <= 0:
         return delta
@@ -175,17 +188,35 @@ def directed_delta(g, eps, gamma, model_data):
     return _clip_to_bounds(model_data, delta)
 
 
+def budget_at(uset, eps, n, t=1.0):
+    """``(gamma, radius)`` at budget fraction ``t``, matched in L2 length.
+
+    The box path keeps its existing meaning exactly -- ``gamma_t = t * gamma``
+    moves ``t*m`` rows at +/-eps, an L2 length of ``sqrt(t*m)*eps``. The ellipsoid
+    therefore takes ``R_t = sqrt(t) * R``, NOT ``t * R``, so the two geometries
+    spend the same L2 budget at the same ``t`` and the Part C/D sweeps stay
+    comparable across the flag. All existing box measurements are unchanged.
+    """
+    gamma = float(t) * uset.budget_frac * int(n) * float(eps)
+    radius = float(np.sqrt(max(0.0, t))) * uset.radius_from_eps(eps, int(n))
+    return gamma, radius
+
+
 def _predict(model, x_star):
     return float(model.predict(np.atleast_2d(x_star))[0])
 
 
 def frank_wolfe_adversary(model_data, m_type, m_params, x_star, eps, gamma,
-                          seed, n_steps=3):
+                          seed, n_steps=3, geometry="box_l1", radius=None):
     """Re-linearise / re-maximise / retrain, keeping only verified improvements.
 
-    Each step costs one retrain + one influence evaluation + one argsort. The
+    Each step costs one retrain + one influence evaluation + one vertex solve. The
     accept-only-if-improved guard means the returned model is never worse than
     the nominal one, whatever the frozen-structure approximation got wrong.
+
+    Geometry only changes the inner argmax (:func:`directed_delta`); the
+    re-linearise / verify / accept loop is identical, so the two arms differ by
+    exactly the set and nothing else.
     """
     X, y = model_data.X_train, model_data.y_train
     params = dict(m_params or {})
@@ -198,7 +229,7 @@ def frank_wolfe_adversary(model_data, m_type, m_params, x_star, eps, gamma,
 
     for _ in range(n_steps):
         g = influence_vector(best_model, X, x_star)
-        delta = directed_delta(g, eps, gamma, model_data)
+        delta = directed_delta(g, eps, gamma, model_data, geometry, radius)
         if np.allclose(delta, best_delta):
             break
         model = retrain_on_perturbed(X, y, delta, m_type, params)
@@ -258,8 +289,8 @@ def probe_influence(instance, bank, rows, anchor_x, uset, seed, fw_steps):
     for (c_idx, name, md, m_type, m_params, is_con, rhs) in rows:
         eps = uset.eps(bank.scales[id(md)])
         n = len(md.y_train)
-        m_rows = max(1, min(n, int(round(uset.budget_frac * n))))
-        gamma = uset.budget_frac * n * eps
+        m_rows = uset.n_moved(n)
+        gamma, radius = budget_at(uset, eps, n, 1.0)
         # Trained the bank's way (random_state pinned), so the only difference
         # between this and any bank member is the label shift.
         nominal_model = retrain_on_perturbed(
@@ -278,7 +309,7 @@ def probe_influence(instance, bank, rows, anchor_x, uset, seed, fw_steps):
             nnz = int(np.count_nonzero(np.abs(g) > 1e-15))
 
             # frozen-structure prediction of the directed vertex, then the truth
-            delta_d = directed_delta(g, eps, gamma, md)
+            delta_d = directed_delta(g, eps, gamma, md, uset.geometry, radius)
             f_frozen = f0 + float(g @ delta_d)
             model_d = retrain_on_perturbed(
                 md.X_train, md.y_train, delta_d, m_type,
@@ -287,7 +318,8 @@ def probe_influence(instance, bank, rows, anchor_x, uset, seed, fw_steps):
             f_directed = _predict(model_d, x_star)
 
             _, _, f_fw, trace = frank_wolfe_adversary(
-                md, m_type, m_params, x_star, eps, gamma, seed, fw_steps
+                md, m_type, m_params, x_star, eps, gamma, seed, fw_steps,
+                uset.geometry, radius,
             )
 
             preds = [_predict(bank.model(md, b), x_star) for b in range(len(bank))]
@@ -296,8 +328,13 @@ def probe_influence(instance, bank, rows, anchor_x, uset, seed, fw_steps):
             records.append({
                 "constraint": name, "c_idx": c_idx, "is_constraint": is_con,
                 "anchor": a_idx, "rhs": rhs, "eps_c": eps, "n_train": n,
+                "geometry": uset.geometry, "radius_c": radius,
                 "m_budget_rows": m_rows, "nnz_g": nnz,
-                "budget_binds": bool(nnz > m_rows),
+                # An ellipsoid has no L1 face, so nothing can "bind" in that sense;
+                # the radius is always fully spent. Recorded as NA rather than
+                # False so the two runs' summaries stay readable side by side.
+                "budget_binds": (None if uset.geometry == "ellipsoid"
+                                 else bool(nnz > m_rows)),
                 "f_nominal": f0,
                 "d_bank_best": f_bank - f0,
                 "d_directed_frozen": f_frozen - f0,
@@ -311,8 +348,10 @@ def probe_influence(instance, bank, rows, anchor_x, uset, seed, fw_steps):
                 "fw_steps_used": len(trace) - 1,
                 "seconds": time.time() - t0,
             })
+            budget_note = (f"R={radius:.4f}" if uset.geometry == "ellipsoid"
+                           else f"m={m_rows}, binds={nnz > m_rows}")
             print(f"  {name} anchor{a_idx}: eps={eps:.4f} nnz(g)={nnz} "
-                  f"(m={m_rows}, binds={nnz > m_rows})  "
+                  f"({budget_note})  "
                   f"bank={f_bank - f0:+.4f} directed={f_directed - f0:+.4f} "
                   f"fw={f_fw - f0:+.4f}  [frac of eps: {(f_bank - f0)/eps:.2f} / "
                   f"{(f_directed - f0)/eps:.2f} / {(f_fw - f0)/eps:.2f}]", flush=True)
@@ -339,7 +378,7 @@ def probe_feasibility(instance, bank, rows, master, anchors, anchor_x, uset,
             for (c_idx, name, md, m_type, m_params, _, rhs) in con_rows:
                 eps = uset.eps(bank.scales[id(md)])
                 n = len(md.y_train)
-                gamma = t * uset.budget_frac * n * eps
+                gamma, radius = budget_at(uset, eps, n, t)
                 if t <= 0:
                     model = retrain_on_perturbed(
                         md.X_train, md.y_train, np.zeros(n), m_type,
@@ -347,7 +386,8 @@ def probe_feasibility(instance, bank, rows, master, anchors, anchor_x, uset,
                     )
                 else:
                     _, model, _, _ = frank_wolfe_adversary(
-                        md, m_type, m_params, x_star, eps, gamma, seed, fw_steps
+                        md, m_type, m_params, x_star, eps, gamma, seed, fw_steps,
+                        uset.geometry, radius,
                     )
                 held.append(model)
                 master.add_scenario(c_idx, [(md.weight, model)], rhs)
@@ -449,11 +489,12 @@ def probe_loop(instance, rows, master, anchors, ctx_bounds, uset, bank, seed,
         added, max_exceed = 0, 0.0
         for (c_idx, name, md, m_type, m_params, _, rhs) in con_rows:
             eps = uset.eps(bank.scales[id(md)])
-            gamma = budget_frac_t * uset.budget_frac * len(md.y_train) * eps
+            gamma, radius = budget_at(uset, eps, len(md.y_train), budget_frac_t)
             best = None
             for a_idx in sorted(feasible_idx):
                 _, model, val, _ = frank_wolfe_adversary(
-                    md, m_type, m_params, x_stars[a_idx], eps, gamma, seed, fw_steps
+                    md, m_type, m_params, x_stars[a_idx], eps, gamma, seed,
+                    fw_steps, uset.geometry, radius,
                 )
                 exceed = (md.weight * val - rhs) / max(1.0, abs(rhs))
                 if best is None or exceed > best[0]:
@@ -511,6 +552,9 @@ def main():
                    help="Part D: adversary budgets to sweep (fresh master each)")
     p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json")
     p.add_argument("--gt-cv-configs", default="results/cv/gastric_gt_ensemble_configs.json")
+    p.add_argument("--geometry", choices=list(GEOMETRIES), default=None,
+                   help="override uncertainty.geometry; run once per value to "
+                        "compare the two sets at matched L2 size")
     p.add_argument("--outdir", default="results/adversary_probe")
     args = p.parse_args()
 
@@ -537,8 +581,16 @@ def main():
     instance = build_instance(config, args)
     rows = outcome_rows(instance, model_type, model_params)
     uset = uncertainty_set_from_config(config)
+    if args.geometry:
+        uset = _dc_replace(uset, geometry=args.geometry)
     print(f"D: eps_0={uset.eps_0} budget_frac={uset.budget_frac} "
-          f"coherent={uset.coherent} scale_stat={uset.scale_stat}", flush=True)
+          f"coherent={uset.coherent} scale_stat={uset.scale_stat} "
+          f"geometry={uset.geometry}", flush=True)
+    if uset.geometry == "ellipsoid":
+        print("   ellipsoid: R_c = sqrt(m)*eps_c, the L2 length of the box vertex, "
+              "so the two sets are\n   matched in size. Expect frac_directed/frac_fw "
+              "to RISE (Cauchy-Schwarz) while\n   frac_bank stays put -- random "
+              "draws are equally uninformative under both.", flush=True)
 
     print("\nBuilding master (nominal cuts) ...", flush=True)
     master, model_config_map = _build_master_with_nominal(
@@ -640,7 +692,11 @@ def main():
             loop_records.append(rec)
 
     import pandas as pd
+    # Geometry goes in the filename so a side-by-side pair of runs does not
+    # overwrite itself. box_l1 keeps the historical names.
     tag = args.problem + ("_quick" if args.quick else "")
+    if uset.geometry != "box_l1":
+        tag += f"_{uset.geometry}"
     inf_path = os.path.join(args.outdir, f"{tag}_influence.csv")
     pd.DataFrame(inf_records).to_csv(inf_path, index=False)
     print(f"\nWrote {inf_path}")

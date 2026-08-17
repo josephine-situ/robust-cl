@@ -1,0 +1,5 @@
+feas_target,min_solved,method,rho_star,feasibility,objective,solved_frac,n_capped,master_time_s,test_time_per_point_s,bound,note
+0.9,0.5,cp,1.0,0.9561111111111112,9.448071703124322,0.5785802035802036,0,650.66743516922,1.3299753945449302,grid_max,censored at grid max
+0.9,0.5,robust_reg,1.0,0.9461725266603316,10.527525986599157,0.9578068328068328,0,1.9015600085258484,0.1319165969717091,grid_max,censored at grid max
+0.9,0.5,wrapper,0.75,0.932440476190476,10.42920613396448,0.5344857844857844,0,37.15528017282486,1.7106128692626954,solved_floor,NOT grid-censored: solved_frac<0.5 above rho=0.75
+0.9,0.5,nominal,,,,,0,,,none,never reaches feas>=0.9

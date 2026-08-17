@@ -28,6 +28,8 @@ uv run python experiments/run_chemo_robust.py --quick   # gastric smoke test (5 
 uv run python experiments/run_chemo_robust.py           # full gastric run, 3 methods (long; use SLURM)
 uv run python experiments/run_all.py                    # synthetic single run, all methods
 uv run python experiments/run_cv.py                     # cross-validate model types/hyperparams
+uv run python experiments/run_rho_sweep.py --problem synthetic   # shared-D rho axis + rho*(method)
+uv run python experiments/plot_rho_sweep.py             # rho-sweep figures (one cell) -> results/figures/
 uv run python experiments/summarize_table6.py           # post-process Table 6 CSV -> .csv/.tex
 sbatch experiments/submit_chemo_robust.sh               # full run on SLURM (12h, 128G, 16 cpu)
 ```
@@ -60,6 +62,17 @@ returns a `SolutionResult`.
   build a bootstrap cache unconditionally and pass it in; under `"noise"` it is
   **dead** — same shape as the `cp_alpha` dead argument documented below, and it
   is not evidence the production wrapper bootstraps.
+
+  **The objective is the nominal fit, and OS is never chance-constrained.**
+  `constraint_idxs` excludes any constraint with `obj_weight != 0`, so OS gets no
+  `z` indicator. Under `robustify_objective: false` (the default) the objective
+  embeds one **freshly trained nominal** OS model. It used to embed `ensemble[0]`
+  — bank draw 0, which is itself perturbed, since `_draw(0)` produces a nonzero δ
+  — so the wrapper maximized an arbitrary perturbed OS while CP maximized the true
+  nominal one, an uncontrolled and seed-dependent asymmetry in Table 6's objective
+  column (measured: draw 0's OS differed from nominal by up to 1.08 months on
+  gastric). **Wrapper objective numbers produced before 2026-08-15 carry that
+  bias.**
 - **`cp.py`** — Cutting Planes (the contribution). See below.
 
 ### `uncertainty.py` — the shared uncertainty set D
@@ -88,35 +101,122 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
   D stays nearly as wide as `sd(y)` there. That is the honest answer when the fit
   is that poor. Folds follow the problem's own scheme (temporal on gastric, so the
   estimate cannot leak future information). **No coverage claim** is made.
+- **`uncertainty.geometry`** (default `"box_l1"`) selects D's *shape*, and the two
+  shapes are **parameterized separately**. `"box_l1"` keeps `eps_0`/`budget_frac`
+  untouched, so every result in `results/` reproduces. `"ellipsoid"` is the ball
+  ‖δ‖₂ ≤ R_c with **R_c = ρ·scale(y_c)·√n**, and reads `rho` *alone* — `eps_0` and
+  `budget_frac` are ignored under it. That is not a convenience: `budget_frac`
+  cannot constrain an L2 ball (no L1 face, no support restriction), so it could
+  only ever scale the radius, leaving `(eps_0, budget_frac)` **non-identifiable**
+  there with only their product observable. `rho` replaces both and discards
+  nothing. `√n` (not `√m`) makes ρ=1 mean "the L2 norm of iid noise at one
+  unexplained sd per row", which transfers across n=200 synthetic and n=320
+  gastric. The matched-size correspondence `√m·eps_c` survives as
+  `UncertaintySet.radius_from_eps` for equal-budget geometry comparisons in the
+  probe, but no longer parameterizes the set.
+
+  Geometry reaches all three methods at once (bank draws, CP/probe separation,
+  robust_reg's training adversary and its linear counterpart, which becomes an
+  SOCP), because one that reached only some would break the shared-D comparison.
+  The ellipsoid is **strictly stronger** at equal budget against a linear
+  objective (Cauchy–Schwarz), while random sampling is *no better* in it, so it
+  widens the random-vs-directed gap rather than closing it. Measured on synthetic:
+  directed/FW 1.675 → 3.389 eps (2.0×), because there nnz(g)=57 < m=100 and the
+  box wastes budget on rows that cannot move f(x\*); gastric binds (nnz 313–320 >
+  m=160) so expect less. Compounding that, **ρ=1 is √2 wider than eps_0=1** at
+  `budget_frac` 0.5 — so ρ=1 is ~2.8× the old effective adversary and is *not* a
+  default operating point. **Nothing in `results/` was produced under
+  `"ellipsoid"`.** Everything below describes `box_l1`.
+
+  **ρ is swept, never selected** (`experiments/run_rho_sweep.py`). It defines the
+  problem all three methods solve, so a per-method ρ\* would dissolve the shared-D
+  premise, and a global one has no honest criterion — against the GT ensemble it
+  tunes to the judge, against synthetic's known `noise_std` it calibrates D to the
+  DGP. The sweep reports the whole axis (primary) plus ρ\*(method) at a fixed
+  held-out feasibility target (derived). Note `robust_reg`'s `label_eps` **is** the
+  D radius, so it tracks ρ through the sweep rather than staying fixed; τ and α are
+  separate dials and do stay fixed. And CP samples D with B=200 against the
+  wrapper's P=20, so a ρ\* gap between them is confounded with sampling density —
+  `--match-bank` sets B=P to remove it.
+
+- **`chi2_radius` is unused (zero call sites) and must stay that way while the
+  scale is `oof_sd`.** It was documented as the coverage claim an ellipsoid makes
+  available. It is not one here. Of the four assumptions, three fail: σ is
+  `oof_sd`, which is label noise *plus* misspecification and on gastric is ~90% the
+  latter (the nameable label noise, from binomial sampling SEs of the toxicity
+  proportions, is 1.7–3.1× smaller); the noise is heteroskedastic (arm sizes 26–92
+  give per-row SEs spanning 2.2×) while χ²_n assumes one σ; and OOF residuals are
+  not independent across rows, so effective df < n. Only Gaussianity holds, and
+  benignly — gastric toxicity residuals are symmetric (|skew| ≤ 0.33) and
+  thin-tailed (excess kurtosis −0.24 to −1.04), so a χ² radius would err
+  conservative; OS does not qualify (skew +0.64, shapiro_p 6e-3). Beyond all four,
+  coverage of δ is not coverage of the *decision*: under misspecification there is
+  no true θ for D to cover. Also note χ² concentration makes the coverage *level* a
+  nearly inert knob — at n=320 the 50% and 99% radii differ by 9.3% — so it must
+  never be used as a conservatism dial. A real claim would come from the
+  measurement rather than the fit (per-row binomial σ_i, weighted ellipsoid); that
+  is a genuinely narrower D and a different paper, not a drop-in.
+- **How each method samples the worst case — matched in magnitude, deliberately
+  NOT in direction.** robust_reg uses a **directed** adversary (`worst_case_label_shift`
+  greedy top-m by residual, or the closed form `R·r/‖r‖` under `ellipsoid`). CP and
+  the wrapper use **random** boundary draws from the bank. Same D, same budget
+  spent, different alignment — and that asymmetry is intentional.
+
+  The reason is feasibility, not fairness. CP and the wrapper turn scenarios into
+  *embedded constraints* — CP a cut per accepted scenario, the wrapper a joint
+  chance constraint over P models. A directed adversary makes each of those as
+  tight as D allows, and they accumulate until the master admits no prescription
+  at all. That is exactly what `run_adversary_probe.py` Part C/D measures, and
+  what CP's rollback / permanent-rejection machinery already contains at *random*
+  draws. robust_reg is immune because its adversary never becomes a constraint: it
+  shapes the **fit**, one model per outcome is retrained on the shifted labels, and
+  that single model is embedded. A worst-case shift moves where the model sits; it
+  cannot make the optimization infeasible.
+
+  The cost is real and should be reported rather than hidden: the best of B random
+  draws reaches **1.07 eps** against a directed adversary's **1.67 eps** on
+  synthetic (~64%), and the gap *widens* under `"ellipsoid"` (`g'u` has the same sd
+  under both geometries while the attainable max rises). **"Shared D" guarantees a
+  shared set and equal budget, not equal adversary strength.**
+
 - **`ScenarioBank`** draws B **vertices** of D (±eps on `budget_frac`·n rows, 0
-  elsewhere — matching robust_reg's adversary; interior draws would be a weaker
-  adversary at the same D) and trains one model per draw per outcome, with
+  elsewhere — matching robust_reg's adversary in magnitude; interior draws would be
+  weaker still at the same D) and trains one model per draw per outcome, with
   `random_state` fixed across members so the scenario is the only variation.
   Draw *b* is a pure function of `(seed, b)`, so **the wrapper's P models are a
   nested prefix of CP's B** — which is what makes the α=0 ≡ τ→0 equivalence exact.
-- **`coherent`** — one flag, all three methods. Coherent shares one standardized
-  direction across outcomes (scaled by each `eps_c`); incoherent draws
-  independently. Vacuous on synthetic (one outcome) — literally, not
+- **`coherent` is a *grouping*, not a flag** (`uncertainty.coherent_exclude`).
+  Coherent shares one standardized direction across the group (scaled by each
+  outcome's own radius); constraints named in `coherent_exclude` draw
+  independently even under `coherent: true`. Production sets it to
+  `["os_constraint"]`. Vacuous on synthetic (one outcome) — literally, not
   approximately: with one `MLModelData` both branches make the same single
   `_vertex_direction` call against the same rng, so the banks are bit-identical.
+  An empty list reproduces pre-grouping banks bit-for-bit; unknown names are
+  reported and ignored rather than raising, because one `config.yaml` drives both
+  problems and `os_constraint` legitimately does not exist on synthetic.
 
-  **OPEN QUESTION (raised 2026-08-11, unresolved — do not treat the two bullets
-  above as settled).** Two objections, both open:
+  **Objection 1 below is now RESOLVED by measurement (2026-08-15); objections 2
+  and 3 remain open.**
 
-  1. **Does coherence mean anything across different targets?** What is shared is
-     a dimensionless ±1 direction over *rows*, not a label shift — all six
-     gastric outcomes are built on the same `X_fit` in the same row order
-     (`generate.py:533`, `:552`), so row *i* is the same trial arm everywhere,
-     and magnitudes stay per-outcome via `eps_c`. The story that justifies it is
-     *record-level* mismeasurement: a study that under-reports adverse events
-     under-reports across all five toxicity endpoints. **That story does not
-     cover OS.** Sign is per-outcome-label, not clinical valence: `+1` on a
-     toxicity percentile is worse, `+1` on OS months is better, so a coherent
-     draw is not "these arms get uniformly worse" — it is "these arms shift up
-     in each column's own signed units." Whether OS belongs on the shared
-     direction at all is unresolved. Note the cross-outcome residual
-     correlation is never estimated: coherent asserts +1, incoherent asserts 0,
-     and the truth is in between.
+  1. **RESOLVED — OS does not belong on the shared direction.** The cross-outcome
+     residual correlation, previously never estimated, now is: out-of-fold
+     residuals over the same rows/folds/frozen configs the bank uses (n=145 under
+     forward-chaining) give **+0.28** across non-DLT toxicity pairs on the
+     percentile labels δ actually perturbs (+0.22 raw), against **+0.06** for OS
+     versus every toxicity (+0.02 raw, 3 of 5 pairs negative). DLT is excluded
+     from that average because `DLT_PROP = 1 − ∏(1 − tox)` makes it a
+     deterministic function of the other four, so its +0.44–0.80 row is
+     construction, not evidence. Coherent asserts +1 and incoherent asserts 0;
+     neither fits both blocks, hence the grouping. This matches the story that
+     justified coherence in the first place — *record-level* mismeasurement, a
+     study that under-reports adverse events under-reporting across all five
+     toxicity endpoints — which never covered survival. (Sign is
+     per-outcome-label, not clinical valence: `+1` on a toxicity percentile is
+     worse, `+1` on OS months is better.) **Still asserted, not estimated:** the
+     truth within the toxicity group is +0.28 and we impose +1. Correlated draws
+     (a copula on the estimated Σ) remain the unexplored option; the grouping is
+     the cheap 90%.
   2. **Incoherent is not the per-constraint worst case, though it should
      arguably be.** Its *set* is the product `D_1 × … × D_C` and does strictly
      contain coherent's diagonal — but the separation never exploits that. The
@@ -147,10 +247,18 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
   trial. Cheapest next step is measurement, not a rewrite: build both banks at
   the same seed and B, score every draw at the nominal $x^*$, and compare the max
   and the full distance distribution — a bank scan, no MIP resolves.
-- `uncertainty.eps_0` and `budget_frac` are shared **constants, not knobs** —
-  each method keeps exactly one conservatism dial (CP τ, wrapper α, robust_reg
-  `label_eps`). `eps_0` is deliberately *not* pinned to robust_reg's calibrated
-  ε*, which would conflate D's definition with one method's tuning.
+- `uncertainty.eps_0` / `budget_frac` (box) and `rho` (ellipsoid) are shared
+  **constants, not knobs** — each method keeps exactly one conservatism dial (CP
+  τ, wrapper α, robust_reg `label_eps`). `eps_0` is deliberately *not* pinned to
+  robust_reg's calibrated ε*, which would conflate D's definition with one
+  method's tuning. `rho` is swept rather than fitted for the same reason (see the
+  geometry bullet). **Do not fix τ→0 and α=0 together** when choosing fixed dials
+  for a sweep: at B=P that makes CP identical to the wrapper by the α=0 ≡ τ→0
+  equivalence, collapsing two of the three methods into one solver and leaving
+  nothing to compare on decisions. The CV picks (τ=0.1, α=0.2–0.3) are clear of
+  that corner. Note τ\* sits at the *strong end* of its grid on both gastric
+  coherence cells, i.e. CV is saturating rather than selecting — which is why
+  fixing τ costs nothing measurable.
 
 ### `solve_cp` — one driver, auto-selected strategy
 
@@ -218,19 +326,86 @@ scenario distances, **not their max** — the max grows with B, and CP (B=200) a
 the wrapper (P=20) run at different B by design. The quantile is over the *draws*
 (the coherent path means over anchors × outcomes inside each entry first).
 
-**τ=1 is the weak end of the grid but is not nominal.** The tolerance comes from
-`q0.9` while the stopping statistic is the **max** over the bank, on both paths
-(`cp.py:1076`, `cp.py:1530`), so iteration 0 fails its own test and τ=1 still
-separates the worst ~decile. **No τ in `[0.1, 1.0]` reproduces nominal** — run
-nominal itself for that endpoint. This is known and deliberately left as is: the
-max is the worst-case statistic the contribution rests on, and matching the two
-sides would either weaken it to a percentile claim or make `d0` seed-noisy. The
-consequence is that τ is a *ratio to each problem's own d0*, never a shared
-physical quantity — the two paths don't even share units (basic scores **raw
-signed** violations; coherent scores **normalized, anchor-averaged** distances
-gated at 0). Also, coherent drops permanently-rejected draws after iteration 0
-(113/200 on gastric) and rejection correlates with severity, so gastric's max is
-measured with its worst tail deleted and the same τ over-cuts *less* there.
+**τ is measured in unexplained standard deviations** (`cp.tolerance_basis:
+"scale"`, the default). Each exceedance is divided by its outcome's own
+`scale(y_c)` — the same scale that sets D's radius — and averaged over (anchor ×
+outcome) cells, so τ reads as "stop when the mean exceedance is below τ sd". Three
+consequences: τ is a physical quantity in the **same units as `rho`**, not a ratio
+to a bank statistic; it does not move with the seed, the bank, or B; and **the
+grid spans nominal**, because a τ above the iteration-0 distance stops before any
+cut. Verified on synthetic (scale 0.1281, max iter-0 violation 0.1259): τ=1.0
+returns the nominal objective exactly in 1 iteration.
+
+The basic path keeps its violations **raw** for logging, so it converts τ into
+constraint units by multiplying by the scale instead of dividing; the two paths
+therefore log different units but τ means the same thing in both.
+
+**One τ grid, but it needs log-scale range.** The sd basis makes τ a single
+physical quantity everywhere — "stop when the population-mean exceedance is below
+τ unexplained sd" — so a shared grid is meaningful. What it does not do is put
+both problems in the same *part* of that axis. Both paths max over draws; they
+differ in what one draw *scores as*. The basic path has a single (anchor ×
+constraint) cell, so a draw's score is that raw violation — effectively
+conditioned on violating. The coherent path means over `n_anchors × n_outcomes`
+cells, i.e. **(violating cell fraction) × (mean exceedance among violators)** — a
+factor the basic path has no room for. Gastric's violating fraction (~0.1) is why
+its maxima sit at ~0.03 against synthetic's ~0.98.
+
+That is a difference in **range, not meaning**, and the fraction is information
+(breadth), not a unit mismatch — gastric scenarios genuinely break a smaller share
+of the anchor population. The same way ρ\* differs across problems without making
+ρ incomparable. Hence `knob_grids.cp` is one plain **decade** grid
+(`[1.0, 0.1, 0.01, 0.001]`), which brackets both without calibration.
+
+**Do not pin the τ grid from measured distances.** The iteration-0 distance range
+is a function of D's size, i.e. of `rho` — so a grid fitted at one ρ would need
+refitting after every ρ, and reading τ off a run τ helped produce is circular. The
+order is: **(1)** ρ sweep at one fixed reasonable τ, **(2)** τ ablation at the
+chosen ρ on the decade grid.
+
+**The scale is per outcome, not one number.** `_build_scale_map` returns
+`{c_idx → scale(y_c)}` and each cell is divided by *its own* outcome's `oof_sd` —
+so the mean averages dimensionless quantities and outcomes on different label
+scales are commensurable. Measured on gastric: dlt 0.2547, blood 0.2495,
+constitutional 0.2912, infection 0.2580, gi 0.2680 — a 1.17× spread, so the
+normalization does almost nothing *there*, because the percentile transform makes
+every toxicity's `sd(y) ≈ 0.2887` by construction. It would matter a great deal if
+OS were a constraint (`oof_sd = 2.05` months, ~8× the toxicities); OS is the
+objective, so it is excluded from the map and only enters under
+`robustify_objective`, where its own scale is fetched separately.
+
+**Expect `status="max_iterations"` at the small-τ end.** CP still returns its
+incumbent, so a sweep will not crash — but those cells are *not converged* and
+must be reported as capped rather than as a converged answer at that τ.
+
+The **mean is the right statistic and is anchor-count stable.** Breadth is what it
+is for: a scenario breaking 2 of 20 cells badly is less dangerous for a policy
+serving a population than one breaking all 20 moderately, and a max would rank
+those backwards. It is stable because the numerator scales with the denominator —
+both factors are sample statistics converging to a population quantity that does
+not depend on `n_anchors`. Measured on gastric (B=25, kmedoids train anchors), max
+iteration-0 distance: `n_anchors=4 → 0.0307`, `8 → 0.0315` (1.03×; a divisor
+artifact would predict ~0.5×), `16 → 0.0178`. No 1/n trend; the residual spread is
+anchor-*set* variation and shrinks as the estimator converges.
+
+Verified that τ=0.1 on gastric `--quick` added **zero** scenario cuts
+(`dist_tol=0.100 > max dist 0.0233`), i.e. returned nominal — that is τ=0.1 being
+gastric's *nominal endpoint* on the shared grid, not the grid failing. Read
+`[cp] basis=scale … max iter-0 dist=` off a real run before assuming the grid
+brackets a **new** problem.
+
+`"scale"` also retires the per-cell divisor `max(1, |rhs|)`, which was a **no-op
+on gastric**: `rhs = 0.6`, so `max(1, 0.6) = 1` and the "normalized" distances
+were raw percentile units all along.
+
+**Legacy `tolerance_basis: "d0"`** reproduces the old behavior: tolerance = τ ·
+`q0.9` of the iteration-0 distances, while the stopping statistic is the **max**
+over the bank — so iteration 0 fails its own test and **no τ in `[0.1, 1.0]`
+reproduces nominal** (measured: τ=1.0 still cuts, obj −1.2757 vs nominal −1.3055;
+it takes τ=2.0 there). Under that basis τ is a ratio to each problem's own `d0`,
+never a shared physical quantity. Also note coherent drops permanently-rejected
+draws after iteration 0 (113/200 on gastric) and rejection correlates with
+severity, so gastric's max is measured with its worst tail deleted.
 `_resolve_d0` and `config.yaml`'s `d0_quantile` carry the full statement.
 
 **Why B differs, and why it matters.** The wrapper embeds all P models, so P is
@@ -293,6 +468,40 @@ compared at a matched robustness level. Nominal has no knob.
 **This is the legacy path.** `calibration.method` defaults to `"cv"`
 (`cv_calibrate.py`), which selects each knob on held-out folds instead;
 `calibrate_strength` runs only under `calibration.method: "alpha"`.
+
+**Under the ρ parameterization the calibration target is ρ\*, not each method's
+knob.** `experiments/run_rho_sweep.py` is what stage-1 knob CV used to be: it
+sweeps the shared ρ with every method's own dial held fixed (τ = 0.01, α = 0.2)
+and reports **ρ\*(method)** — the largest ρ whose held-out feasibility still meets
+the target. τ and α move to *ablations at one chosen ρ* (`--ablate`), which is all
+that is needed to show the fixed values were not cherry-picked. Note ρ itself is
+still never *selected* — ρ\* is read off the reported curve, and the curve, not
+the point, is the primary result (see the geometry bullet in `uncertainty.py`).
+
+Every swept cell carries `status`, `n_capped`, and the wall clock split into the
+**master** phase (train + build + solve to the final master; for CP the whole cut
+loop) and the **test-point** phase (one prescribe solve per held-out context) —
+`cv_score_knob(..., return_details=True)`. The split is the comparison CP's MIP-size
+claim rests on: CP pays up front in the cut loop then prescribes from a small
+master, while the wrapper embeds all P models and pays again on every test point.
+Cells with `n_capped > 0` hit `max_iterations`; they are **kept and flagged**, not
+dropped — the incumbent is still usable, and the flag travels with the row.
+
+**ρ\* is a reporting choice and is re-derivable without re-solving.**
+`{problem}_rho_curve{cell}.csv` carries every column the criteria could need, and
+`--rho-star-only` recomputes the table from it under a new `--feas-target` /
+`--min-solved` / `--exclude-capped`, writing to `--out-suffix` so several criteria
+coexist. The chosen criteria are written back as columns, so no ρ\* table is
+ambiguous about the rule that produced it.
+
+**Every sweep output is scoped by its cell** — `_coh`/`_incoh`, plus `_matchbank`
+under `--match-bank` (`_variant_suffix`). The coherent/incoherent and B=200/B=P
+runs are *different experiments* that the workflow asks you to run as a pair, and
+sharing one filename failed silently in both directions: the resume checkpoint is
+keyed `(method@rho, knob)` **only**, so a second cell resumed the first's rows and
+reported them as its own, and the curve is written rather than appended, so the
+second cell overwrote the first. `--rho-star-only` takes the same cell flags to
+pick which curve it reads.
 
 **CP is exempt, and does not read `uncertainty.alpha`.** Its coverage cap
 `cp_alpha` is **pinned at 0 at every call site** (`run_all.py`, `run_sweep.py`,

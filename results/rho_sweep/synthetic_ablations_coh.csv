@@ -1,0 +1,10 @@
+problem,method,feasibility,objective,solved_frac,status,n_capped,master_time_s,test_time_s,test_time_per_point_s,coherent,matched_bank,rho,knob,phase
+synthetic,cp,1.0,-1.2524126863713105,1.0,optimal,0,15.53490436077118,0.0,0.0,True,False,1.0,1.0,tau_ablation
+synthetic,cp,1.0,-1.208245473727388,1.0,optimal,0,111.74999141693115,0.0,0.0,True,False,1.0,0.1,tau_ablation
+synthetic,cp,1.0,-1.2070990696510555,1.0,optimal,0,115.90434157848358,0.0,0.0,True,False,1.0,0.01,tau_ablation
+synthetic,cp,1.0,-1.2070990696510555,1.0,optimal,0,118.31366908550262,0.0,0.0,True,False,1.0,0.001,tau_ablation
+synthetic,wrapper,1.0,-1.2410273179780331,1.0,optimal,0,93.44444704055786,0.0,0.0,True,False,1.0,0.0,alpha_ablation
+synthetic,wrapper,0.75,-1.2627150387907902,1.0,optimal,0,91.3871745467186,0.0,0.0,True,False,1.0,0.1,alpha_ablation
+synthetic,wrapper,0.25,-1.294189503924784,1.0,optimal,0,79.09367597103119,0.0,0.0,True,False,1.0,0.2,alpha_ablation
+synthetic,wrapper,0.25,-1.3069984256802298,1.0,optimal,0,104.96062088012695,0.0,0.0,True,False,1.0,0.3,alpha_ablation
+synthetic,wrapper,0.0,-1.3400312744267668,1.0,optimal,0,87.476442694664,0.0,0.0,True,False,1.0,0.5,alpha_ablation
