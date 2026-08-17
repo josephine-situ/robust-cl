@@ -461,28 +461,64 @@ def _rho_star(df, problem, target, sense, min_solved, out_suffix=""):
     holds the target further out along the axis is absorbing more of it. Cells
     below ``min_solved`` are dropped first: conditional feasibility at a low
     solved fraction measures the survivors, not the method.
+
+    **What BOUNDED rho* is reported separately from rho* itself** (``bound``
+    column). Three different things stop the search and they mean different things
+    to a reader: the grid ran out (``grid_max`` -- rho* is a lower bound, the
+    method was never pushed to its limit), feasibility fell below the target
+    (``feasibility`` -- a real limit of the method), or the next rho up was dropped
+    by the solved-fraction floor (``solved_floor`` -- the method still met the
+    feasibility target there but on too few survivors to count). Censoring is
+    tested against the FULL grid max, not the post-filter maximum: testing after
+    the filter labels a solved-floor bound as "censored at grid max", which is the
+    opposite claim (that the axis ran out rather than that the method ran out).
     """
     rows = []
-    for method, g in df.groupby("method"):
+    for method, g_all in df.groupby("method"):
+        g_all = g_all.sort_values("rho")
+        # Censoring is a property of the GRID, so the max comes from the unfiltered
+        # group -- before solved_frac drops anything.
+        grid_max = float(g_all["rho"].max())
         # Capped cells are KEPT. CP at max_iterations still returns a usable
         # incumbent, and dropping those cells silently discards data the reader may
         # want. n_capped travels with every row instead, so the caller can filter
         # after the fact -- see _rho_star_from_csv, which recomputes this table from
         # a saved curve under whatever criteria are chosen later.
-        g = g[g["solved_frac"] >= min_solved].sort_values("rho")
+        g = g_all[g_all["solved_frac"] >= min_solved]
         ok = g[g["feasibility"] >= target]
         if ok.empty:
             rows.append(dict(method=method, rho_star=np.nan, feasibility=np.nan,
                              objective=np.nan, solved_frac=np.nan, n_capped=0,
                              master_time_s=np.nan, test_time_per_point_s=np.nan,
-                             note=f"never reaches feas>={target:g}"))
+                             bound="none", note=f"never reaches feas>={target:g}"))
             continue
         best = ok.iloc[-1]
-        # Censored if the grid ran out before the method did: rho* is a lower bound.
-        censored = bool(np.isclose(best["rho"], g["rho"].max()))
+        rho_b = float(best["rho"])
         notes = []
-        if censored:
+        if np.isclose(rho_b, grid_max):
+            # The grid ran out before the method did: rho* is a lower bound.
+            bound = "grid_max"
             notes.append("censored at grid max")
+        else:
+            # Something above rho_b disqualified. Name WHICH, from the unfiltered
+            # rows -- a cell dropped by the solved floor is a different statement
+            # about the method than one whose feasibility fell short.
+            above = g_all[g_all["rho"] > rho_b]
+            by_floor = bool((above["solved_frac"] < min_solved).any())
+            by_feas = bool(((above["solved_frac"] >= min_solved) &
+                            (above["feasibility"] < target)).any())
+            if by_floor and not by_feas:
+                bound = "solved_floor"
+                notes.append(f"NOT grid-censored: solved_frac<{min_solved:g} "
+                             f"above rho={rho_b:g}")
+            elif by_feas and not by_floor:
+                bound = "feasibility"
+                notes.append(f"NOT grid-censored: feasibility<{target:g} "
+                             f"above rho={rho_b:g}")
+            else:
+                bound = "mixed"
+                notes.append(f"NOT grid-censored: solved floor and feasibility "
+                             f"both bind above rho={rho_b:g}")
         if int(best.get("n_capped", 0) or 0):
             notes.append(f"n_capped={int(best['n_capped'])} (incumbent, not converged)")
         rows.append(dict(method=method, rho_star=float(best["rho"]),
@@ -492,7 +528,7 @@ def _rho_star(df, problem, target, sense, min_solved, out_suffix=""):
                          n_capped=int(best.get("n_capped", 0) or 0),
                          master_time_s=float(best["master_time_s"]),
                          test_time_per_point_s=float(best["test_time_per_point_s"]),
-                         note="; ".join(notes)))
+                         bound=bound, note="; ".join(notes)))
     out = pd.DataFrame(rows).sort_values("rho_star", ascending=False)
     out.insert(0, "feas_target", target)
     out.insert(1, "min_solved", min_solved)

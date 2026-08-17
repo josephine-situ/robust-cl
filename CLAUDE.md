@@ -29,6 +29,7 @@ uv run python experiments/run_chemo_robust.py           # full gastric run, 3 me
 uv run python experiments/run_all.py                    # synthetic single run, all methods
 uv run python experiments/run_cv.py                     # cross-validate model types/hyperparams
 uv run python experiments/run_rho_sweep.py --problem synthetic   # shared-D rho axis + rho*(method)
+uv run python experiments/plot_rho_sweep.py             # rho-sweep figures (one cell) -> results/figures/
 uv run python experiments/summarize_table6.py           # post-process Table 6 CSV -> .csv/.tex
 sbatch experiments/submit_chemo_robust.sh               # full run on SLURM (12h, 128G, 16 cpu)
 ```
