@@ -253,7 +253,8 @@
       synthetic $4\times$ too hard --- CP would not converge. Kept as an ablation.
     \item \texttt{scale\_stat=oof\_sd}: $\varepsilon_0=1$ = \textbf{one unexplained sd}.
       Synthetic $0.128$ vs true noise $0.100$, without being told the DGP.
-    \item Folds are the problem's own (temporal on gastric $\Rightarrow$ no leakage).
+    \item Folds are the problem's own (temporal on gastric $\Rightarrow$ no leakage);
+      a CV fold / subsample re-derives cutoffs and scale from \emph{its own} rows.
     \item Caveat: conflates noise with misspecification. Gastric fits are poor, so
       $\mathcal D$ stays wide there. \textbf{No coverage claim.}
   \end{itemize}
@@ -370,13 +371,38 @@
 
 \begin{frame}{Wrapper --- chance-constrain a sample of $\mathcal D$}
   \begin{itemize}
-    \item $P=20$ bank draws (each from half of the full set); $P$ replicates of each learned model, \textbf{all embedded}.
+    \item $P=20$ draws from the \emph{shared bank} ($\mathcal D$ vertices, not
+      bootstrap resamples); $P$ replicates of each learned model, \textbf{all embedded}.
     \item Coherent: $z_p=1$ iff $x$ satisfies \emph{every} constraint under replicate
       $p$ (one indicator per draw). Incoherent: $z_{c,p}$ per constraint.
     \item Chance constraint: $\tfrac1P\sum_p z_p \ge 1-\alpha$.
     \item OS robustification \textbf{off} by default --- matches CP, and the legacy
       epigraph-over-$P$ handed the wrapper conservatism CP does not carry.
     \item Knob: $\alpha$. $P$ is capped by MIP size, not by statistics.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Wrapper --- where ours departs from Maragno et al.}
+  \small
+  \begin{itemize}
+    \item \textbf{Theirs}: $P$ models from \textbf{bootstrap resamples}
+      (prop.\ 0.5) of the data. \textbf{Ours}: $P$ draws from $\mathcal D$ ---
+      label perturbations, retrained. (Their chemo study never uses the wrapper;
+      applying it here is our extension.)
+    \item \textbf{Why (i)} smoother at small $n$: resampling re-rolls \emph{which
+      rows exist} ($\approx$39\% unique at prop.\ 0.5); $\mathcal D$ keeps the
+      cohort and perturbs labels only.
+    \item \textbf{Why (ii)} alignment with CP: same $\mathcal D$, and the $P$
+      models are a nested \emph{prefix} of CP's bank $\Rightarrow$ the exact
+      $\alpha=0\equiv\tau\to0$ equivalence.
+    \item Bootstrap survives as \texttt{scenario\_source: "bootstrap"}.
+    \item \textbf{Could} draw \emph{adversarially} (Robust Reg.'s directed shift),
+      but $P$ maximally-tight embedded constraints $\Rightarrow$ no feasible
+      prescription. Random draws are what keep it solvable.
+    \item \textbf{Coherent across toxicities} (not in the reference wrapper): the
+      5 toxicity outcomes share one direction --- OOF residual corr.\ $+0.28$;
+      OS draws independently ($+0.06$).
   \end{itemize}
 \end{frame}
 
