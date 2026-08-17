@@ -140,9 +140,18 @@ def make_cv_oracle(instance: ProblemInstance, gt_specs: Optional[dict] = None):
 def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
                    val_rows: Optional[np.ndarray]) -> ProblemInstance:
     """Base instance with each constraint's fit data subset to ``train_idx`` (the
-    fold varies which rows are fit; percentile scale stays full-train). For
-    contextual problems ``X_test`` is set to the fold-val rows; for single-decision
-    (synthetic, ``X_train`` is None) it is left unchanged. Mirrors ``train_subsample_frac``."""
+    fold varies which rows are fit; the percentile LABEL transform stays full-train
+    by design -- it is what makes ``rhs`` mean one fixed raw toxicity for every fold
+    and for the oracle). For contextual problems ``X_test`` is set to the fold-val
+    rows; for single-decision (synthetic, ``X_train`` is None) it is left unchanged.
+    Mirrors ``train_subsample_frac``.
+
+    ``train_pub_years`` MUST be subset alongside the rows. It is the fold scheme
+    ``uncertainty.instance_folds`` reads to estimate D's radius ``scale(y_c)``, so a
+    full-length copy would (a) index past the fold's own rows -- an ``IndexError``
+    inside ``label_scale`` on every gastric fold -- and (b) were it in range, put
+    held-out rows into the scale estimate. D's radius is now estimated from the
+    fold's rows alone."""
     new_constraints = []
     for c in base.constraints:
         new_mds = [
@@ -156,12 +165,14 @@ def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
         ]
         new_constraints.append(dataclasses.replace(c, models_data=new_mds))
     tr_pts = base.trust_region_points
+    years = base.train_pub_years
     return dataclasses.replace(
         base,
         constraints=new_constraints,
         X_test=val_rows if val_rows is not None else base.X_test,
         X_train=(base.X_train[train_idx] if base.X_train is not None else None),
         trust_region_points=(tr_pts[train_idx] if tr_pts is not None else None),
+        train_pub_years=(years[train_idx] if years is not None else None),
     )
 
 

@@ -203,6 +203,22 @@ def default_folds(n: int, n_splits: int = 4, seed: int = 42):
     return list(kf.split(np.arange(int(n))))
 
 
+def _cutoffs_from_years(years) -> tuple:
+    """Forward-chaining cutoffs that are non-empty for *these* rows.
+
+    The default cutoffs (2004-2007) describe the full gastric training set. A
+    subset of it -- an outer CV fold, or a ``train_subsample_frac`` draw -- can end
+    before 2004, in which case every default cutoff yields an empty validation year
+    and the temporal scheme collapses to a KFold fallback that ignores time. Deriving
+    the cutoffs from the rows in hand keeps forward-chaining wherever the rows can
+    support it, so the scale estimate never sees a later year than it trains on.
+    """
+    years = np.asarray(years, dtype=float)
+    usable = [c for c in np.unique(years)[:-1]
+              if np.any(years <= c) and np.any((years > c) & (years <= c + 1))]
+    return tuple(usable[-4:])
+
+
 def instance_folds(instance: ProblemInstance, seed: int = 42):
     """The problem's own fold scheme, for estimating the label scale.
 
@@ -210,9 +226,18 @@ def instance_folds(instance: ProblemInstance, seed: int = 42):
     folds would leak future information into the scale estimate) and KFold on
     synthetic. Falls back to :func:`default_folds` if the instance cannot supply
     folds -- the scale is a nuisance parameter, not worth failing a solve over.
+
+    The years are read off ``instance``, so a fold/subsample instance yields folds
+    indexed into *its own* rows: D's radius is estimated from the rows that instance
+    fits on, never from rows held out of it.
     """
     try:
         from src.methods.cv_calibrate import make_folds
+        years = getattr(instance, "train_pub_years", None)
+        if years is not None:
+            cutoffs = _cutoffs_from_years(years)
+            if cutoffs:
+                return make_folds(instance, "temporal", cutoffs, seed=seed)
         return make_folds(instance, "auto", seed=seed)
     except (ImportError, ValueError, AttributeError, IndexError):
         n = len(instance.constraints[0].models_data[0].y_train)

@@ -100,7 +100,25 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
   explain almost nothing (unexplained ratio 0.78–1.02, one outcome above 1.0), so
   D stays nearly as wide as `sd(y)` there. That is the honest answer when the fit
   is that poor. Folds follow the problem's own scheme (temporal on gastric, so the
-  estimate cannot leak future information). **No coverage claim** is made.
+  estimate cannot leak future information) **and follow the rows in hand**: a CV
+  fold or a `train_subsample_frac` draw estimates `scale(y_c)` from *its own* rows,
+  with forward-chaining cutoffs re-derived from them (`_cutoffs_from_years`), never
+  from rows held out of it. **Two bugs made that false until 2026-08-17**, and only
+  the second was reachable in production: `_fold_instance` left `train_pub_years` at
+  full length (folds would index past the fold's rows — `IndexError` on all four
+  gastric folds), and `filter_constraints` — which `cv_score_knob` calls right
+  after, and which every gastric run calls per `constraint_mode` — dropped
+  `train_pub_years` entirely, so `instance_folds` saw `None` and fell back to
+  **random KFold**. The second masked the first. Nothing held out leaked in (the
+  rows were always the fold's own), but the temporal scheme was not in force in any
+  gastric run. The per-outcome scales quoted in this file (dlt 0.2547, blood 0.2495,
+  constitutional 0.2912, infection 0.2580, gi 0.2680, OS 2.05) are the **temporal**
+  ones and are what HEAD now produces; every gastric artifact in `results/`
+  predating the fix was built on the KFold scales (0.2568 / 0.2546 / 0.2745 /
+  0.2777 / 0.2609, OS 1.9962) — a −7.1% to +6.1% per-outcome difference in D's
+  radius. Re-run gastric (Table 6, `--calibrate-cv`, and both rho-sweep cells)
+  before citing those numbers. Synthetic is unaffected: no `train_pub_years`, so it
+  was always KFold by design. **No coverage claim** is made.
 - **`uncertainty.geometry`** (default `"box_l1"`) selects D's *shape*, and the two
   shapes are **parameterized separately**. `"box_l1"` keeps `eps_0`/`budget_frac`
   untouched, so every result in `results/` reproduces. `"ellipsoid"` is the ball
@@ -608,5 +626,17 @@ Both:
   `noise_std` is a *validation* of the estimator, not an input to it.
 - `trust_region.py` / `add_trust_region` constrains decisions to the convex hull
   of observed treatment vectors (gastric).
+- **`variable_lb`/`variable_ub` split by variable role.** Treatment (decision)
+  columns take their box from `X_fit` — the fit rows, subsample included — because
+  the optimizer *chooses* them; they used to come from `X_valid` (train+test), which
+  let held-out arms widen the action space (4 of 84 columns: S-1 and Trimetrexate
+  dose ceilings). The feasible set is unchanged, since the trust region already
+  confines decisions to the hull of those same rows; the box is now tight, which
+  only prunes more unreachable leaves in `embed._embed_leaves`. Context columns stay
+  on train+test **deliberately**: contexts are never chosen (evaluation overwrites
+  them with `lb=ub=` the given test row), the box only has to *contain* them, and
+  narrowing it to train would make every test solve infeasible — the split is
+  temporal, so every test row's `Pub_Year` exceeds the training max by construction
+  and leaf pruning would delete every leaf covering it.
 - Parameter robustness (`methods.robust_param.rho`) shrinks decision-tree leaf
   regions by a margin from the split thresholds; applied across all methods.

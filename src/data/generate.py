@@ -269,7 +269,18 @@ def compute_gt_r2_table(instance: ProblemInstance):
 
 
 def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemInstance:
-    """Return a copy of instance keeping only constraints whose names are in names."""
+    """Return a copy of instance keeping only constraints whose names are in names.
+
+    Every field not being filtered must be forwarded. ``train_pub_years`` was the
+    field this hand-written constructor missed: ``cv_score_knob`` calls this right
+    after ``_fold_instance``, so on contextual gastric the fold instance reached the
+    solvers with ``train_pub_years=None``. ``uncertainty.instance_folds`` then read
+    None and fell back to random KFold -- silently, and despite the fold's rows
+    carrying their years. D's radius was still estimated from the fold's own rows
+    (so nothing held out leaked in), but the temporal forward-chaining this repo
+    claims on gastric was not in force inside any CV or rho-sweep fold. Measured:
+    2-5% difference in ``scale(y_c)`` per fold between the two schemes.
+    """
     name_set = set(names)
     indices = [i for i, c in enumerate(instance.constraints) if c.name in name_set]
     configs = instance.constraint_model_configs
@@ -295,6 +306,7 @@ def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemIn
         gt_eval_data=instance.gt_eval_data,
         binary_var_indices=list(instance.binary_var_indices or []),
         feature_names=instance.feature_names,
+        train_pub_years=instance.train_pub_years,
     )
 
 def _synthetic_f_true(x):
@@ -461,21 +473,6 @@ def gastric_cancer(seed: int = 42,
     inf_valid = full_targets['infection']
     os_valid = full_targets['os']
 
-    variable_lb = np.zeros(n_feat)
-    variable_ub = np.zeros(n_feat)
-
-    for j, col in enumerate(t_cols):
-        offset = n_ctx + j
-        variable_lb[offset] = X_valid[:, offset].min()
-        variable_ub[offset] = X_valid[:, offset].max()
-        if col.endswith('_Ind') and variable_ub[offset] == 0:
-            variable_ub[offset] = 1.0
-
-    X_full = np.vstack([X_train, X_test]) if len(X_test) > 0 else X_train
-    for j in range(n_ctx):
-        variable_lb[j] = X_full[:, j].min()
-        variable_ub[j] = X_full[:, j].max()
-
     decision_var_indices = list(range(n_ctx, n_ctx + n_drug_features))
     context_var_indices = list(range(n_ctx))
 
@@ -505,6 +502,39 @@ def gastric_cancer(seed: int = 42,
     def _sub(arr):
         """Index a full-length training array down to the fit subsample."""
         return arr if sub_idx is None else arr[sub_idx]
+
+    # ------------------------------------------------------------------
+    # 9.6  Variable bounds (built AFTER the subsample, so they see only fit rows).
+    # ------------------------------------------------------------------
+    # DECISION (treatment) columns: the optimizer CHOOSES these, so their box must
+    # come from the fit rows alone -- X_valid includes the test arms, which let the
+    # held-out cohort widen the action space. X_fit also matches the trust region
+    # (built from X_fit below), which already confines decisions to the hull of the
+    # same rows, so this tightens the leaf-pruning in embed._embed_leaves to agree
+    # with the hull rather than changing the feasible set.
+    variable_lb = np.zeros(n_feat)
+    variable_ub = np.zeros(n_feat)
+
+    for j, col in enumerate(t_cols):
+        offset = n_ctx + j
+        variable_lb[offset] = X_fit[:, offset].min()
+        variable_ub[offset] = X_fit[:, offset].max()
+        if col.endswith('_Ind') and variable_ub[offset] == 0:
+            variable_ub[offset] = 1.0
+
+    # CONTEXT columns: train+test ON PURPOSE, and not the same kind of dependence.
+    # Contexts are never chosen -- evaluation overwrites them with lb=ub=the given
+    # test row (chemo_metrics.solve_for_context) -- so the box only has to CONTAIN
+    # the contexts we will be asked to prescribe for. Narrowing it to X_fit would
+    # break every test solve: embed._embed_leaves drops leaves whose region lies
+    # outside [variable_lb, variable_ub], and the split is temporal, so every test
+    # row has Pub_Year strictly above the training max by construction -- the
+    # surviving leaves would cover no test context and `sum(z) == 1` would be
+    # infeasible.
+    X_full = np.vstack([X_train, X_test]) if len(X_test) > 0 else X_train
+    for j in range(n_ctx):
+        variable_lb[j] = X_full[:, j].min()
+        variable_ub[j] = X_full[:, j].max()
 
     # ------------------------------------------------------------------
     # 10.  Constraint models (percentile targets, fixed UB=0.6; v11 / Sec. 5.5)
