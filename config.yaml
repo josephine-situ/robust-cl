@@ -29,17 +29,23 @@ uncertainty:
   # "noise" wrapper draws vertices of D via ScenarioBank and never bootstraps.
   bootstrap_frac: 0.5
   # --- the SHARED uncertainty set D (src/methods/uncertainty.py) ---------------
-  # D_c = {|dy_i| <= eps_c, ||dy||_1 <= budget_frac * n * eps_c}, eps_c = eps_0 *
-  # scale(y_c). Shape is shared by cp / wrapper / robust_reg; each keeps its own
-  # ONE conservatism dial (tau / alpha / label_eps). eps_0 is deliberately NOT
-  # pinned to robust_reg's calibrated eps*: pinning would force stage-1 CV to run
-  # sequentially and would conflate D's definition with one method's tuning.
-  # eps_0 = 1.0 means ONE UNEXPLAINED STANDARD DEVIATION -- a unit whose meaning,
-  # not merely whose units, transfers across problems. Sanity check: on synthetic
-  # (true noise 0.100) the out-of-fold residual sd is 0.128, so eps_0=1 nearly
-  # recovers the data-generating process without being told it.
-  eps_0: 1.0
-  budget_frac: 0.5    # rows the adversary may move (m = frac * n). A constant, not a knob
+  # D_c = {dy : ||dy||_2 <= R_c}, R_c = rho * scale(y_c) * sqrt(n) -- the ball, see
+  # `geometry` below. Shape is shared by cp / wrapper / robust_reg; each keeps its
+  # own ONE conservatism parameter (tau / alpha / label_eps). D's size is
+  # deliberately NOT pinned to robust_reg's calibrated optimum: pinning would force
+  # stage-1 CV to run sequentially and would conflate D's definition with one
+  # method's tuning.
+  #
+  # eps_0 and budget_frac parameterize the "box_l1" ABLATION ONLY and are IGNORED
+  # under the default geometry. They are kept because every artifact currently in
+  # results/ was produced under box_l1. eps_0 = 1.0 means ONE UNEXPLAINED STANDARD
+  # DEVIATION -- a unit whose meaning, not merely whose units, transfers across
+  # problems. Sanity check: on synthetic (true noise 0.100) the out-of-fold
+  # residual sd is 0.128, so eps_0=1 nearly recovers the data-generating process
+  # without being told it. (rho = 1 carries the same meaning per row; it is not
+  # the same radius -- see `geometry`.)
+  eps_0: 1.0          # box_l1 ablation only
+  budget_frac: 0.5    # box_l1 ablation only: rows the adversary may move (m = frac * n)
   coherent: true      # true = shared draw across outcomes (see coherent_exclude); false = independent
   # Constraints that keep their OWN independent direction even under coherent:true.
   # Coherence is a GROUPING, not a global flag, because the data does not support
@@ -48,50 +54,73 @@ uncertainty:
   #   non-DLT toxicity pairs   +0.28 on percentile labels (+0.22 raw)
   #   OS vs every toxicity     +0.06 (+0.02 raw); 3 of 5 pairs negative on raw
   # Coherent asserts +1, incoherent asserts 0; neither fits both blocks. DLT is
-  # excluded from that average because DLT_PROP = 1 - prod(1 - tox) makes it a
-  # deterministic function of the other four, so its +0.44..+0.80 row is
+  # excluded from that AVERAGE because DLT_PROP = 1 - prod(1 - tox) makes it a
+  # deterministic function of the other four (verified exact to 2e-16 over exactly
+  # BLOOD_4 / CONSTITUTIONAL_34 / INFECTION_34 / GI_34), so its +0.44..+0.80 row is
   # construction rather than evidence. The record-level mismeasurement story that
   # licenses coherence -- a study under-reporting adverse events under-reports
   # across all toxicity endpoints -- never covered survival.
+  # NOTE: excluded from the average, NOT from the GROUP. This list is the only
+  # exclusion, so dlt_constraint takes the SHARED direction: delta_dlt = R_dlt * u
+  # with the same u as the other four, i.e. exactly collinear pre-clip (measured
+  # corr +1.0000; clipping to [0,1] is the only decorrelator, leaving +0.94..+0.96
+  # at rho=1 with ~20% of rows clipped, +0.97..+0.99 at rho=0.25). Two consequences:
+  # the coherent group spends five outcomes' radius on four degrees of freedom, and
+  # the draw is not a CONSISTENT relabeling -- delta perturbs each outcome's
+  # percentile labels independently, so no delta in D leaves perturbed-DLT equal to
+  # 1 - prod(1 - perturbed tox). Keeping DLT in the group is still the right sign
+  # (its residuals do move with the others); it is the magnitude that is asserted.
+  # A consistent alternative -- perturb the four components only and re-derive DLT
+  # through the identity, then re-percentile -- is a change to ScenarioBank._draw
+  # and the label construction, not a config flip.
   # Empty list reproduces pre-grouping banks bit-for-bit (synthetic has one
   # outcome, so coherence is vacuous there either way).
   coherent_exclude: ["os_constraint"]
-  # D's SHAPE. "box_l1" is the set written above and what every result in
-  # results/ was produced under. "ellipsoid" replaces it with the ball
-  # ||dy||_2 <= R_c, R_c = rho * scale(y_c) * sqrt(n), and reads `rho` ALONE --
-  # eps_0 and budget_frac are ignored under it. Applies to all three methods at
-  # once (bank draws, CP/probe separation, robust_reg's training adversary),
-  # because a geometry reaching only some would break the shared-D comparison.
+  # D's SHAPE. "ellipsoid" (the default) is the ball ||dy||_2 <= R_c, with
+  # R_c = rho * scale(y_c) * sqrt(n), and reads `rho` ALONE -- eps_0 and
+  # budget_frac are ignored under it. "box_l1" is the older set
+  # {|dy_i| <= eps_c, ||dy||_1 <= budget_frac * n * eps_c}, eps_c = eps_0 *
+  # scale(y_c); it is kept as an ablation and is what every artifact currently in
+  # results/ was produced under. Geometry applies to all three methods at once
+  # (bank draws, CP/probe separation, robust_reg's training adversary -- whose
+  # linear counterpart becomes an SOCP), because a geometry reaching only some
+  # would break the shared-D comparison.
   #
-  # WHY IT EXISTS: to make D a one-parameter family. budget_frac cannot constrain
-  # an L2 ball -- no L1 face, no support restriction -- so it could only ever
-  # scale the radius, leaving (eps_0, budget_frac) NON-IDENTIFIABLE with just
+  # WHY IT IS THE DEFAULT: it makes D a ONE-PARAMETER family. budget_frac cannot
+  # constrain an L2 ball -- no L1 face, no support restriction -- so it could only
+  # ever scale the radius, leaving (eps_0, budget_frac) NON-IDENTIFIABLE with just
   # their product observable. rho replaces both and nothing is lost.
   #
-  # NOT A FREE SWAP, in two compounding ways. (1) The ellipsoid is a STRICTLY
-  # STRONGER adversary at equal budget (Cauchy-Schwarz: sum_{top m}|g_i| <=
-  # sqrt(m)||g||_2) -- measured 2.0x on synthetic, and gastric's broad influence
-  # support (nnz(g) = 313-320 of n = 320) makes the gap approach sqrt(n/m).
-  # (2) rho = 1 is sqrt(2) wider than eps_0 = 1 at budget_frac 0.5, since sqrt(n)
-  # replaces sqrt(n/2). So rho = 1 is roughly 2.8x the old effective adversary and
-  # is NOT a default operating point -- read rho* off the sweep. Random sampling
-  # does not improve to compensate: the bank's best-of-B is unchanged while the
-  # true worst case rises, WIDENING the random-vs-directed gap.
-  geometry: "box_l1"   # "box_l1" | "ellipsoid"
+  # THE SWITCH FROM box_l1 IS NOT FREE, in two compounding ways. (1) The ellipsoid
+  # is a STRICTLY STRONGER adversary at equal budget (Cauchy-Schwarz:
+  # sum_{top m}|g_i| <= sqrt(m)||g||_2) -- measured 2.0x on synthetic, and
+  # gastric's broad influence support (nnz(g) = 313-320 of n = 320) makes the gap
+  # approach sqrt(n/m). (2) rho = 1 is sqrt(2) wider than eps_0 = 1 at
+  # budget_frac 0.5, since sqrt(n) replaces sqrt(n/2). So rho = 1 is roughly 2.8x
+  # the box's old effective adversary and is NOT an operating point -- read rho*
+  # off the sweep. Random sampling does not improve to compensate: the bank's
+  # best-of-B is unchanged while the true worst case rises, WIDENING the
+  # random-vs-directed gap.
+  # => Nothing in results/ carries over across this switch. Re-run before
+  #    comparing, and do not read a box_l1 number against an ellipsoid one.
+  geometry: "ellipsoid"   # "ellipsoid" | "box_l1"
   # Radius of the ellipsoidal D, in units of scale(y_c) * sqrt(n). rho = 1 is "the
   # typical L2 norm of iid noise at one unexplained sd per row" -- a meaning that
   # transfers across problems (n=200 synthetic, n=320 gastric), not just its units.
   # A SIZE CONVENTION, NOT A COVERAGE CLAIM: uncertainty.chi2_radius documents why
   # a chi^2 quantile cannot supply one while scale is an out-of-fold residual sd.
   #
-  # SWEPT, NOT TUNED. rho defines the problem all three methods solve, so
-  # selecting it per method would dissolve the shared-D premise, and selecting it
-  # globally has no honest criterion (against the GT ensemble it tunes to the
-  # judge; against synthetic's known noise_std it calibrates D to the DGP, which
-  # CP would then win by construction). experiments/run_rho_sweep.py reports the
-  # whole axis, plus rho*(method) at a fixed held-out feasibility target -- a
-  # result read off the sweep, not a fitted parameter. This value is only the
-  # single point a one-off solve uses.
+  # SWEPT, NOT FITTED -- and rho*(method) is what the EVALUATION run uses.
+  # experiments/run_rho_sweep.py reports the whole axis (D is literally shared at
+  # every point of it: that curve is where the shared-D comparison is read) plus
+  # rho*(method) at a fixed held-out feasibility target. Each method is then
+  # evaluated at its OWN rho*, so evaluation matches held-out feasibility, NOT D
+  # -- each method faces a ball of its own radius there, and a cross-method gap is
+  # read at matched robustness rather than matched uncertainty. The criterion is
+  # what keeps that honest: held-out feasibility on training folds. Never fit rho
+  # against the GT ensemble (tunes to the judge) or against synthetic's known
+  # noise_std (calibrates D to the DGP, which CP would then win by construction).
+  # This value is only the single point a one-off solve uses.
   rho: 1.0
   # "oof_sd" = sd of out-of-fold residuals: the UNEXPLAINED label spread. Preferred
   # over marginal "sd", which is mostly signal wherever the model fits -- on

@@ -119,9 +119,10 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
   radius. Re-run gastric (Table 6, `--calibrate-cv`, and both rho-sweep cells)
   before citing those numbers. Synthetic is unaffected: no `train_pub_years`, so it
   was always KFold by design. **No coverage claim** is made.
-- **`uncertainty.geometry`** (default `"box_l1"`) selects D's *shape*, and the two
-  shapes are **parameterized separately**. `"box_l1"` keeps `eps_0`/`budget_frac`
-  untouched, so every result in `results/` reproduces. `"ellipsoid"` is the ball
+- **`uncertainty.geometry`** (default `"ellipsoid"` **since 2026-08-18**; was
+  `"box_l1"`) selects D's *shape*, and the two shapes are **parameterized
+  separately**. `"box_l1"` is kept as an ablation and keeps `eps_0`/`budget_frac`
+  untouched, so every artifact in `results/` reproduces under it. `"ellipsoid"` is the ball
   ‖δ‖₂ ≤ R_c with **R_c = ρ·scale(y_c)·√n**, and reads `rho` *alone* — `eps_0` and
   `budget_frac` are ignored under it. That is not a convenience: `budget_frac`
   cannot constrain an L2 ball (no L1 face, no support restriction), so it could
@@ -142,17 +143,25 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
   directed/FW 1.675 → 3.389 eps (2.0×), because there nnz(g)=57 < m=100 and the
   box wastes budget on rows that cannot move f(x\*); gastric binds (nnz 313–320 >
   m=160) so expect less. Compounding that, **ρ=1 is √2 wider than eps_0=1** at
-  `budget_frac` 0.5 — so ρ=1 is ~2.8× the old effective adversary and is *not* a
-  default operating point. **Nothing in `results/` was produced under
-  `"ellipsoid"`.** Everything below describes `box_l1`.
+  `budget_frac` 0.5 — so ρ=1 is ~2.8× the box's effective adversary and is *not*
+  an operating point; read ρ\* off the sweep. **Nothing in `results/` was produced
+  under `"ellipsoid"`, so no artifact there reflects the current default** — re-run
+  before comparing, and never read a `box_l1` number against an ellipsoid one.
+  Measured quantities quoted below (distances, τ ranges, iteration counts) were
+  taken under `box_l1` unless stated otherwise.
 
-  **ρ is swept, never selected** (`experiments/run_rho_sweep.py`). It defines the
-  problem all three methods solve, so a per-method ρ\* would dissolve the shared-D
-  premise, and a global one has no honest criterion — against the GT ensemble it
-  tunes to the judge, against synthetic's known `noise_std` it calibrates D to the
-  DGP. The sweep reports the whole axis (primary) plus ρ\*(method) at a fixed
-  held-out feasibility target (derived). Note `robust_reg`'s `label_eps` **is** the
-  D radius, so it tracks ρ through the sweep rather than staying fixed; τ and α are
+  **ρ is swept, not fitted — and ρ\*(method) is what the evaluation run uses**
+  (`experiments/run_rho_sweep.py`). D is literally shared at **every point of the
+  sweep**, and that curve is where the shared-D comparison is read: at one ρ the
+  methods differ only in what they do with the same set. The derived ρ\*(method) —
+  the largest ρ whose held-out feasibility still meets the target — is then fixed
+  per method for evaluation, so **evaluation matches held-out feasibility, not D**:
+  each method faces a ball of its own radius there, and a cross-method objective
+  gap is read at matched robustness rather than matched uncertainty. What keeps
+  that honest is the criterion, held-out feasibility on training folds. Never fit ρ
+  against the GT ensemble (tunes to the judge) or against synthetic's known
+  `noise_std` (calibrates D to the DGP, so CP wins by construction). Note
+  `robust_reg`'s `label_eps` **is** the D radius, so it tracks ρ through the sweep rather than staying fixed; τ and α are
   separate dials and do stay fixed. And CP samples D with B=200 against the
   wrapper's P=20, so a ρ\* gap between them is confounded with sampling density —
   `--match-bank` sets B=P to remove it.
@@ -214,8 +223,8 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
   reported and ignored rather than raising, because one `config.yaml` drives both
   problems and `os_constraint` legitimately does not exist on synthetic.
 
-  **Objection 1 below is now RESOLVED by measurement (2026-08-15); objections 2
-  and 3 remain open.**
+  **Objection 1 below is now RESOLVED by measurement (2026-08-15); objections 2,
+  3 and 4 remain open.**
 
   1. **RESOLVED — OS does not belong on the shared direction.** The cross-outcome
      residual correlation, previously never estimated, now is: out-of-fold
@@ -224,8 +233,11 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
      percentile labels δ actually perturbs (+0.22 raw), against **+0.06** for OS
      versus every toxicity (+0.02 raw, 3 of 5 pairs negative). DLT is excluded
      from that average because `DLT_PROP = 1 − ∏(1 − tox)` makes it a
-     deterministic function of the other four, so its +0.44–0.80 row is
-     construction, not evidence. Coherent asserts +1 and incoherent asserts 0;
+     deterministic function of the other four — verified exact to 2e-16, over
+     exactly the four modeled outcomes (`gastric_v11.py:215` builds it from
+     `BLOOD_4`, `CONSTITUTIONAL_34`, `INFECTION_34`, `GI_34`) — so its +0.44–0.80
+     row is construction, not evidence. **Excluded from the average, not from the
+     group**; see (4). Coherent asserts +1 and incoherent asserts 0;
      neither fits both blocks, hence the grouping. This matches the story that
      justified coherence in the first place — *record-level* mismeasurement, a
      study that under-reports adverse events under-reporting across all five
@@ -257,6 +269,26 @@ $$D_c = \{\delta: |\delta_i| \le \varepsilon_c,\ \|\delta\|_1 \le \texttt{budget
      derives it precisely from the whole-scenario cut matching the wrapper's
      single joint indicator. Whether it survives on the incoherent arm has not
      been tested, and the reasoning above suggests it does not.
+  4. **DLT is excluded from the correlation average but stays *in* the coherent
+     group**, and the identity that disqualified its correlation also makes its
+     draw inconsistent. `coherent_exclude` is the only exclusion and it names OS
+     alone, so `dlt_constraint` takes the shared direction: `δ_dlt = R_dlt · u`
+     with the same `u` as the other four, hence exactly collinear before clipping
+     (measured +1.0000; clipping to [0,1] is the only decorrelator — +0.94–+0.96
+     at ρ=1 with ~20% of rows clipped, +0.97–+0.99 at ρ=0.25). Two consequences.
+     The group spends **five outcomes' radius on four degrees of freedom**. And
+     the draw is not a *consistent* relabeling: δ perturbs each outcome's
+     percentile labels independently, so **no δ ∈ D leaves perturbed-DLT equal to
+     `1 − ∏(1 − perturbed tox)`** — a study that under-reports the four
+     components has a fully *determined* DLT shift, not a free one, so coherent
+     hands DLT a full-radius shift the mismeasurement story does not license.
+     Affects both arms (incoherent draws DLT independently, which is no more
+     consistent). Keeping DLT in the group is still the right **sign** — its
+     residuals do move with the others — and it is the magnitude that is
+     asserted, so this is a known overstatement, not a bug. The consistent
+     alternative (perturb the four components only, re-derive DLT through the
+     identity, re-percentile) is a change to `ScenarioBank._draw` and the label
+     construction, **not a config flip**.
 
   Changing (2) is not free: the shared-`b` cut is what makes CP at τ→0 identical
   to the wrapper at α=0 and what makes permanent scenario exclusion sound
@@ -492,9 +524,12 @@ knob.** `experiments/run_rho_sweep.py` is what stage-1 knob CV used to be: it
 sweeps the shared ρ with every method's own dial held fixed (τ = 0.01, α = 0.2)
 and reports **ρ\*(method)** — the largest ρ whose held-out feasibility still meets
 the target. τ and α move to *ablations at one chosen ρ* (`--ablate`), which is all
-that is needed to show the fixed values were not cherry-picked. Note ρ itself is
-still never *selected* — ρ\* is read off the reported curve, and the curve, not
-the point, is the primary result (see the geometry bullet in `uncertainty.py`).
+that is needed to show the fixed values were not cherry-picked. ρ itself is never
+*fitted* — ρ\* is read off the reported curve at a fixed feasibility target, and
+the curve stays the primary result. But it **is** the point the evaluation run
+uses: each method is evaluated at its own ρ\*, so D is shared across methods on
+the sweep and **not** at evaluation, where the match is on held-out feasibility
+instead (see the geometry bullet in `uncertainty.py`).
 
 Every swept cell carries `status`, `n_capped`, and the wall clock split into the
 **master** phase (train + build + solve to the final master; for CP the whole cut

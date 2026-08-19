@@ -3,9 +3,10 @@
 Every uncertainty-aware method in this repo faces the same set, in one of two
 parameterizations selected by ``uncertainty.geometry``:
 
-    box_l1     D_c = { d : |d_i| <= eps_c,  ||d||_1 <= budget_frac * n * eps_c },
-                     eps_c = eps_0 * scale(y_c)
     ellipsoid  D_c = { d : ||d||_2 <= R_c },  R_c = rho * scale(y_c) * sqrt(n)
+               -- the DEFAULT since 2026-08-18
+    box_l1     D_c = { d : |d_i| <= eps_c,  ||d||_1 <= budget_frac * n * eps_c },
+                     eps_c = eps_0 * scale(y_c)  -- kept as an ablation
 
 and differs only in what it *does* with it: ``cp`` separates it lazily one cut at
 a time, ``wrapper`` chance-constrains a fixed sample of it, ``robust_regression``
@@ -17,17 +18,21 @@ move together -- is shared, so a difference between methods is a difference in
 ``ellipsoid`` exists to make D a **one-parameter family**. ``budget_frac`` cannot
 constrain an L2 ball -- no L1 face, no support restriction -- so it could only
 ever scale the radius, leaving ``(eps_0, budget_frac)`` non-identifiable with
-only their product observable. ``rho`` replaces both. ``box_l1`` is untouched and
-remains the geometry every result in ``results/`` was produced under.
+only their product observable. ``rho`` replaces both, which is why it is now the
+default. ``box_l1`` is untouched and remains the geometry every artifact
+currently in ``results/`` was produced under -- those numbers do not carry across
+the switch (the ball is ~2.8x the box's effective adversary at rho = eps_0 = 1).
 
-**rho is swept, not tuned.** It defines the problem all three methods solve, so
-selecting it per method would dissolve the shared-D premise above, and selecting
-it globally has no honest criterion: against the GT ensemble it tunes to the
-judge, and against synthetic's known ``noise_std`` it calibrates D to the
-data-generating process (which CP would then win by construction). Report the
-whole rho axis; ``experiments/run_rho_sweep.py`` produces it, along with the
-derived rho*(method) at a fixed held-out feasibility target -- a *result* read
-off the sweep, not a fitted parameter.
+**rho is swept, not fitted -- and rho*(method) is what the evaluation run
+uses.** It defines the problem all three methods solve, and D is literally shared
+at every point of the swept axis: that curve, produced by
+``experiments/run_rho_sweep.py``, is where the shared-D comparison is read. The
+derived rho*(method) -- the largest rho whose held-out feasibility still meets the
+target -- is then fixed per method for evaluation, so **evaluation matches
+held-out feasibility, not D**: each method faces a ball of its own radius there.
+The criterion is what keeps that honest. Never fit rho against the GT ensemble (it
+tunes to the judge) or against synthetic's known ``noise_std`` (it calibrates D to
+the data-generating process, which CP would then win by construction).
 
 Two design points worth keeping straight:
 
@@ -104,8 +109,8 @@ since ``g'u`` has the same sd under both geometries while the attainable maximum
 rises. So "shared D" guarantees a shared *set*, and equal *budget*, but not equal
 adversary strength -- by design.
 
-**Geometry (``uncertainty.geometry``, default ``"box_l1"``).** ``"ellipsoid"``
-replaces the box-cap-L1 set with the ball ``||d||_2 <= R_c = rho*scale*sqrt(n)``.
+**Geometry (``uncertainty.geometry``, default ``"ellipsoid"``).** It replaces the
+older box-cap-L1 set with the ball ``||d||_2 <= R_c = rho*scale*sqrt(n)``.
 Draws become uniform on the unit sphere (:func:`_sphere_direction`); the
 adversary's argmax becomes ``R g / ||g||_2`` (:func:`l2_worst_case_shift`), which
 is closed form rather than a greedy top-m search. The size correspondence to the
@@ -713,11 +718,29 @@ class ScenarioBank:
         toxicity is +0.06 (+0.02 raw) -- indistinguishable from zero, and three of
         five pairs negative on raw. DLT's 0.44-0.80 row is excluded from that
         average because ``DLT_PROP = 1 - prod(1 - tox)`` makes it a deterministic
-        function of the others, so its correlation is construction, not evidence.
-        Coherent asserts +1 and incoherent asserts 0; neither fits both blocks, and
-        the record-level mismeasurement story that licenses coherence ("a study
-        that under-reports adverse events under-reports across all toxicity
-        endpoints") never covered survival anyway.
+        function of the others (exact to 2e-16 over exactly the four modeled
+        toxicities), so its correlation is construction, not evidence. Coherent
+        asserts +1 and incoherent asserts 0; neither fits both blocks, and the
+        record-level mismeasurement story that licenses coherence ("a study that
+        under-reports adverse events under-reports across all toxicity endpoints")
+        never covered survival anyway.
+
+        **DLT is excluded from that average, not from the group.**
+        ``coherent_exclude`` names OS alone, so the branch below hands
+        ``dlt_constraint`` the shared ``u``: ``delta_dlt = R_dlt * u``, exactly
+        collinear with the other four before clipping (measured +1.0000; the
+        ``_clip_to_bounds`` call is the only decorrelator, leaving +0.94..+0.96 at
+        rho=1 with ~20% of rows clipped, +0.97..+0.99 at rho=0.25). Two
+        consequences: the group spends five outcomes' radius on four degrees of
+        freedom, and the draw is not a *consistent* relabeling -- delta perturbs
+        each outcome's percentile labels independently, so no delta in D leaves
+        perturbed-DLT equal to ``1 - prod(1 - perturbed tox)``. The under-reporting
+        story determines DLT's shift from the four components rather than leaving
+        it free, so coherent overstates it; the sign is still right and only the
+        magnitude is asserted. Fixing it means perturbing the four components,
+        re-deriving DLT through the identity and re-percentiling -- a change here
+        and in the label construction, not a config flip. See objection (4) in
+        CLAUDE.md.
         """
         rng = np.random.RandomState(self.seed + b)
         out = {}

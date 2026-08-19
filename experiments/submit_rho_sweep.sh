@@ -22,7 +22,8 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 
 # The shared-D rho axis. rho is the SINGLE size parameter of the ellipsoidal D
 # (R_c = rho * scale(y_c) * sqrt(n)); it defines the problem all three methods
-# solve, so it is swept and reported, never selected. Each method's own dial
+# solve, so it is swept and reported, not fitted; the derived rho*(method) is
+# then what the evaluation run uses, one rho* per method. Each method's own dial
 # (CP tau, wrapper alpha) stays FIXED at its stage-1 CV value across the whole
 # sweep, so D is literally shared at every rho and a gap between methods is a
 # difference in method.

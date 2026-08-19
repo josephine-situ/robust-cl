@@ -2,11 +2,14 @@
 
 ``rho`` is the single size parameter of the ellipsoidal D
 (``R_c = rho * scale(y_c) * sqrt(n)``, see :mod:`src.methods.uncertainty`). It
-defines the problem all three methods solve, so it is **swept and reported, never
-selected**: choosing it per method would dissolve the shared-D premise, and
-choosing it globally has no honest criterion -- against the GT ensemble it tunes
-to the judge, against synthetic's known ``noise_std`` it calibrates D to the
-data-generating process.
+defines the problem all three methods solve, so it is **swept and reported, not
+fitted**: D is literally shared at every point of the axis, and that curve is
+where the shared-D comparison is read. The derived rho*(method) is then what the
+EVALUATION run uses -- each method at its own rho* -- so evaluation matches
+held-out feasibility rather than D. The criterion is what keeps that honest:
+held-out feasibility on training folds. Never fit rho against the GT ensemble (it
+tunes to the judge) or against synthetic's known ``noise_std`` (it calibrates D
+to the data-generating process, which CP would then win by construction).
 
 Every output is scoped by the sweep CELL -- coherence and whether CP's bank B was
 matched to the wrapper's P -- via a ``_coh``/``_incoh``[``_matchbank``] suffix, so
@@ -24,7 +27,10 @@ Two outputs, from one pass:
      stage-1 knob CV used to: rho*(method) = the largest rho whose held-out
      feasibility still meets ``--feas-target``, i.e. how much assumed uncertainty
      each method absorbs before it stops delivering, and what that costs in
-     objective and in time. A *result read off the sweep*, not a fitted parameter.
+     objective and in time. Read off the sweep at a fixed feasibility target, not
+     fitted -- and it is what the EVALUATION run uses: each method is evaluated at
+     its own rho*, so D is shared across methods on the curve above but NOT at
+     evaluation, where the match is on held-out feasibility instead.
 
   3. ``{problem}_ablations.csv`` (``--ablate``) -- tau and alpha swept at ONE
      chosen rho. Those are each method's own dial, held fixed for the shared-D
