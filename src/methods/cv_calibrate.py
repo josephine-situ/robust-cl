@@ -26,7 +26,19 @@ from sklearn.model_selection import KFold
 
 from src.data.generate import ProblemInstance, filter_constraints
 from src.evaluation.chemo_metrics import solve_for_test_cohort
-from src.models.train import train_fixed_ensemble, train_model
+from src.models.train import train_fixed_ensemble
+
+# CV-tuned members for the synthetic oracle, written by
+# `run_cv.py --problem synthetic --ensemble`. Absent -> the fallback specs in
+# src/data/synthetic_model_specs.py.
+SYNTHETIC_GT_CONFIGS = os.path.join(
+    "results", "cv", "synthetic_gt_ensemble_configs.json")
+REACTOR_GT_CONFIGS = os.path.join(
+    "results", "cv", "reactor_gt_ensemble_configs.json")
+# Constraint name that marks the reactor instance; the oracle dispatch keys on it
+# rather than on a problem string, so a filtered or re-derived instance still
+# routes correctly.
+REACTOR_OUTCOME = "benzene_constraint"
 
 
 # ---------------------------------------------------------------------------
@@ -87,29 +99,116 @@ class GastricOracle:
 
 
 class SyntheticOracle:
-    """Proxy-ensemble oracle for the synthetic problem: feasible iff the proxy
-    constraint prediction is <= rhs; objective = c'x (minimize)."""
+    """Proxy-ensemble oracle for a single-constraint problem: feasible iff
+    ``weight * prediction <= rhs``; objective = c'x (minimize).
+
+    ``model`` is a MIXED-TYPE ensemble (six model classes averaged), not the class
+    the candidate embeds. Until 2026-08-21 it was a single model of that same
+    class, so oracle and candidate shared their approximation error and an rf
+    artifact the optimizer exploited was judged by an rf that had it too.
+
+    ``weight`` carries the constraint's sign, matching ``LearnedConstraint``'s
+    ``sum(w_i f_i(x)) <= rhs``. Synthetic is an upper bound (``w = +1``); the
+    reactor's requirement is a LOWER bound on benzene flow, stored as ``w = -1``
+    against ``rhs = -50``. Hard-coding ``+1`` here would silently inverted the
+    reactor's feasibility column.
+
+    KNOWN LIMITATION, and it is not small. This judge is a fitted model, so it has
+    an error of its own precisely where a constrained optimum lives -- on the
+    boundary. Measured on synthetic (2026-08-21): error sd 0.039 in the decision
+    band against margins of 0.015-0.020, 31% of verdicts flipped versus the
+    analytic truth inside that band, and 5 of 5 nominal decisions misjudged. The
+    bias is not neutral between methods: robust methods leave slack, where the
+    judge is reliable, while nominal sits on the boundary, where it is not. Prefer
+    the reactor's ODE oracle for any FINAL feasibility claim.
+    """
     objective_sense = "min"
 
-    def __init__(self, model, rhs: float, cost_vector: np.ndarray):
+    def __init__(self, model, rhs: float, cost_vector: np.ndarray,
+                 weight: float = 1.0):
         self.model = model
         self.rhs = float(rhs)
+        self.weight = float(weight)
         self.cost_vector = np.asarray(cost_vector, dtype=float)
 
     def feasible(self, x: np.ndarray) -> bool:
-        return float(self.model.predict(np.atleast_2d(x))[0]) <= self.rhs + 1e-9
+        pred = float(self.model.predict(np.atleast_2d(x))[0])
+        return self.weight * pred <= self.rhs + 1e-9
 
     def objective(self, x: np.ndarray) -> float:
         return float(np.dot(self.cost_vector, np.asarray(x, dtype=float)))
 
 
-def make_cv_oracle(instance: ProblemInstance, gt_specs: Optional[dict] = None):
+class ReactorODEOracle:
+    """GROUND TRUTH for the reactor: integrate the ODEs, do not predict them.
+
+    This is the judge C-MICL reports against ("empirical ground-truth feasibility
+    rate"), and the only exact one in this repo. It is for FINAL EVALUATION and for
+    auditing the proxy above -- never for choosing rho, which would calibrate the
+    uncertainty set against the very truth it is scored by.
+    """
+    objective_sense = "min"
+
+    def __init__(self, rhs: float, cost_vector: np.ndarray, weight: float = -1.0):
+        self.rhs = float(rhs)
+        self.weight = float(weight)
+        self.cost_vector = np.asarray(cost_vector, dtype=float)
+
+    def feasible(self, x: np.ndarray) -> bool:
+        from src.data.dma_mr import benzene_flow
+        flow = benzene_flow(np.asarray(x, dtype=float).ravel())
+        if not np.isfinite(flow):
+            return False          # an unusable design, not a feasible one
+        return self.weight * flow <= self.rhs + 1e-9
+
+    def objective(self, x: np.ndarray) -> float:
+        return float(np.dot(self.cost_vector, np.asarray(x, dtype=float)))
+
+
+def _single_outcome_gt_specs(gt_specs, json_path, outcome, fallback) -> list:
+    """Ensemble member specs for a single-constraint proxy oracle, by precedence.
+
+    Explicit argument > the CV-tuned JSON (``run_cv.py --problem <p> --ensemble``)
+    > the hand-set fallback list. Accepts a bare list of specs or the
+    ``{outcome: [specs]}`` dict shape the JSON and the gastric branch use.
+    """
+    if gt_specs is None and os.path.exists(json_path):
+        with open(json_path, "r", encoding="utf-8") as f:
+            gt_specs = json.load(f)
+    if gt_specs is None:
+        return fallback
+    if isinstance(gt_specs, dict):
+        # One outcome, but do not guess its key: prefer the canonical name, then
+        # the sole entry, and only then give up to the fallback.
+        if outcome in gt_specs:
+            return gt_specs[outcome]
+        if len(gt_specs) == 1:
+            return next(iter(gt_specs.values()))
+        return fallback
+    return list(gt_specs)
+
+
+def make_cv_oracle(instance: ProblemInstance, gt_specs=None, verbose: bool = True):
     """Build the train-only proxy oracle for this problem.
 
     Gastric: per-outcome GT ensemble fit on the (train-only) constraint fit data
     with train percentile targets, thresholded at each constraint's ``rhs``.
-    Synthetic: a proxy model fit on the full synthetic training labels; the
-    analytic ``gt_constraints`` are NOT used here (final-eval only).
+
+    Synthetic: a **mixed-type ensemble** -- the same six model classes gastric's GT
+    ensemble averages -- fit on the full noisy ``y_train``. It was a single model of
+    the class the candidate embeds until 2026-08-21, which made the judge share its
+    approximation error with the thing it judged (2026-08-19 deck, next step 3);
+    averaging classes is what breaks that. Two properties are deliberately kept:
+
+      - it is fit on the **noisy** labels, and the analytic ``gt_constraints`` stay
+        reserved for final evaluation. An oracle that knew the data-generating
+        process would score every method against the very truth D is calibrated in
+        units of, which CP would then win by construction;
+      - it is fit on the **full** training rows, a superset of any fold's train
+        rows -- exactly as gastric's oracle is. The judge therefore shares rows
+        with the candidate on both problems; that is the protocol, not a synthetic
+        defect, and it is why synthetic held-out feasibility is an m-out-of-n
+        statement rather than a genuinely held-out one.
     """
     if instance.train_pub_years is not None:  # gastric
         if gt_specs is None:
@@ -124,14 +223,45 @@ def make_cv_oracle(instance: ProblemInstance, gt_specs: Optional[dict] = None):
                 tox_models[name] = train_fixed_ensemble(md.X_train, md.y_train, gt_specs[name])
                 tox_ub = c.rhs
         return GastricOracle(tox_models, os_model, tox_ub)
-    # synthetic: proxy model on full training labels (more data than any fold)
+    # single-constraint problems (synthetic, reactor): mixed-type ensemble on the
+    # full noisy training labels.
     c = instance.constraints[0]
     md = c.models_data[0]
-    cfg = (instance.constraint_model_configs or [{}])[0]
-    mt = cfg.get("model_type", "rf")
-    mp = cfg.get("model_params", cfg.get("params", {}))
-    model = train_model(md.X_train, md.y_train, mt, mp)
-    return SyntheticOracle(model, c.rhs, instance.cost_vector)
+    if c.name == REACTOR_OUTCOME:
+        from src.data.reactor_model_specs import REACTOR_GT_ENSEMBLE_SPECS
+        specs = _single_outcome_gt_specs(gt_specs, REACTOR_GT_CONFIGS,
+                                         REACTOR_OUTCOME, REACTOR_GT_ENSEMBLE_SPECS)
+        label = "reactor"
+    else:
+        from src.data.synthetic_model_specs import (
+            SYNTHETIC_GT_ENSEMBLE_SPECS, SYNTHETIC_OUTCOME,
+        )
+        specs = _single_outcome_gt_specs(gt_specs, SYNTHETIC_GT_CONFIGS,
+                                         SYNTHETIC_OUTCOME,
+                                         SYNTHETIC_GT_ENSEMBLE_SPECS)
+        label = "synthetic"
+    model = train_fixed_ensemble(md.X_train, md.y_train, specs)
+    if verbose:
+        print(f"    [oracle] {label}: {len(specs)}-model ensemble "
+              f"({', '.join(s['model_type'] for s in specs)}) on n="
+              f"{len(md.y_train)} noisy labels", flush=True)
+    return SyntheticOracle(model, c.rhs, instance.cost_vector, weight=md.weight)
+
+
+def make_gt_oracle(instance: ProblemInstance):
+    """The EXACT judge, where one exists. Final evaluation and audits only.
+
+    Reactor -> the ODE system. Anything else -> ``None``: gastric has no ground
+    truth at all, and synthetic's analytic ``f_true`` is reserved for
+    ``evaluation/metrics.py``. Callers must handle ``None`` rather than silently
+    falling back to the proxy, since the whole point of this function is to be a
+    different judge from :func:`make_cv_oracle`.
+    """
+    c = instance.constraints[0]
+    if c.name != REACTOR_OUTCOME:
+        return None
+    return ReactorODEOracle(c.rhs, instance.cost_vector,
+                            weight=c.models_data[0].weight)
 
 
 # ---------------------------------------------------------------------------

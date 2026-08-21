@@ -143,6 +143,7 @@ GT_MODEL_ORDER = ["linear", "svm", "cart", "rf", "gbm", "xgb"]
 # Human-readable labels for outcome/constraint names
 OUTCOME_LABELS = {
     "synthetic_constraint": "Synthetic",
+    "benzene_constraint": "Benzene Flow (DMA-MR)",
     "dlt_constraint": "Any DLT",
     "blood_constraint": "Blood",
     "constitutional_constraint": "Constitutional",
@@ -738,28 +739,70 @@ def run_cv_for_ensemble(
 # Problem-specific runners
 # ---------------------------------------------------------------------------
 
-def run_cv_synthetic(args, out_dir: Path) -> None:
-    """Run CV for the synthetic nonlinear problem."""
+def _synthetic_cv_data(args):
+    """``(X_train, y_train, X_test, y_test)`` for the synthetic CV.
+
+    TRAIN is the EXACT instance every synthetic experiment runs on -- ``data.*`` and
+    ``uncertainty.bootstrap_seed`` straight out of ``config.yaml``, not a
+    locally-invented 250-row draw at ``--seed``. It has to be: a model selected on
+    different rows than it is later fit to is a selection for a different problem,
+    and ``synthetic_nonlinear`` draws its noise AFTER its features, so merely asking
+    for 50 extra rows shifts every training LABEL.
+
+    TEST is therefore a separate, independent draw from the same generator (seed
+    offset by ``--test-seed-offset``), scored against the NOISELESS ``y_true``. That
+    leaves the training rows untouched and makes ``test_r2`` a clean approximation
+    quality -- a diagnostic printed beside the selection, never the criterion, which
+    stays the ``--cv-folds``-fold CV R^2 on the training rows.
+    """
+    import yaml
     from src.data.generate import synthetic_nonlinear
 
+    config = yaml.safe_load(open(args.config))
+    d = config["data"]
+    data_seed = int(config["uncertainty"].get("bootstrap_seed", 42))
+
+    train = synthetic_nonlinear(
+        n_train=int(d["n_train"]), n_features=int(d["n_features"]),
+        noise_std=float(d["noise_std"]), seed=data_seed,
+    )
+    test = synthetic_nonlinear(
+        n_train=int(args.n_test), n_features=int(d["n_features"]),
+        noise_std=float(d["noise_std"]),
+        seed=data_seed + int(args.test_seed_offset),
+    )
+    md_tr = train.constraints[0].models_data[0]
+    md_te = test.constraints[0].models_data[0]
+    print(f"  train: n={len(md_tr.y_train)} d={d['n_features']} "
+          f"noise_std={d['noise_std']} seed={data_seed} (config.yaml)")
+    print(f"  test : n={len(md_te.y_train)} "
+          f"seed={data_seed + int(args.test_seed_offset)} "
+          f"(independent draw, noiseless targets)")
+    return md_tr.X_train, md_tr.y_train, md_te.X_train, md_te.y_true
+
+
+def run_cv_synthetic(args, out_dir: Path) -> None:
+    """Run CV for the synthetic nonlinear problem.
+
+    The synthetic embedded model was hard-coded (``config.yaml``: ``rf``, 50 trees,
+    depth 5) and had never been cross-validated at all, while every gastric
+    constraint model was -- so the two problems were not on the same footing
+    (2026-08-19 deck, next step 2). This selects it on the same grids and the same
+    criterion gastric uses and writes ``synthetic_selected_configs.json``, which
+    ``run_sweep.synth_model_spec`` loads for every synthetic run.
+
+    With ``--ensemble`` it also tunes all six GT model types into
+    ``synthetic_gt_ensemble_configs.json`` -- the mixed-type ORACLE the robustness
+    CV scores against (``cv_calibrate.make_cv_oracle``). The two files are
+    complements, not alternatives: one is the candidate, the other the judge, and
+    the judge exists precisely so as not to be the candidate's own model class.
+    """
     print("\n" + "=" * 60)
     print("SYNTHETIC CROSS-VALIDATION")
     print("=" * 60)
 
     seed = args.seed
-    n_train = 200
-    n_test_held_out = 50
-
-    # Generate a larger dataset and split off a held-out test portion.
-    # y_true (noiseless) is used as the test target for a noise-free test R².
-    instance = synthetic_nonlinear(n_train=n_train + n_test_held_out, seed=seed)
-    md = instance.constraints[0].models_data[0]
-
-    X_tr = md.X_train[:n_train]
-    y_tr = md.y_train[:n_train]
-    X_te = md.X_train[n_train:]
-    # Prefer noiseless ground truth for test evaluation; fall back to noisy labels.
-    y_te = md.y_true[n_train:] if md.y_true is not None else md.y_train[n_train:]
+    X_tr, y_tr, X_te, y_te = _synthetic_cv_data(args)
 
     outcomes = [
         {
@@ -787,12 +830,149 @@ def run_cv_synthetic(args, out_dir: Path) -> None:
         df_best=df_best,
         configs=configs,
         scores_caption=(
-            "Synthetic: 5-Fold CV R\\textsuperscript{2} by Model Type"
+            f"Synthetic: {args.cv_folds}-Fold CV "
+            f"R\\textsuperscript{{2}} by Model Type"
         ),
         best_caption=(
             "Synthetic: Best Constraint Model (CV Selection)"
         ),
     )
+
+    if args.ensemble:
+        run_cv_synthetic_ensemble(args, out_dir, data=(X_tr, y_tr, X_te, y_te))
+
+
+def run_cv_synthetic_ensemble(args, out_dir: Path, data=None) -> None:
+    """Tune the six GT model types on synthetic -> the mixed-type CV oracle.
+
+    Fit on the same NOISY ``y_train`` the candidates see. The analytic ``f_true`` is
+    deliberately not used: an oracle that knew the data-generating process would
+    judge every method against the very truth D's radius is calibrated in units of,
+    and CP would win by construction. What the ensemble buys is independence of
+    MODEL CLASS, not of data -- see ``src/data/synthetic_model_specs``.
+    """
+    print("\n" + "=" * 60)
+    print("SYNTHETIC GT ENSEMBLE CV")
+    print("=" * 60)
+
+    seed = args.seed
+    X_tr, y_tr, X_te, y_te = data if data is not None else _synthetic_cv_data(args)
+
+    outcomes = [
+        {
+            "name": "synthetic_constraint",
+            "label": OUTCOME_LABELS["synthetic_constraint"],
+            "X_train": X_tr,
+            "y_train": y_tr,
+        }
+    ]
+
+    df_scores, gt_configs = run_cv_for_ensemble(
+        outcomes,
+        GT_CV_PARAM_GRIDS,
+        scoring=args.scoring,
+        cv_folds=args.cv_folds,
+        seed=seed,
+    )
+
+    scores_csv = out_dir / "synthetic_gt_cv_scores.csv"
+    configs_json = out_dir / "synthetic_gt_ensemble_configs.json"
+    df_scores.to_csv(scores_csv, index=False)
+    with open(configs_json, "w", encoding="utf-8") as f:
+        json.dump(gt_configs, f, indent=2, default=str)
+    _write_cv_scores_tex(
+        df_scores, out_dir / "synthetic_gt_cv_scores.tex",
+        f"Synthetic GT Ensemble: {args.cv_folds}-Fold CV "
+        f"R\\textsuperscript{{2}} by Model Type",
+    )
+
+    # The ensemble's own test R^2 on the independent draw, against noiseless
+    # targets: the judge's accuracy, which bounds what its verdicts are worth.
+    from src.models.train import train_fixed_ensemble
+    specs = gt_configs["synthetic_constraint"]
+    ens = train_fixed_ensemble(X_tr, y_tr, specs)
+    print(f"\n  ensemble ({len(specs)} members) test R² vs noiseless truth: "
+          f"{r2_score(y_te, ens.predict(X_te)):.3f}")
+    print(f"  Outputs: {scores_csv.name}, {configs_json.name}")
+
+
+def run_cv_reactor(args, out_dir: Path) -> None:
+    """Model-selection CV for the C-MICL DMA-MR reactor instance.
+
+    Same grids and same criterion as the other two problems. The rows are the
+    cached ODE design (``results/reactor/``), and the target is the NOISY benzene
+    flow -- the models must be selected against what they will actually be fit to.
+
+    ``--ensemble`` additionally tunes the six GT model types into
+    ``reactor_gt_ensemble_configs.json``. Note what that ensemble is FOR here: it
+    is the proxy judge used to tune rho, NOT the ground truth. The ground truth is
+    the ODE system, which needs no fitting -- which is the whole reason this
+    instance is in the repo.
+    """
+    from src.data.generate import reactor_micl
+
+    print("\n" + "=" * 60)
+    print("REACTOR (DMA-MR) CROSS-VALIDATION")
+    print("=" * 60)
+
+    import yaml
+    config = yaml.safe_load(open(args.config))
+    rc = config.get("reactor", {})
+    inst = reactor_micl(n_train=int(rc.get("n_train", 1000)),
+                        noise_std=float(rc.get("noise_std", 2.0)),
+                        seed=int(config["uncertainty"].get("bootstrap_seed", 42)))
+    md = inst.constraints[0].models_data[0]
+    print(f"  n={len(md.y_train)} d={inst.n_features} "
+          f"noise_std={rc.get('noise_std', 2.0)}  target=F_C6H6 (noisy)")
+
+    outcomes = [{
+        "name": "benzene_constraint",
+        "label": OUTCOME_LABELS["benzene_constraint"],
+        "X_train": md.X_train,
+        "y_train": md.y_train,
+        # Held-out R^2 against the NOISELESS oracle values on the same rows: the
+        # approximation quality, with the label noise taken back out. Not a
+        # separate draw -- each new row costs an ODE solve.
+        "X_test": md.X_train,
+        "y_test": md.y_true,
+    }]
+
+    df_scores, df_best, configs = run_cv_for_outcomes(
+        outcomes, CV_PARAM_GRIDS, scoring=args.scoring,
+        cv_folds=args.cv_folds, seed=args.seed,
+    )
+    _save_cv_outputs(
+        prefix="reactor", out_dir=out_dir, df_scores=df_scores, df_best=df_best,
+        configs=configs,
+        scores_caption=(f"DMA-MR Reactor: {args.cv_folds}-Fold CV "
+                        f"R\\textsuperscript{{2}} by Model Type"),
+        best_caption="DMA-MR Reactor: Best Constraint Model (CV Selection)",
+    )
+
+    if args.ensemble:
+        print("\n" + "=" * 60)
+        print("REACTOR GT ENSEMBLE CV  (proxy judge for rho tuning, NOT the truth)")
+        print("=" * 60)
+        ens_outcomes = [{
+            "name": "benzene_constraint",
+            "label": OUTCOME_LABELS["benzene_constraint"],
+            "X_train": md.X_train,
+            "y_train": md.y_train,
+        }]
+        df_gt, gt_configs = run_cv_for_ensemble(
+            ens_outcomes, GT_CV_PARAM_GRIDS, scoring=args.scoring,
+            cv_folds=args.cv_folds, seed=args.seed,
+        )
+        df_gt.to_csv(out_dir / "reactor_gt_cv_scores.csv", index=False)
+        with open(out_dir / "reactor_gt_ensemble_configs.json", "w",
+                  encoding="utf-8") as f:
+            json.dump(gt_configs, f, indent=2, default=str)
+        _write_cv_scores_tex(
+            df_gt, out_dir / "reactor_gt_cv_scores.tex",
+            f"DMA-MR Reactor GT Ensemble: {args.cv_folds}-Fold CV "
+            f"R\\textsuperscript{{2}} by Model Type")
+        print("  Outputs: reactor_gt_cv_scores.csv, "
+              "reactor_gt_ensemble_configs.json")
 
 
 def run_cv_gastric(args, out_dir: Path) -> None:
@@ -1064,9 +1244,10 @@ def main():
     )
     parser.add_argument(
         "--problem",
-        choices=["synthetic", "gastric", "both"],
+        choices=["synthetic", "reactor", "gastric", "both"],
         default="both",
-        help="Which problem to run CV for (default: both)",
+        help=("Which problem to run CV for (default: both = synthetic + gastric; "
+              "pass reactor explicitly, it is slower to set up)"),
     )
     parser.add_argument(
         "--cv-folds",
@@ -1099,8 +1280,46 @@ def main():
         action="store_true",
         help=(
             "Also run GT ensemble CV with a deep grid (deeper trees, more estimators). "
-            "Outputs gastric_gt_cv_scores.{csv,tex} and gastric_gt_ensemble_configs.json. "
+            "Outputs {problem}_gt_cv_scores.{csv,tex} and "
+            "{problem}_gt_ensemble_configs.json. On gastric that is the Table 6 "
+            "evaluation oracle; on synthetic it is the mixed-type CV oracle the "
+            "robustness sweep scores against. "
             "Slow — omit for a quick constraint-model-only run."
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="config.yaml",
+        metavar="PATH",
+        help=(
+            "Synthetic only: the config whose data.* and uncertainty.bootstrap_seed "
+            "generate the CV rows. The selection must be made on the SAME rows the "
+            "experiments fit, so this is read rather than re-invented (default: "
+            "config.yaml)"
+        ),
+    )
+    parser.add_argument(
+        "--n-test",
+        type=int,
+        default=1000,
+        metavar="N",
+        help=(
+            "Synthetic only: rows in the independent test draw used for the "
+            "diagnostic test R² (default: 1000). Test rows are free here — the "
+            "generator makes them — so this is large enough that test R² is not "
+            "itself noisy"
+        ),
+    )
+    parser.add_argument(
+        "--test-seed-offset",
+        type=int,
+        default=1000,
+        metavar="K",
+        help=(
+            "Synthetic only: the test draw uses bootstrap_seed + K, so the test "
+            "rows are independent of the training rows rather than an extension of "
+            "them (default: 1000)"
         ),
     )
     args = parser.parse_args()
@@ -1123,7 +1342,12 @@ def main():
     print(f"  embeddable: {sorted(EMBEDDABLE_TYPES)}")
 
     if args.problem in ("synthetic", "both"):
+        # --ensemble is handled inside, on the same data draw, so the candidate
+        # and its judge are selected against identical rows.
         run_cv_synthetic(args, out_dir)
+
+    if args.problem == "reactor":
+        run_cv_reactor(args, out_dir)
 
     if args.problem in ("gastric", "both"):
         run_cv_gastric(args, out_dir)
@@ -1134,9 +1358,18 @@ def main():
     print("\nTo use CV configs in downstream experiments:")
     if args.problem in ("synthetic", "both"):
         print(
+            f"  # {out_dir}/synthetic_selected_configs.json is auto-loaded by "
+            f"run_sweep.synth_model_spec (rho sweep, knob CV, Pareto)"
+        )
+        print(
             f"  python experiments/run_all.py "
             f"--cv-configs {out_dir}/synthetic_selected_configs.json"
         )
+        if args.ensemble:
+            print(
+                f"  # {out_dir}/synthetic_gt_ensemble_configs.json is auto-loaded "
+                f"by cv_calibrate.make_cv_oracle as the synthetic CV oracle"
+            )
     if args.problem in ("gastric", "both"):
         print(
             f"  python experiments/run_chemo_robust.py  "

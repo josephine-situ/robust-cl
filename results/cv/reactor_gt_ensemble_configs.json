@@ -1,0 +1,59 @@
+{
+  "benzene_constraint": [
+    {
+      "model_type": "linear",
+      "params": {
+        "alpha": 0.01,
+        "l1_ratio": 0.25,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "svm",
+      "params": {
+        "C": 0.01,
+        "epsilon": 0.1,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "cart",
+      "params": {
+        "max_depth": 8,
+        "max_features": 1.0,
+        "min_samples_leaf": 0.02,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "rf",
+      "params": {
+        "max_depth": 8,
+        "max_features": "sqrt",
+        "n_estimators": 250,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "gbm",
+      "params": {
+        "learning_rate": 0.1,
+        "max_depth": 3,
+        "n_estimators": 250,
+        "subsample": 0.7,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "xgb",
+      "params": {
+        "colsample_bytree": 0.5,
+        "learning_rate": 0.2,
+        "max_depth": 3,
+        "n_estimators": 250,
+        "subsample": 0.9,
+        "random_state": 1
+      }
+    }
+  ]
+}

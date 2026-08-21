@@ -56,6 +56,9 @@ def train_model(X: np.ndarray,
     """
     params = params or {}
     random_state = params.get("random_state", 1)
+    if isinstance(params.get("hidden_layer_sizes"), list):
+        # JSON round-trips tuples to lists, and *_selected_configs.json is JSON.
+        params = {**params, "hidden_layer_sizes": tuple(params["hidden_layer_sizes"])}
 
     if model_type == "linear":
         estimator = ElasticNet(
@@ -67,6 +70,10 @@ def train_model(X: np.ndarray,
     elif model_type == "svm":
         estimator = LinearSVR(
             C=params.get("C", 1.0),
+            # Read, not dropped: `epsilon` is in run_cv.py's grid, so CV selects a
+            # value that this function used to ignore -- the fitted model was then
+            # not the model that was cross-validated (fixed 2026-08-21).
+            epsilon=params.get("epsilon", 0.0),
             max_iter=params.get("max_iter", 100_000),
             dual=params.get("dual", False),
             loss=params.get("loss", "squared_epsilon_insensitive"),
@@ -93,6 +100,7 @@ def train_model(X: np.ndarray,
             n_estimators=params.get("n_estimators", 50),
             learning_rate=params.get("learning_rate", 0.1),
             max_depth=params.get("max_depth", 3),
+            subsample=params.get("subsample", 1.0),   # in the CV grid; see svm note
             random_state=random_state,
         )
     elif model_type == "xgb":
@@ -118,6 +126,14 @@ def train_model(X: np.ndarray,
     elif model_type == "mlp":
         estimator = MLPRegressor(
             hidden_layer_sizes=params.get("hidden_layer_sizes", (100,)),
+            # `solver` and `alpha` are BOTH in run_cv.py's mlp grid, and both were
+            # dropped here until 2026-08-21 -- so CV chose lbfgs/alpha=0.01 while
+            # every downstream fit silently used adam/alpha=1e-4. That is not only
+            # the wrong model, it is far slower on an unscaled target: one reactor
+            # refit was 19.7s under adam against 1.4s under the selected lbfgs,
+            # which is what made CP's B=200 bank look intractable there.
+            solver=params.get("solver", "adam"),
+            alpha=params.get("alpha", 1e-4),
             random_state=random_state,
             max_iter=params.get("max_iter", 10_000),
         )

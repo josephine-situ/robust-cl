@@ -134,15 +134,37 @@ def _bank_seed(config, args):
         config["uncertainty"].get("bootstrap_seed", 42))
 
 
+def _synth_n_folds(config, args):
+    """KFold splits for the synthetic sweep: --n-folds, else cv_calibration.n_kfold.
+
+    Both single-decision problems (synthetic, reactor) solve ONCE per fold and yield
+    ONE binary feasibility outcome, so held-out feasibility is QUANTIZED TO
+    1/n_folds and the fold count is the resolution of the whole curve. The default
+    is ``cv_calibration.n_kfold`` = 10, which is deliberately NOT run_cv.py's 5:
+    model selection scores R^2 over rows, where 5 folds are ample, while this scores
+    one bit per fold. At 10, feasibility takes 0, 0.1, ..., 1.0 and the 0.9 rho*
+    target is exactly representable (2026-08-19 deck, next step 3).
+    """
+    return int(args.n_folds or
+               config.get("cv_calibration", {}).get("n_kfold", 10))
+
+
 def _setup_synthetic(config, args):
-    from experiments.run_sweep import _synth_instance, _synth_build
+    from experiments.run_sweep import _synth_instance, _synth_build, synth_model_spec
 
     seed = config["uncertainty"].get("bootstrap_seed", 42)   # data + folds
     bank_seed = _bank_seed(config, args)                     # draws from D
+    # The embedded model is a CV result whenever
+    # results/cv/synthetic_selected_configs.json exists (run_cv.py --problem
+    # synthetic), and config.yaml's hard-coded rf otherwise. Which one is in force
+    # scopes the cell name -- see _variant_suffix.
+    model_type, model_params, _from_cv = synth_model_spec(config, verbose=True)
     inst = _synth_instance(config)
-    n_kfold = int(args.n_folds or
-                  config.get("cv_calibration", {}).get("n_kfold", 4))
+    n_kfold = _synth_n_folds(config, args)
     folds = make_folds(inst, "kfold", n_kfold=n_kfold, seed=seed)
+    # Mixed-type ensemble on the noisy training labels -- deliberately NOT the
+    # class the candidate embeds, which is what made the synthetic judge share its
+    # approximation error with the thing it judged.
     oracle = make_cv_oracle(inst)
 
     def make_build(method, uset):
@@ -157,8 +179,47 @@ def _setup_synthetic(config, args):
         if args.match_bank:
             cfg.setdefault("methods", {}).setdefault("cp", {})["n_scenarios"] = \
                 int(cfg["uncertainty"].get("n_bootstrap", 20))
-        return _synth_build(method, cfg, config["model"]["type"],
-                            config["model"]["params"], bank_seed)
+        return _synth_build(method, cfg, model_type, model_params, bank_seed)
+
+    return inst, folds, oracle, make_build, None, False
+
+
+def _setup_reactor(config, args):
+    """The C-MICL DMA-MR instance on the rho axis.
+
+    Mirrors ``_setup_synthetic`` -- single-decision, KFold folds, one learned
+    constraint -- and reuses ``_synth_build`` verbatim, because the method builders
+    read the instance for everything problem-specific (the constraint's sign, the
+    domain constraints, the variable box) and take only the model type and the
+    uncertainty set as arguments.
+
+    The oracle here is the PROXY ensemble, not the ODEs. Tuning rho against the
+    exact truth would calibrate D to the thing it is scored by; the ODE oracle
+    (``cv_calibrate.make_gt_oracle``) is for final evaluation and for auditing this
+    proxy, which is the one thing this instance can do that gastric cannot.
+    """
+    from experiments.run_sweep import (
+        _reactor_instance, _synth_build, reactor_model_spec,
+    )
+
+    seed = config["uncertainty"].get("bootstrap_seed", 42)   # data + folds
+    bank_seed = _bank_seed(config, args)                     # draws from D
+    model_type, model_params, _from_cv = reactor_model_spec(config, verbose=True)
+    inst = _reactor_instance(config)
+    folds = make_folds(inst, "kfold", n_kfold=_synth_n_folds(config, args), seed=seed)
+    oracle = make_cv_oracle(inst)
+
+    def make_build(method, uset):
+        cfg = json.loads(json.dumps(config))          # deep copy, config is plain data
+        cfg["uncertainty"].update(
+            geometry=uset.geometry, rho=uset.rho,
+            coherent=uset.coherent,
+            coherent_exclude=list(uset.coherent_exclude),
+        )
+        if args.match_bank:
+            cfg.setdefault("methods", {}).setdefault("cp", {})["n_scenarios"] = \
+                int(cfg["uncertainty"].get("n_bootstrap", 20))
+        return _synth_build(method, cfg, model_type, model_params, bank_seed)
 
     return inst, folds, oracle, make_build, None, False
 
@@ -249,12 +310,25 @@ def _variant_suffix(args):
     so one checkpoint would hand every seed the FIRST seed's rows and the spread
     would read as exactly zero -- a bank-variance study able only to report "no
     variance". Seeds never share a file.
+
+The single-decision problems (``--problem synthetic``, ``--problem reactor``)
+    scope it a fourth time, with ``_m<model_type>``. The embedded model there is no
+    longer fixed: it is the CV winner when the problem's
+    ``results/cv/*_selected_configs.json`` exists and ``config.yaml``'s block
+    otherwise, and those two train different constraint models on identical data. The resume key carries no model, so without the token a post-CV
+    run would resume, and then re-report, the pre-CV rf's rows. The token is
+    written in BOTH cases, the fallback included, so no synthetic cell shares a
+    name with a curve produced before the model was a choice at all -- and the
+    synthetic CV oracle changed in the same commit (one rf -> a six-class
+    ensemble), so those older curves are not comparable either.
     """
     n = getattr(args, "n_folds", None)
     seed = getattr(args, "seed", None)
+    model = getattr(args, "synth_model", None)
     return (("_coh" if args.coherent else "_incoh")
             + ("_matchbank" if getattr(args, "match_bank", False) else "")
             + (f"_f{int(n)}" if n else "")
+            + (f"_m{model}" if model else "")
             + (f"_s{int(seed)}" if seed is not None else ""))
 
 
@@ -278,7 +352,8 @@ def run_sweep(config, args):
 
     os.makedirs(OUT_DIR, exist_ok=True)
     problem = args.problem
-    setup = _setup_synthetic if problem == "synthetic" else _setup_gastric
+    setup = {"synthetic": _setup_synthetic, "reactor": _setup_reactor,
+             "gastric": _setup_gastric}[problem]
     inst, folds, oracle, make_build, cnames, contextual = setup(config, args)
 
     base_uset = dataclasses.replace(
@@ -604,7 +679,10 @@ def _rho_star(df, problem, target, sense, min_solved, out_suffix=""):
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--problem", choices=("synthetic", "gastric"), default="synthetic")
+    p.add_argument("--problem", choices=("synthetic", "reactor", "gastric"),
+                   default="synthetic",
+                   help="reactor is the C-MICL DMA-MR case study: the only "
+                        "instance with a MECHANISTIC (ODE) ground truth")
     p.add_argument("--rho-grid", type=float, nargs="+", default=None,
                    help=f"rho values to sweep (default {DEFAULT_GRID})")
     p.add_argument("--methods", nargs="+", default=None)
@@ -639,9 +717,11 @@ def main():
                    help=f"wrapper alpha ablation grid (default {DEFAULT_ALPHA_GRID}); "
                         "0/0.1/0.2/0.5 are OptiCL's published WFP values")
     p.add_argument("--n-folds", type=int, default=None,
-                   help="synthetic only: KFold splits. Held-out feasibility is "
-                        "quantized to 1/n_folds there (one solve per fold), so "
-                        "raise this before reading rho* off synthetic")
+                   help="single-decision problems only (synthetic, reactor): "
+                        "KFold splits, default cv_calibration.n_kfold = 10. "
+                        "Held-out feasibility is quantized to 1/n_folds there (one "
+                        "solve per fold), which is why this is 10 and run_cv.py's "
+                        "model CV is 5. Always in the cell name")
     p.add_argument("--rho-star-only", action="store_true",
                    help="re-derive rho* from the SAVED {problem}_rho_curve.csv "
                         "under new criteria; no solving. Combine with "
@@ -669,6 +749,23 @@ def main():
     p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json")
     args = p.parse_args()
 
+    import yaml
+    config = yaml.safe_load(open(args.config))
+
+    # Resolve the two things that scope a SYNTHETIC cell but are not flags:
+    # the fold count (an implicit --n-folds, since the config default now decides
+    # what feasibility can resolve) and the embedded model type (CV winner or
+    # config fallback). Both are settled here, before --rho-star-only branches, so
+    # a re-derivation reads back the curve the sweep wrote. Gastric is untouched:
+    # its folds are temporal (n_kfold is inert there) and its models come from
+    # --cv-configs, so adding either token would only make its filenames lie.
+    if args.problem in ("synthetic", "reactor"):
+        args.n_folds = _synth_n_folds(config, args)
+        from experiments.run_sweep import synth_model_spec, reactor_model_spec
+        spec = (synth_model_spec if args.problem == "synthetic"
+                else reactor_model_spec)
+        args.synth_model = spec(config)[0]
+
     if args.rho_star_only:
         # Pure post-processing: re-derive rho* from the saved curve under new
         # criteria. No instance, no oracle, no solving.
@@ -679,8 +776,6 @@ def main():
                            variant=_variant_suffix(args))
         return
 
-    import yaml
-    config = yaml.safe_load(open(args.config))
     run_sweep(config, args)
 
 

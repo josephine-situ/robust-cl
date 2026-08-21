@@ -13,22 +13,18 @@ import argparse
 import json
 import os
 import sys
-from functools import partial
-
 import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data.generate import gastric_cancer, filter_constraints
-from src.methods.nominal import resolve_mip_gap, solve_nominal
-from src.methods.robust_regression import solve_robust_regression
+from src.methods.nominal import resolve_mip_gap
 from src.methods.wrapper import (
-    solve_wrapper,
-    solve_tree_violation_wrapper,
     _coherent_bootstrap_indices,
     train_bootstrap_ensembles_for_instance,
 )
-from src.methods.cp import solve_cp, select_anchor_contexts
+from src.methods.cp import select_anchor_contexts
+from experiments.method_builders import build_method
 from src.methods.calibrate import calibrate_strength
 from src.methods.cv_calibrate import lookup_knob
 from src.evaluation.chemo_metrics import (
@@ -156,6 +152,10 @@ def _resolve_run_settings(config, args):
     settings["embedding_mode"] = config["methods"].get("embedding_mode", "hard")
     settings["rf_alpha"] = config["methods"].get("chemo_wrapper", {}).get("alpha", 0.25)
     _wrap_cfg = config["methods"]["wrapper"]
+    # P, under the name the shared builder reads. Gastric takes it from
+    # uncertainty.n_bootstrap (--quick shrinks it); the non-contextual problems take
+    # methods.wrapper.n_estimators -- see method_builders.synth_settings.
+    settings["wrapper_n_estimators"] = settings["n_bootstrap"]
     settings["wrapper_alpha"] = _wrap_cfg.get("alpha", 0.1)
     settings["wrapper_scenario_source"] = _wrap_cfg.get("scenario_source", "noise")
     settings["wrapper_robustify_objective"] = _wrap_cfg.get("robustify_objective", False)
@@ -186,116 +186,29 @@ def _resolve_run_settings(config, args):
 
 
 def _build_solvers(config, settings, instance, bootstrap_cache):
+    """The gastric solvers at ``config.yaml``'s own knob values (no calibration).
+
+    Same shared builder as the calibrated path, called once per method at the knob
+    the config names; CP takes ``None``, i.e. the ABSOLUTE ``methods.cp.dist_tol``
+    rather than a tau.
+    """
     model_type = config["model"]["type"]
     model_params = config["model"]["params"]
-    n_bootstrap = settings["n_bootstrap"]
-    seed = settings["bootstrap_seed"]
-    embedding_mode = settings["embedding_mode"]
-    rf_alpha = settings["rf_alpha"]
-    mip_gap = settings["mip_gap"]   # one gap for every method (see _resolve_run_settings)
-
-    solvers = {
-        "nominal": partial(
-            solve_nominal,
-            model_type=model_type,
-            model_params=model_params,
-            rho=0.0,
-            embedding_mode=embedding_mode,
-            rf_alpha=rf_alpha,
-            mip_gap=mip_gap,
-        ),
-        "tree_violation": partial(
-            solve_tree_violation_wrapper,
-            model_type=model_type,
-            model_params=model_params,
-            alpha=rf_alpha,
-            rho=0.0,
-            mip_gap=mip_gap,
-        ),
-        "robust_param": partial(
-            solve_nominal,
-            model_type=model_type,
-            model_params=model_params,
-            rho=settings["robust_rho"],
-            embedding_mode=embedding_mode,
-            rf_alpha=rf_alpha,
-            mip_gap=mip_gap,
-        ),
-        "robust_reg": partial(
-            solve_robust_regression,
-            model_type=model_type,
-            model_params=model_params,
-            label_eps=settings["robust_reg_label_eps"],
-            budget_frac=settings["robust_reg_budget_frac"],
-            K=settings["robust_reg_K"],
-            seed=seed,
-            rho=0.0,
-            embedding_mode=embedding_mode,
-            rf_alpha=rf_alpha,
-            uncertainty_set=settings["uncertainty_set"],
-            mip_gap=mip_gap,
-        ),
-        "wrapper": partial(
-            solve_wrapper,
-            model_type=model_type,
-            model_params=model_params,
-            n_estimators=n_bootstrap,
-            alpha=settings["wrapper_alpha"],
-            seed=seed,
-            rho=0.0,
-            bootstrap_cache=bootstrap_cache,
-            bootstrap_frac=settings["bootstrap_frac"],
-            scenario_source=settings["wrapper_scenario_source"],
-            uncertainty_set=settings["uncertainty_set"],
-            robustify_objective=settings["wrapper_robustify_objective"],
-            mip_gap=mip_gap,
-        ),
-        # Single driver; gastric (multiple toxicity constraints over many
-        # patients) auto-selects coherent separation with the shared alpha as the
-        # feasibility coverage cap.
-        "cp": _cp_solver(settings, model_type, model_params, settings["alpha"]),
+    fixed_knob = {
+        "nominal": 0.0,
+        "tree_violation": settings["rf_alpha"],  # max fraction of RF trees violating
+        "robust_param": settings["robust_rho"],
+        "robust_reg": settings["robust_reg_label_eps"],
+        "wrapper": settings["wrapper_alpha"],
+        # Single driver; gastric (multiple toxicity constraints over many patients)
+        # auto-selects coherent separation.
+        "cp": None,
     }
-    return solvers
-
-
-def _cp_solver(settings, model_type, model_params, cp_alpha=0.0,
-               cp_dist_tol_override=None, cp_dist_tol_rel=None):
-    """Build the CP solver partial. Single-lever CP: ``cp_alpha`` is pinned at 0 (the
-    coverage cap is not a tunable) -- cuts that would break a training anchor are
-    evicted/rolled back (``cut_eviction``), keeping the training set feasible, so
-    the distance tolerance is the ONLY robustness knob.
-
-    Prefer ``cp_dist_tol_rel`` (tau): the tolerance becomes tau * d0, where d0 is the
-    problem's own iteration-0 worst distance, so ONE tau grid transfers across
-    datasets/problems. ``cp_dist_tol_override`` sets the absolute value instead."""
-    cp_dist_tol = (settings["cp_dist_tol"] if cp_dist_tol_override is None
-                   else cp_dist_tol_override)
-    return partial(
-        solve_cp, model_type=model_type, model_params=model_params, rho=0.0,
-        max_iterations=settings["cp_max_iterations"],
-        cp_k_neighbors_frac=settings["cp_k_neighbors_frac"],
-        cp_k_neighbors_min=settings["cp_k_neighbors_min"],
-        cp_n_candidates=settings["cp_n_candidates"],
-        seed=settings["bootstrap_seed"], cp_alpha=0.0,  # single-lever: pinned
-        cp_dist_tol=cp_dist_tol, cp_dist_tol_rel=cp_dist_tol_rel,
-        cp_anchor_source=settings["cp_anchor_source"],
-        cp_n_anchors=settings["cp_n_anchors"],
-        cp_anchor_method=settings["cp_anchor_method"],
-        cp_distance=settings["cp_distance"],
-        cp_trace_path=settings["cp_trace_path"],
-        cp_robustify_objective=settings["cp_robustify_objective"],
-        cp_eval_mode=settings["cp_eval_mode"],
-        cp_nearest_distance=settings["cp_nearest_distance"],
-        cp_cut_eviction=settings["cp_cut_eviction"],
-        cp_scenario_source=settings["cp_scenario_source"],
-        cp_n_scenarios=settings["cp_n_scenarios"],
-        cp_d0_quantile=settings["cp_d0_quantile"],
-        cp_tolerance_basis=settings.get("cp_tolerance_basis", "scale"),
-        cp_objective_monotone=settings["cp_objective_monotone"],
-        cp_mip_gap=settings["mip_gap"],
-        cp_cut_whole_scenario=settings["cp_cut_whole_scenario"],
-        cp_uncertainty=settings["uncertainty_set"],
-    )
+    return {
+        method: build_method(method, knob, model_type, model_params, settings,
+                             bootstrap_cache=bootstrap_cache)
+        for method, knob in fixed_knob.items()
+    }
 
 
 def _constraint_names(constraint_mode):
@@ -311,59 +224,27 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
     """Return ``(build, strength_to_knob)`` for a method: ``build(knob)`` -> solver_fn,
     ``strength_to_knob(s in [0,1])`` -> knob (0 = weakest ~ nominal, 1 = strongest).
     ``ranges`` supplies the knob endpoints, so the same mapping serves both
-    calibration (calibration ranges) and the conservativeness sweep (wider ranges)."""
-    nb = settings["n_bootstrap"]
-    seed = settings["bootstrap_seed"]
-    em = settings["embedding_mode"]
-    rf_alpha = settings["rf_alpha"]
-    mip_gap = settings["mip_gap"]
+    calibration (calibration ranges) and the conservativeness sweep (wider ranges).
 
+    Only the strength->knob half is gastric-specific. ``build`` is the shared
+    ``method_builders.build_method``, the same one ``run_sweep._synth_build`` calls,
+    so the solver argument lists exist once."""
     if method == "wrapper":
         amax = ranges["wrapper_alpha_max"]
         strength_to_knob = lambda s: amax * (1.0 - s)  # s=1 strongest -> alpha_w=0
-        build = lambda knob: partial(
-            solve_wrapper, model_type=model_type, model_params=model_params,
-            n_estimators=nb, alpha=knob, seed=seed, rho=0.0,
-            bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
-            bootstrap_frac=settings["bootstrap_frac"],
-            scenario_source=settings["wrapper_scenario_source"],
-            uncertainty_set=settings["uncertainty_set"],
-            robustify_objective=settings["wrapper_robustify_objective"],
-            mip_gap=mip_gap,
-        )
     elif method == "tree_violation":
         amax = ranges["tree_alpha_max"]
         strength_to_knob = lambda s: amax * (1.0 - s)  # s=1 strongest -> alpha_t=0
-        build = lambda knob: partial(
-            solve_tree_violation_wrapper, model_type=model_type,
-            model_params=model_params, alpha=knob, rho=0.0, mip_gap=mip_gap,
-        )
     elif method == "robust_param":
         rho_min = ranges.get("rho_min", 0.0)
         rho_max = ranges["rho_max"]
         strength_to_knob = lambda s: rho_min + (rho_max - rho_min) * s
-        build = lambda knob: partial(
-            solve_nominal, model_type=model_type, model_params=model_params,
-            rho=knob, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap,
-        )
     elif method == "nominal":
         # No robustness knob: a single reference point (same at every strength).
         strength_to_knob = lambda s: 0.0
-        build = lambda knob: partial(
-            solve_nominal, model_type=model_type, model_params=model_params,
-            rho=0.0, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap,
-        )
     elif method == "robust_reg":
         eps_max = ranges["robust_reg_eps_max"]
         strength_to_knob = lambda s: eps_max * s        # label-uncertainty radius
-        build = lambda knob: partial(
-            solve_robust_regression, model_type=model_type, model_params=model_params,
-            label_eps=knob, budget_frac=settings["robust_reg_budget_frac"],
-            K=settings["robust_reg_K"], seed=seed, rho=0.0,
-            embedding_mode=em, rf_alpha=rf_alpha,
-            uncertainty_set=settings["uncertainty_set"],
-            mip_gap=mip_gap,
-        )
     elif method == "cp":
         # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, with
         # d0 a QUANTILE (cp.d0_quantile, default 0.9) of the problem's own iteration-0
@@ -376,12 +257,13 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
         tmax = ranges.get("cp_dist_tol_rel_max", 1.0)
         tmin = ranges.get("cp_dist_tol_rel_min", 0.1)
         strength_to_knob = lambda s: tmax * (1.0 - s) + tmin * s  # s=1 -> tmin (strongest)
-        build = lambda knob: _cp_solver(
-            settings, model_type, model_params, settings["alpha"],
-            cp_dist_tol_rel=knob,
-        )
     else:
         raise ValueError(f"Unknown method for knob map: {method}")
+
+    build = lambda knob: build_method(
+        method, knob, model_type, model_params, settings,
+        bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
+    )
     return build, strength_to_knob
 
 

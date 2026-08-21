@@ -1,0 +1,13 @@
+{
+  "synthetic_constraint": {
+    "model_type": "mlp",
+    "model_params": {
+      "alpha": 0.01,
+      "hidden_layer_sizes": [
+        50
+      ],
+      "solver": "lbfgs",
+      "random_state": 1
+    }
+  }
+}

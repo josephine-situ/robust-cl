@@ -7,12 +7,10 @@ run_chemo_robust.py.
 """
 
 import json
-import yaml
 import numpy as np
 import pandas as pd
 import os
 import sys
-from functools import partial
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -23,68 +21,124 @@ from experiments.run_all import load_config, run_experiment
 # Synthetic robustness-parameter CV + CV-centered Pareto
 # ---------------------------------------------------------------------------
 def _synth_build(method, config, model_type, model_params, seed):
-    """Return ``build(knob) -> solver_fn`` for a synthetic method. Single knob per
-    method (CP dist_tol, robust_reg label_eps, wrapper alpha); nominal ignores it.
-    CP is single-lever (cp_alpha=0) like gastric."""
-    from src.methods.nominal import resolve_mip_gap, solve_nominal
-    from src.methods.robust_regression import solve_robust_regression
-    from src.methods.wrapper import solve_wrapper
-    from src.methods.cp import solve_cp
-    from src.methods.uncertainty import uncertainty_set_from_config
-    unc = config["uncertainty"]
-    rr = config["methods"].get("robust_reg", {})
-    cp = config["methods"].get("cp", {})
-    mip_gap = resolve_mip_gap(config)   # shared by all four methods
-    if method == "nominal":
-        return lambda knob: partial(solve_nominal, model_type=model_type,
-                                    model_params=model_params, rho=0.0,
-                                    mip_gap=mip_gap)
-    if method == "robust_reg":
-        return lambda knob: partial(
-            solve_robust_regression, model_type=model_type, model_params=model_params,
-            label_eps=knob, budget_frac=rr.get("budget_frac", 0.5), K=rr.get("K", 5),
-            seed=seed, rho=0.0, uncertainty_set=uncertainty_set_from_config(config),
-            mip_gap=mip_gap)
-    if method == "wrapper":
-        return lambda knob: partial(
-            solve_wrapper, model_type=model_type, model_params=model_params,
-            n_estimators=config["methods"]["wrapper"].get("n_estimators", 20),
-            alpha=knob, seed=seed, rho=0.0,
-            scenario_source=config["methods"]["wrapper"].get("scenario_source", "noise"),
-            uncertainty_set=uncertainty_set_from_config(config),
-            robustify_objective=config["methods"]["wrapper"].get(
-                "robustify_objective", False),
-            mip_gap=mip_gap)
-    if method == "cp":
-        return lambda knob: partial(
-            solve_cp, model_type=model_type, model_params=model_params, rho=0.0,
-            max_iterations=cp.get("max_iterations", 20),
-            cp_k_neighbors_frac=unc.get("cp_k_neighbors_frac", 0.1),
-            cp_k_neighbors_min=unc.get("cp_k_neighbors_min", 1),
-            cp_n_candidates=unc.get("cp_n_candidates", 20), seed=seed,
-            # Relative knob (tau): tolerance = tau * d0 from this problem's own
-            # iter-0 worst violation, so the SAME grid works here and on gastric.
-            # (The basic path previously ignored dist_tol entirely -- it cut every
-            # violation > 1e-6 -- so synthetic CP had no robustness lever at all.)
-            cp_alpha=0.0, cp_dist_tol_rel=knob,
-            cp_cut_eviction=cp.get("cut_eviction", "evict_slack"),
-            cp_scenario_source=cp.get("scenario_source", "noise"),
-            cp_n_scenarios=cp.get("n_scenarios", 200),
-            cp_d0_quantile=cp.get("d0_quantile", 0.9),
-            cp_tolerance_basis=cp.get("tolerance_basis", "scale"),
-            cp_objective_monotone=cp.get("objective_monotone", False),
-            cp_mip_gap=mip_gap,
-            cp_cut_whole_scenario=cp.get("cut_whole_scenario", True),
-            cp_uncertainty=uncertainty_set_from_config(config))
-    raise ValueError(f"unknown synthetic method {method}")
+    """Return ``build(knob) -> solver_fn`` for a non-contextual problem (synthetic,
+    reactor). Single knob per method (CP tau, robust_reg label_eps, wrapper alpha);
+    nominal ignores it. CP is single-lever (cp_alpha=0) like gastric.
+
+    The argument lists themselves live in ``experiments/method_builders.py``, shared
+    with the gastric builder (``run_chemo_robust._method_build_map``), so a change to
+    a solver's signature or to a cross-cutting decision -- the one ``mip_gap``, the
+    pinned ``cp_alpha``, the shared ``uncertainty_set`` -- cannot reach one problem
+    and miss the other.
+
+    ``config`` is read fresh on every call: the rho sweep hands in a config whose
+    ``uncertainty.rho`` it has just overwritten.
+    """
+    from experiments.method_builders import build_method, synth_settings
+    settings = synth_settings(config, seed)
+    return lambda knob: build_method(method, knob, model_type, model_params,
+                                     settings)
 
 
-def _synth_instance(config, seed=None):
+# Written by `run_cv.py --problem synthetic`; the CV-selected embedded model.
+SYNTH_CV_CONFIGS = os.path.join("results", "cv", "synthetic_selected_configs.json")
+SYNTH_OUTCOME = "synthetic_constraint"
+
+
+def synth_model_spec(config, path=None, verbose=False):
+    """``(model_type, model_params, from_cv)`` for the synthetic embedded model.
+
+    The CV selection wins over ``config.yaml``'s ``model`` block when present; the
+    synthetic model was hard-coded ``rf`` (50 trees, depth 5) and had never been
+    cross-validated (2026-08-19 deck, next step 2). Returns ``from_cv`` so callers
+    can SAY which one they used -- the two train different models on the same data,
+    and a resumable score checkpoint keyed only by ``(method@rho, knob)`` would
+    otherwise merge them silently (see ``run_rho_sweep._variant_suffix``).
+    """
+    path = path or SYNTH_CV_CONFIGS
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = json.load(f).get(SYNTH_OUTCOME)
+        if cfg:
+            mt = cfg["model_type"]
+            mp = cfg.get("model_params", cfg.get("params", {}))
+            if verbose:
+                print(f"    [synth] CV-selected embedded model: {mt} {mp} "
+                      f"(from {path})", flush=True)
+            return mt, dict(mp), True
+    if verbose:
+        print(f"    [synth] no {path}; embedded model from config.yaml: "
+              f"{config['model']['type']} {config['model']['params']}", flush=True)
+    return config["model"]["type"], dict(config["model"]["params"]), False
+
+
+# Written by `run_cv.py --problem reactor`; the CV-selected embedded model.
+REACTOR_CV_CONFIGS = os.path.join("results", "cv", "reactor_selected_configs.json")
+REACTOR_OUTCOME = "benzene_constraint"
+
+
+def reactor_model_spec(config, path=None, verbose=False):
+    """``(model_type, model_params, from_cv)`` for the reactor embedded model.
+
+    Same contract as :func:`synth_model_spec`: the CV selection wins over the
+    ``reactor.model`` block in ``config.yaml`` when present, and ``from_cv`` is
+    returned so the caller can scope the sweep cell by which model is in force.
+    """
+    path = path or REACTOR_CV_CONFIGS
+    rc = config.get("reactor", {})
+    default_t = rc.get("model", {}).get("type", config["model"]["type"])
+    default_p = dict(rc.get("model", {}).get("params", config["model"]["params"]))
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            cfg = json.load(f).get(REACTOR_OUTCOME)
+        if cfg:
+            mt = cfg["model_type"]
+            mp = cfg.get("model_params", cfg.get("params", {}))
+            if verbose:
+                print(f"    [reactor] CV-selected embedded model: {mt} {mp} "
+                      f"(from {path})", flush=True)
+            return mt, dict(mp), True
+    if verbose:
+        print(f"    [reactor] no {path}; embedded model from config.yaml: "
+              f"{default_t} {default_p}", flush=True)
+    return default_t, default_p, False
+
+
+def _reactor_instance(config, cv_path=None, verbose=False):
+    """The DMA-MR instance, carrying the CV-selected embedded model if there is one.
+
+    The ODE dataset is cached on disk (see ``generate._reactor_dataset``), so this
+    is cheap after the first call even though each oracle evaluation is a stiff
+    ODE solve.
+    """
+    from src.data.generate import reactor_micl
+    rc = config.get("reactor", {})
+    mt, mp, from_cv = reactor_model_spec(config, cv_path, verbose=verbose)
+    return reactor_micl(
+        n_train=int(rc.get("n_train", 1000)),
+        noise_std=float(rc.get("noise_std", 2.0)),
+        seed=int(config["uncertainty"].get("bootstrap_seed", 42)),
+        fixed_constraint_config=({"model_type": mt, "model_params": mp}
+                                 if from_cv else None),
+    )
+
+
+def _synth_instance(config, seed=None, cv_path=None, verbose=False):
+    """The synthetic instance, carrying the CV-selected embedded model if there is one.
+
+    Setting ``constraint_model_configs`` is what makes the selection reach every
+    method at once: ``nominal.resolve_constraint_config`` prefers it over the
+    ``model_type``/``model_params`` arguments, and ``ScenarioBank`` resolves its
+    per-draw refits through the same map.
+    """
     from src.data.generate import synthetic_nonlinear
     d = config["data"]
+    mt, mp, from_cv = synth_model_spec(config, cv_path, verbose=verbose)
     return synthetic_nonlinear(
         n_train=d["n_train"], n_features=d["n_features"], noise_std=d["noise_std"],
         seed=seed if seed is not None else config["uncertainty"].get("bootstrap_seed", 42),
+        fixed_constraint_config=({"model_type": mt, "model_params": mp}
+                                 if from_cv else None),
     )
 
 
@@ -104,9 +158,10 @@ def run_cv_calibration_synthetic(config, methods=None, refresh=False):
                 os.remove(p)
     cvc = config.get("cv_calibration", {})
     seed = config["uncertainty"].get("bootstrap_seed", 42)
-    inst = _synth_instance(config)
-    model_type = config["model"]["type"]
-    model_params = config["model"]["params"]
+    inst = _synth_instance(config, verbose=True)
+    # Same source as the instance, so the fallback path (no CV file) still trains
+    # what config.yaml asks for and the CV path is used consistently.
+    model_type, model_params, _ = synth_model_spec(config)
     folds = make_folds(inst, "kfold", n_kfold=int(cvc.get("n_kfold", 4)), seed=seed)
     oracle = make_cv_oracle(inst)          # proxy ensemble on training labels
     os_tol = float(cvc.get("os_tolerance_frac", 0.1))
@@ -153,8 +208,7 @@ def run_synthetic_centered_pareto(config, methods=None, n_real=8):
     knobs = json.load(open(knobs_path))
     cvc = config.get("cv_calibration", {})
     factors = cvc.get("pareto_center_factors", [0.5, 0.75, 1.0, 1.5, 2.0])
-    model_type = config["model"]["type"]
-    model_params = config["model"]["params"]
+    model_type, model_params, _ = synth_model_spec(config, verbose=True)
     base_seed = config["uncertainty"].get("bootstrap_seed", 42)
     methods = methods or ["nominal", "robust_reg", "cp"]
 

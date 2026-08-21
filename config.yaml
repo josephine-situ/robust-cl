@@ -1,7 +1,23 @@
 data:
   # Synthetic test function (start here before real case studies)
   type: "synthetic"  # Change to "gastric_cancer" to run the study
-  n_train: 200
+  # 2500, raised from 200 on 2026-08-21. At n=200 the synthetic instance was not
+  # determined well enough to select a model on: the CV winner (mlp) had a refit
+  # spread of 0.62 on the training rows against a per-row label shift of 0.128 at
+  # rho=1 -- a 4.9x amplification, vs ~2x for the tree ensembles -- so 4 of 12
+  # refits disagreed with the nominal fit about the box corner and the wrapper
+  # prescribed x=(1,1). At n=2500 that spread falls to 0.092 (6.8x lower, and the
+  # SECOND LOWEST of the seven candidates), the nominal x* moves off the boundary
+  # to an interior point, and oof_sd falls 0.128 -> 0.113 against a true sigma of
+  # 0.100. The pathology was small-sample, not model choice, so no selection
+  # screen is needed: plain CV R^2 picks the model.
+  # rho keeps its meaning across the change by construction -- R_c = rho *
+  # scale(y_c) * sqrt(n) makes the PER-ROW shift rho * oof_sd at any n -- which is
+  # the transfer property the sqrt(n) convention exists for. The radius itself
+  # grows (1.81 -> 5.63 at rho=1); that is the same quantity, not a wider set.
+  # Nothing in results/synthetic or results/rho_sweep from before this carries
+  # over.
+  n_train: 2500
   n_features: 2
   noise_std: 0.1  # sigma for label noise
 
@@ -11,6 +27,30 @@ model:
     n_estimators: 50
     max_depth: 5
     random_state: 42
+
+# The C-MICL DMA-MR reactor instance (src/data/generate.py: reactor_micl).
+# Selected with `--problem reactor`; it does not read the `data` block above.
+reactor:
+  # 1,000 points, as C-MICL App. D.1. Each is a stiff ODE solve at rtol=atol=1e-10
+  # (~160 ms), so the design is cached under results/reactor/ keyed by (n, seed)
+  # and built once.
+  n_train: 1000
+  # Gaussian label noise. The paper says only that noise "was added" and never
+  # gives a level, so this is calibrated to their MODEL FIT and nothing else:
+  # 2.0 reproduces their reported ReLU-NN performance (our 5-fold CV R^2 0.958 vs
+  # their 0.954, read off Table 2 as 1 - MSE/1.2871). Never calibrated to a
+  # feasibility result.
+  noise_std: 2.0
+  # Fallback embedded model, used only until
+  # results/cv/reactor_selected_configs.json exists (run_cv.py --problem reactor).
+  # d=5 and n=1000 here, so the synthetic 2-feature defaults do not transfer.
+  model:
+    type: "gbm"
+    params:
+      n_estimators: 50
+      learning_rate: 0.1
+      max_depth: 4
+      random_state: 1
 
 optimization:
   # The downstream optimization problem
@@ -202,7 +242,18 @@ cv_calibration:
   # os_tolerance_frac of nominal (worse direction). Writes results/cv/*_robustness_knobs.json.
   fold_scheme: "auto"                 # auto -> temporal if Pub_Year present else kfold
   fold_cutoffs: [2004, 2005, 2006, 2007]  # gastric temporal forward-chaining (val = cutoff+1)
-  n_kfold: 4                          # synthetic KFold splits (no time)
+  # KFold splits for the single-decision problems (synthetic, reactor -- neither
+  # has time, so neither uses the temporal scheme). Inert on gastric.
+  #
+  # DELIBERATELY DIFFERENT FROM run_cv.py's 5. The two CVs score different things.
+  # Model selection (run_cv.py --cv-folds 5) scores R^2 over ROWS, so 5 folds give
+  # thousands of scored points and more folds buy nothing. This one scores ONE
+  # binary feasibility per fold, because the problem is single-decision -- so
+  # held-out feasibility is quantized to 1/n_kfold and the fold count IS the
+  # resolution of the whole rho curve. At 5 the only attainable values are
+  # 0, 0.2, ..., 1.0 and the 0.9 rho* target is met only by 1.0; at 10 the grid is
+  # 0, 0.1, ..., 1.0 and 0.9 = 9/10 is exact. Cost is linear in the fold count.
+  n_kfold: 10
   os_tolerance_frac: 0.1              # objective budget: keep obj within 10% of nominal
   # theta* is calibrated PER (method, coherence) cell, keyed "method@coherent" /
   # "method@incoherent". A coherent draw moves every outcome together, so at a fixed

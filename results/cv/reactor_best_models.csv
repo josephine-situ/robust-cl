@@ -1,0 +1,2 @@
+name,outcome_label,best_model,cv_r2,test_r2,best_params_str
+benzene_constraint,Benzene Flow (DMA-MR),mlp,0.9622122532630322,0.9957436129216327,"alpha=0.01, hidden_layer_sizes=(10, 5, 2), solver=lbfgs"

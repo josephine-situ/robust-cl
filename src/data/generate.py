@@ -319,7 +319,8 @@ def synthetic_nonlinear(n_train: int = 200,
                         n_test: int = 100,
                         n_features: int = 2,
                         noise_std: float = 0.1,
-                        seed: int = 42) -> ProblemInstance:
+                        seed: int = 42,
+                        fixed_constraint_config: dict = None) -> ProblemInstance:
     """
     Synthetic problem with known ground truth.
 
@@ -330,6 +331,16 @@ def synthetic_nonlinear(n_train: int = 200,
         min  -sum(x)          (want x large)
         s.t. f_true(x) <= b   (constraint limits x)
              0 <= x <= 1
+
+    ``fixed_constraint_config`` -- ``{"model_type": str, "model_params": dict}`` for
+    the single learned constraint, as ``run_cv.py --problem synthetic`` writes to
+    ``results/cv/synthetic_selected_configs.json``. It lands in
+    ``constraint_model_configs``, which ``nominal.resolve_constraint_config`` reads,
+    so ONE assignment reaches every method and the ``ScenarioBank``'s per-draw
+    refits alike -- the embedded model is then a CV result rather than
+    ``config.yaml``'s hard-coded ``rf`` (2026-08-19 deck, next step 2). ``None``
+    leaves it unset and each caller falls back to ``config.yaml``'s ``model``
+    block, reproducing pre-CV runs.
     """
     rng = np.random.RandomState(seed)
 
@@ -387,6 +398,176 @@ def synthetic_nonlinear(n_train: int = 200,
         constraints=[constraint1],
         gt_objective=gt_objective,
         gt_constraints=[f_true],
+        constraint_model_configs=(
+            [dict(fixed_constraint_config)] if fixed_constraint_config else None),
+    )
+
+
+def _reactor_dataset(n_train: int, noise_std: float, seed: int, cache_dir: str):
+    """``(U, y_clean, y_noisy)`` for the reactor, integrating the ODEs once and caching.
+
+    Each oracle call is a stiff ODE solve at ``rtol=atol=1e-10`` (~160 ms), so a
+    1,000-point design is ~3 minutes. That is cheap once and intolerable per run,
+    hence the cache -- keyed by ``(n_train, seed)`` because both change the rows.
+    ``noise_std`` is deliberately NOT in the key: the clean flows are what cost
+    minutes, and the noise is a cheap draw on top, so changing it re-uses the cache.
+    """
+    import os
+    from src.data.dma_mr import benzene_flow_batch, sample_designs
+
+    os.makedirs(cache_dir, exist_ok=True)
+    cache = os.path.join(cache_dir, f"reactor_dataset_n{n_train}_s{seed}.npz")
+    legacy = os.path.join(cache_dir, "reactor_dataset.npz")
+    if os.path.exists(cache):
+        z = np.load(cache)
+        U, y_clean = z["U"], z["y"]
+    elif os.path.exists(legacy) and n_train == 1000 and seed == 42:
+        z = np.load(legacy)                      # the first build, before keying
+        U, y_clean = z["U"], z["y"]
+        np.savez(cache, U=U, y=y_clean)
+    else:
+        U = sample_designs(n_train, seed=seed)
+        y_clean = benzene_flow_batch(U)
+        np.savez(cache, U=U, y=y_clean)
+    U, y_clean = U[:n_train], y_clean[:n_train]
+    ok = np.isfinite(y_clean)
+    if not ok.all():
+        # An integration failure is a missing oracle value, not a zero. Drop the
+        # row rather than train on a fabricated one.
+        U, y_clean = U[ok], y_clean[ok]
+    rng = np.random.RandomState(seed + 1)
+    y_noisy = y_clean + rng.normal(0.0, noise_std, size=len(y_clean))
+    return U, y_clean, y_noisy
+
+
+def reactor_micl(n_train: int = 1000,
+                 noise_std: float = 2.0,
+                 seed: int = 42,
+                 fixed_constraint_config: dict = None,
+                 cost_vector=None,
+                 cache_dir: str = "results/reactor") -> ProblemInstance:
+    """The C-MICL regression case study: a DMA-MR membrane reactor design.
+
+    Five design variables ``(v0, v_He, T, dt, L)``, minimize a linear operating
+    cost, subject to a LEARNED constraint that the outlet benzene flow reach 50
+    (Ovalle et al. 2025, App. D.1; reactor of Carrasco & Lima 2017).
+
+    WHY IT IS HERE. It is the only instance whose oracle is MECHANISTIC. Gastric's
+    judge is a fitted GT ensemble and synthetic's is a fitted proxy, so both carry
+    an error of their own exactly where a constrained optimum lives -- on the
+    constraint boundary. Measured on synthetic (2026-08-21) the proxy judge
+    disagreed with the analytic truth on 5 of 5 nominal decisions. Here ground-truth
+    feasibility is INTEGRATED (:func:`src.data.dma_mr.benzene_flow`), so that
+    failure mode is absent, and it is published ground for the comparison: C-MICL's
+    Figure 1 reports W-MICL -- our wrapper -- reaching only 0.45-0.85 ground-truth
+    feasibility here, never the 0.9 target.
+
+    SIGN CONVENTION. Every constraint in this repo is ``sum(w_i f_i(x)) <= rhs``,
+    and the requirement is a LOWER bound ``F_C6H6 >= 50``. So the single model
+    carries ``weight = -1`` against ``rhs = -50``, and ``gt_constraints`` returns
+    ``-F_C6H6`` to match -- ``metrics.py`` computes ``max(0, gt_fn(x) - rhs)`` and
+    would silently invert the feasibility column otherwise. D still perturbs the
+    labels on their natural scale (benzene flow); the weight only applies at
+    embedding time.
+
+    ``cost_vector`` is FIXED, defaulting to ones. C-MICL redraws it per instance,
+    but a new ``c`` is a different optimization problem, not a new sample of this
+    one, so redrawing would confound the rho axis with problem-to-problem variation.
+    Note the raw units are not commensurate -- ``T ~ 1e3`` and ``v0 ~ 1e3`` dominate
+    ``dt ~ 1`` in ``sum(x)`` -- so with ones the objective is effectively about
+    ``v0``, ``v_He`` and ``T``. That is a real property of the stated formulation,
+    not a bug, but pass an explicit ``cost_vector`` to weight the variables evenly.
+
+    ``noise_std = 2.0`` because the paper says only that "Gaussian noise was added"
+    without a level; 2.0 reproduces their reported ReLU-NN performance (our 5-fold
+    CV R^2 0.958 vs their 0.954, read off Table 2 as ``1 - MSE/1.2871``). Calibrated
+    to their MODEL FIT, never to any feasibility result.
+
+    THE DESIGN IS UNIFORM OVER THE BOX; THE OPTIMIZER IS NOT. C-MICL sample all five
+    variables uniformly and independently, but the optimizer is confined to the box
+    INTERSECTED with the D.1b-e ratio constraints. Measured on the n=1000, seed=42
+    design: only **216 of 1000 rows (21.6%)** satisfy those ratios, and only **30
+    (3.0%)** satisfy them AND reach ``F_C6H6 >= 50``. The binding ones are
+    ``v0/L >= 20`` (43.4% of rows), ``v0/v_He >= 0.75`` (69.8%) and ``v0 <= 1.1 T``
+    (81.0%); the other four are satisfied by >=97%.
+
+    So the learned constraint is fit largely OUTSIDE the region where it is
+    evaluated, and the binding boundary is supported by ~30 rows. This is kept, not
+    corrected: uniform sampling is what the paper specifies, and reproducing their
+    benchmark is the point. It is also why the instance is worth having -- model
+    uncertainty at the decision boundary is genuine here rather than manufactured,
+    which is what the wrapper's 0.45-0.85 ground-truth feasibility in their Figure 1
+    reflects, and it is the concrete form of the caveat C-MICL raise in their own
+    Discussion about feasible regions biased away from the data.
+    """
+    from src.data.dma_mr import (
+        benzene_flow, DECISION_NAMES, DECISION_RANGES, PRODUCT_FLOOR,
+    )
+
+    U, y_clean, y_noisy = _reactor_dataset(n_train, noise_std, seed, cache_dir)
+    d = len(DECISION_NAMES)
+
+    variable_lb = np.array([DECISION_RANGES[k][0] for k in DECISION_NAMES])
+    variable_ub = np.array([DECISION_RANGES[k][1] for k in DECISION_NAMES])
+    cost_vector = (np.ones(d) if cost_vector is None
+                   else np.asarray(cost_vector, dtype=float))
+
+    # C-MICL D.1b-e, cross-multiplied into the sum(coeffs*x) <= rhs form. Ratios
+    # are safe to clear because every variable's box is strictly positive.
+    i_v0, i_vHe, i_T, i_dt, i_L = range(d)
+
+    def _dc(pairs, rhs):
+        c = np.zeros(d)
+        for j, v in pairs:
+            c[j] += v
+        return DomainConstraint(coeffs=c, rhs=float(rhs))
+
+    domain_constraints = [
+        _dc([(i_dt, 10.0), (i_L, -1.0)], 0.0),      # L/dt  >= 10
+        _dc([(i_L, 1.0), (i_dt, -150.0)], 0.0),     # L/dt  <= 150
+        _dc([(i_vHe, 0.75), (i_v0, -1.0)], 0.0),    # v0/v_He >= 0.75
+        _dc([(i_v0, 1.0), (i_vHe, -3.0)], 0.0),     # v0/v_He <= 3.0
+        _dc([(i_L, 20.0), (i_v0, -1.0)], 0.0),      # v0/L  >= 20
+        _dc([(i_v0, 1.0), (i_L, -120.0)], 0.0),     # v0/L  <= 120
+        _dc([(i_v0, 1.0), (i_T, -1.1)], 0.0),       # v0 <= 1.1 T
+    ]
+
+    def neg_benzene(x):
+        """``-F_C6H6(x)``, the ground truth in the repo's ``<= rhs`` convention."""
+        return -benzene_flow(np.asarray(x, dtype=float).ravel())
+
+    model_data = MLModelData(
+        X_train=U,
+        y_train=y_noisy,
+        y_true=y_clean,
+        weight=-1.0,
+        # No label_bounds: benzene flow is bounded below by 0, but at rho=1 the
+        # per-row shift is one unexplained sd (~2.4) against labels of 11-70, so a
+        # bound at 0 would never bind and would only add a clip nothing uses.
+        label_bounds=None,
+    )
+    constraint = LearnedConstraint(
+        name="benzene_constraint",
+        models_data=[model_data],
+        rhs=-float(PRODUCT_FLOOR),
+        f_true=neg_benzene,
+    )
+
+    return ProblemInstance(
+        X_test=np.empty((1, 0)),          # single-decision, as synthetic
+        cost_vector=cost_vector,
+        variable_lb=variable_lb,
+        variable_ub=variable_ub,
+        n_features=d,
+        decision_var_indices=list(range(d)),
+        context_var_indices=[],
+        constraints=[constraint],
+        gt_objective=lambda x: float(np.dot(cost_vector, np.asarray(x, float).ravel())),
+        gt_constraints=[neg_benzene],
+        domain_constraints=domain_constraints,
+        feature_names=list(DECISION_NAMES),
+        constraint_model_configs=(
+            [dict(fixed_constraint_config)] if fixed_constraint_config else None),
     )
 
 

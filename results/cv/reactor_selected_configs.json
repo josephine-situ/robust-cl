@@ -1,0 +1,15 @@
+{
+  "benzene_constraint": {
+    "model_type": "mlp",
+    "model_params": {
+      "alpha": 0.01,
+      "hidden_layer_sizes": [
+        10,
+        5,
+        2
+      ],
+      "solver": "lbfgs",
+      "random_state": 1
+    }
+  }
+}

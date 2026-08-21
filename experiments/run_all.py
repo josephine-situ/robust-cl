@@ -19,11 +19,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data.generate import synthetic_nonlinear, gastric_cancer
-from src.methods.nominal import resolve_mip_gap, solve_nominal
-from src.methods.robust_regression import solve_robust_regression
-from src.methods.wrapper import solve_wrapper, _get_shared_bootstrap_indices
-from src.methods.cp import solve_cp
-from src.methods.uncertainty import uncertainty_set_from_config
+from experiments.method_builders import build_method, synth_settings
+from src.methods.wrapper import _get_shared_bootstrap_indices
 from src.evaluation.metrics import evaluate_all
 
 
@@ -88,11 +85,6 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
     n_bootstrap = unc.get("n_bootstrap", 25)
     bootstrap_seed = unc.get("bootstrap_seed", 42)
     bootstrap_frac = unc.get("bootstrap_frac", 0.5)
-    cp_k_neighbors_frac = unc.get("cp_k_neighbors_frac", 0.1)
-    cp_k_neighbors_min = unc.get("cp_k_neighbors_min", 1)
-    cp_n_candidates = unc.get("cp_n_candidates", 20)
-
-    from functools import partial
 
     # Only consumed when methods.wrapper.scenario_source == "bootstrap"; under the
     # default "noise" the wrapper takes its P models from ScenarioBank and this
@@ -112,81 +104,35 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
 
     solver_fns = {}
 
-    # One optimality tolerance for every method -- the objective is what they are
-    # compared on, so a per-method gap would confound that comparison.
-    mip_gap = resolve_mip_gap(config)
-
-    solver_fns["nominal"] = partial(
-        solve_nominal, model_type=model_type, model_params=model_params, rho=0.0,
-        mip_gap=mip_gap,
-    )
+    # Argument lists come from the shared builder (experiments/method_builders.py),
+    # the same one the sweeps and the gastric runner call -- including the ONE
+    # optimality tolerance every method is solved at, since the objective is what
+    # they are compared on.
+    settings = synth_settings(config)
 
     # robust_param is intentionally NOT run: it is commented out of the gastric
     # methods_to_run (config.yaml) and absent from make_paper_figures.METHODS, so
     # its rows were computed and then silently dropped from every figure.
     # methods.robust_param.rho is still read by run_chemo_robust.py.
-
     robust_reg_cfg = config["methods"].get("robust_reg", {})
-    solver_fns["robust_reg"] = partial(
-        solve_robust_regression,
-        model_type=model_type,
-        model_params=model_params,
-        label_eps=knobs.get("robust_reg", robust_reg_cfg.get("label_eps", 0.1)),
-        budget_frac=robust_reg_cfg.get("budget_frac", 0.5),
-        K=robust_reg_cfg.get("K", 5),
-        seed=bootstrap_seed,
-        rho=0.0,
-        uncertainty_set=uncertainty_set_from_config(config),
-        mip_gap=mip_gap,
-    )
-
     wrapper_cfg = config["methods"]["wrapper"]
-    solver_fns["wrapper"] = partial(
-        solve_wrapper,
-        model_type=model_type,
-        model_params=model_params,
-        rho=0.0,
-        n_estimators=wrapper_cfg.get("n_estimators", n_bootstrap),
-        alpha=knobs.get("wrapper", wrapper_cfg["alpha"]),
-        seed=bootstrap_seed,
-        bootstrap_cache=bootstrap_cache,
-        bootstrap_frac=bootstrap_frac,
-        # Same D, same seeded draw sequence CP separates over -- the wrapper's P
-        # models are a prefix of CP's bank, so alpha=0 and tau->0 are comparable.
-        scenario_source=wrapper_cfg.get("scenario_source", "noise"),
-        uncertainty_set=uncertainty_set_from_config(config),
-        robustify_objective=wrapper_cfg.get("robustify_objective", False),
-        mip_gap=mip_gap,
-    )
-
     cp_cfg = config["methods"]["cp"]
-    solver_fns["cp"] = partial(
-        solve_cp,
-        model_type=model_type,
-        model_params=model_params,
-        rho=0.0,
-        max_iterations=cp_cfg["max_iterations"],
-        cp_k_neighbors_frac=cp_k_neighbors_frac,
-        cp_k_neighbors_min=cp_k_neighbors_min,
-        cp_n_candidates=cp_n_candidates,
-        seed=bootstrap_seed,
+    fixed_knob = {
+        "nominal": 0.0,
+        "robust_reg": knobs.get("robust_reg", robust_reg_cfg.get("label_eps", 0.1)),
+        "wrapper": knobs.get("wrapper", wrapper_cfg["alpha"]),
         # Relative distance tolerance tau -- CP's robustness knob on the basic
         # (synthetic) path too. Without it the basic separation cuts every
         # violation > 1e-6, so CP has no lever and over-cuts to no solution.
-        cp_dist_tol_rel=knobs.get("cp", cp_cfg.get("dist_tol_rel")),
-        cp_alpha=0.0,
-        cp_cut_eviction=cp_cfg.get("cut_eviction", "evict_slack"),
-        # Separate over a FIXED bank of draws from the shared uncertainty set D,
-        # so the worst violation over the bank is monotone across iterations.
-        cp_scenario_source=cp_cfg.get("scenario_source", "noise"),
-        cp_n_scenarios=cp_cfg.get("n_scenarios", 200),
-        cp_d0_quantile=cp_cfg.get("d0_quantile", 0.9),
-        cp_tolerance_basis=cp_cfg.get("tolerance_basis", "scale"),
-        cp_objective_monotone=cp_cfg.get("objective_monotone", False),
-        cp_mip_gap=mip_gap,
-        cp_cut_whole_scenario=cp_cfg.get("cut_whole_scenario", True),
-        cp_uncertainty=uncertainty_set_from_config(config),
-    )
+        "cp": knobs.get("cp", cp_cfg.get("dist_tol_rel")),
+    }
+    for method, knob in fixed_knob.items():
+        solver_fns[method] = build_method(
+            method, knob, model_type, model_params, settings,
+            # Only consumed when methods.wrapper.scenario_source == "bootstrap";
+            # under the default "noise" this cache is built and discarded.
+            bootstrap_cache=bootstrap_cache,
+        )
 
     print("\n[Evaluating all methods prescriptively...]")
     evaluations = evaluate_all(solver_fns, instance)

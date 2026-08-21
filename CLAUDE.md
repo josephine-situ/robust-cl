@@ -7,8 +7,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Research code for **robust constraint learning**: a trained model `f(x;theta)` is
 embedded as a constraint `f(x) <= b` inside an optimization problem, and noisy
 training labels yield models whose "optimal" decisions violate the *true*
-constraint. Four methods are benchmarked on a synthetic LP and the OptiCL
-gastric-cancer case study (Maragno et al. 2025, Table 6).
+constraint. Four methods are benchmarked on a synthetic LP, the C-MICL DMA-MR
+reactor (Ovalle et al. 2025, Sec. 5.1) and the OptiCL gastric-cancer case study
+(Maragno et al. 2025, Table 6).
 
 The contribution is **Cutting Planes** (`src/methods/cp.py`): separate the
 worst-case model over a fixed bank of relabelings drawn from a shared uncertainty
@@ -31,6 +32,8 @@ uv run python experiments/run_chemo_robust.py --quick   # gastric smoke test (5 
 uv run python experiments/run_chemo_robust.py           # full gastric (long; use SLURM)
 uv run python experiments/run_all.py                    # synthetic, all methods
 uv run python experiments/run_cv.py                     # model type/hyperparameter CV
+uv run python experiments/run_cv.py --problem synthetic --ensemble  # + the synthetic CV oracle
+uv run python experiments/run_cv.py --problem reactor --ensemble    # DMA-MR model + proxy judge
 uv run python experiments/summarize_table6.py           # Table 6 CSV -> .csv/.tex
 uv run python experiments/verify_embedding.py           # MIP vs sklearn/xgb agreement
 uv run python experiments/run_adversary_probe.py        # is the random bank a weak adversary?
@@ -44,7 +47,8 @@ sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu
 uv run python experiments/run_rho_sweep.py --problem gastric --ablate    # coherent cell (default)
 uv run python experiments/run_rho_sweep.py --problem gastric --incoherent --ablate
 uv run python experiments/run_rho_sweep.py --problem gastric --match-bank    # B=P
-uv run python experiments/run_rho_sweep.py --problem synthetic --n-folds 5   # 4 folds quantizes feas to 0.25
+uv run python experiments/run_rho_sweep.py --problem synthetic   # 10 folds; feas quantized to 0.1
+uv run python experiments/run_rho_sweep.py --problem reactor     # ODE ground truth
 uv run python experiments/run_rho_sweep.py --seed 7          # repeat the sweep on another bank
 uv run python experiments/run_rho_sweep.py --rho-star-only --feas-target 0.8 --out-suffix _t080
 uv run python experiments/pool_rho_seeds.py --problem gastric --cell _coh  # spread across seeds
@@ -89,6 +93,17 @@ synthetic are unaffected.
 Shared MIP scaffolding lives in `nominal.py` (`build_decision_vars`,
 `add_problem_constraints`, `embed_constraints`, objective builders); every method
 returns a `SolutionResult`.
+
+**Every runner builds its solvers through `experiments/method_builders.py`**
+(`build_method(method, knob, ...)`, `cp_solver`) — the one place a solver's
+argument list is written, and the one place the cross-cutting decisions live: the
+single `mip_gap`, `cp_alpha` pinned at 0, the shared `uncertainty_set`. It replaced
+four near-copies (`run_all`, `run_sweep._synth_build`,
+`run_chemo_robust._build_solvers` / `_method_build_map`) that each had to be
+patched separately — the one-MIP-gap fix landed in all four. The **problem**-specific
+half stays with the problem: a settings resolver per problem
+(`_resolve_run_settings` for gastric, `method_builders.synth_settings` for
+synthetic/reactor) and the knob `ranges` / strength maps in `run_chemo_robust`.
 
 - **`nominal.py`** — no robustness, plus the toolkit everything else imports.
 - **`robust_regression.py`** — robustify the *fit*:
@@ -335,11 +350,97 @@ a lazy wrapper at alpha=0**.
 
 **Frozen gastric picks** (`results/cv/gastric_selected_configs.json`, by `run_cv.py`
 on R^2, *before* any robustness): **XGB** for DLT/blood/constitutional/infection,
-**linear (ElasticNet)** for GI and OS. Synthetic does **not** go through
-`run_cv.py` — its model is hard-coded in `config.yaml` (`rf`, 50 trees, depth 5)
-and has never been CV'd.
+**linear (ElasticNet)** for GI and OS.
+
+**Synthetic now goes through `run_cv.py` too** (2026-08-21), on the same grids and
+the same 5-fold R^2 criterion: `results/cv/synthetic_selected_configs.json`, loaded
+by `run_sweep.synth_model_spec` and pushed onto the instance as
+`constraint_model_configs`, so one assignment reaches every method and every
+`ScenarioBank` refit. Current pick: **`mlp`, one hidden layer of 50, lbfgs,
+alpha 0.01** (CV R^2 0.9639, test R^2 0.9990 on an independent 1000-row draw). It
+beats `gbm` 0.9603 and the old hard-coded `rf` 0.9247. Absent that JSON, every
+caller still falls back to `config.yaml`'s `model` block, which reproduces pre-CV
+runs.
+
+Two things had to be true first, and neither was at `n_train = 200`:
+
+- **`n_train` is 2500, up from 200.** At 200 the CV winner (`mlp` (10,5,2)) had a
+  refit-to-refit prediction spread of **0.62** on the training rows against a
+  per-row label shift of 0.128 at `rho=1` — **4.9x amplification**, vs ~2x for the
+  tree ensembles — so 4 of 12 refits disagreed with the nominal fit about the box
+  corner and **the wrapper prescribed x=(1,1)**, where `f_true = 2.5` against
+  `rhs = 1.0`. At 2500 that spread is **0.092**, the second lowest of the seven
+  candidates, and the nominal `x*` moves off the boundary to the interior. The
+  pathology was small-sample, not model choice, so **no selection screen is
+  needed** — plain CV R^2 picks the model. Verified downstream: the wrapper returns
+  `feas=1.000`, `obj=-1.2504` at `rho=0.2`, and bank training fell 43.1s -> 1.7s on
+  12.5x the data.
+- **The embedding is exact for MLP**: max `|embedded - sklearn|` is `7.4e-14` over
+  the box corners and 15 training rows. The corner solution was never an encoding
+  error.
+
+`rho` keeps its meaning across the `n` change **by construction** — `R_c = rho *
+scale(y_c) * sqrt(n)` fixes the per-row shift at `rho * oof_sd` for any `n`, which
+is what the `sqrt(n)` convention is for. The radius grows (1.81 -> 5.63 at
+`rho=1`); that is the same quantity, not a wider set. `oof_sd` fell 0.128 -> 0.113
+against a true sigma of 0.100, so the instance is better determined too.
+**Nothing in `results/synthetic/` or the synthetic `results/rho_sweep/` cells from
+before 2026-08-21 carries over.**
 
 The *marketing* (in-LP context) setting in the README is **not implemented**.
+
+### The reactor instance (`src/data/dma_mr.py`, `reactor_model_specs.py`)
+
+**The C-MICL regression case study** (Ovalle et al. 2025 Sec. 5.1 / App. D.1; the
+reactor of Carrasco & Lima 2017), added **2026-08-21**. Five design variables
+`(v0, v_He, T, dt, L)`, minimize a linear operating cost, subject to a learned
+constraint that outlet benzene flow reach 50.
+
+**It is here because its oracle is MECHANISTIC.** Every other judge in this repo is
+fitted, so it carries an error of its own exactly where a constrained optimum
+lives — on the boundary. Here ground-truth feasibility is *integrated*, so that
+failure mode is absent, and it is published ground: C-MICL's Figure 1 reports
+W-MICL — **our wrapper** — reaching only 0.45–0.85 ground-truth feasibility here,
+never the 0.9 target.
+
+- **Two judges, and they must not be confused.** `make_gt_oracle` returns the
+  **ODE** (`ReactorODEOracle`) — final evaluation and audits only. `make_cv_oracle`
+  returns the **proxy** six-class ensemble for **rho tuning**, because tuning rho
+  against the exact truth is the same error as pinning D to synthetic's known
+  `noise_std`. `make_gt_oracle` returns `None` on every other problem; callers must
+  handle that rather than fall back to the proxy.
+- **Sign convention.** The requirement is a *lower* bound, so the single model
+  carries `weight = -1` against `rhs = -50`, and `gt_constraints` returns
+  `-F_C6H6`. `SyntheticOracle` now takes that `weight`; hard-coding `+1` would
+  silently invert the feasibility column.
+- **`cost_vector` is FIXED at ones.** C-MICL redraw it per instance, but a new `c`
+  is a *different problem*, not a new sample of this one. Note the units are not
+  commensurate (`T ~ 1e3` vs `dt ~ 1`), so with ones the objective is effectively
+  about `v0`, `v_He` and `T` — a property of the stated formulation, not a bug.
+- **`noise_std = 2.0`**, calibrated to their **model fit** and nothing else: the
+  paper says only that noise "was added". 2.0 reproduces their ReLU-NN (our 5-fold
+  CV R^2 0.958 vs their 0.954, read off Table 2 as `1 - MSE/1.2871`). Their stated
+  "variance 1.2871" cannot be this quantity — their own Table 1 spans 28–43 — it is
+  a standardized target, which is why R^2 is the check.
+- **The design is uniform over the box; the optimizer is not.** Only **216/1000
+  (21.6%)** of the sampled rows satisfy the D.1b–e ratio constraints, and only
+  **30 (3.0%)** satisfy them *and* reach `F_C6H6 >= 50`. Binding: `v0/L >= 20`
+  (43.4%), `v0/v_He >= 0.75` (69.8%), `v0 <= 1.1 T` (81.0%). **Kept, not corrected**
+  — uniform sampling is what the paper specifies. It is also why the instance is
+  worth having: boundary uncertainty here is genuine, and it is the concrete form
+  of the caveat C-MICL raise in their own Discussion.
+- **Validation.** RF 0.855 vs their 0.864 and GBM 0.912 vs 0.907 on 5-fold CV R^2;
+  CART 0.797 is below their LMDT 0.951 because a linear-model tree is a richer
+  class, not because of a discrepancy. Table 1 agrees to a consistent **-1.6%**
+  (not scatter; not the negative-flow guard — probably their fixed 2000-point
+  integration grid). **Do not quote our `F_C6H6` values as reproductions of
+  theirs.**
+- **Cost.** Each oracle call is a stiff ODE solve at `rtol=atol=1e-10`, ~160 ms, so
+  the design is **cached** under `results/reactor/` keyed by `(n, seed)`.
+- `opyrability` is **not** a dependency. The model lives in that project's
+  `tests/dma_mr.py`, is not exposed by the distribution, and each of its entry
+  points varies only a subset of the five inputs — so the RHS is vendored with
+  attribution and the package was removed again after being tried.
 
 ### Model training & embedding (`src/models/`)
 
@@ -362,7 +463,8 @@ perturbed refits — run `verify_embedding.py` after touching any of this.
 
 - **`chemo_metrics.py`** — Table 6 metrics. All reported outcomes use the **GT
   ensemble** (6 sklearn models/outcome), *not* the embedded MIP models.
-- **`metrics.py`** — synthetic feasibility/violation metrics.
+- **`metrics.py`** — synthetic feasibility/violation metrics. This is where the
+  analytic `f_true` is allowed; the CV oracle below is not.
 
 **Protocol.** The GT ensemble is fit on all **416** gastric arms (train + test), a
 *superset* of the constraint fit rows — which is why one full-data draw would
@@ -408,6 +510,26 @@ re-run; the other rows are unaffected.
   carries every column, and `--rho-star-only` recomputes under a new
   `--feas-target` / `--min-solved` / `--exclude-capped` into `--out-suffix`. The
   criteria are written back as columns.
+- **The synthetic CV oracle is a mixed-type ensemble** (2026-08-21). It was a
+  single model of *the same class the candidate embeds* — an `rf` judging an `rf` —
+  so oracle and candidate shared their approximation error. It is now the six
+  classes gastric's GT ensemble averages (`linear, svm, cart, rf, gbm, xgb`), tuned
+  by `run_cv.py --problem synthetic --ensemble` into
+  `synthetic_gt_ensemble_configs.json` with fallback specs in
+  `src/data/synthetic_model_specs.py`. Since the *candidate* is now `mlp` and the
+  GT grids carry no MLP, judge and candidate currently share **no** model class at
+  all — a cleaner separation than gastric, where `xgb` appears in both. Two
+  properties are kept deliberately: it is fit on the **noisy** `y_train` (the
+  analytic `gt_constraints` stay final-eval only, or D would be calibrated against
+  the very truth it is judged by), and on the **full** training rows, a superset of
+  any fold's — exactly as gastric's oracle is. So synthetic held-out feasibility is
+  an **m-out-of-n** statement, not a genuinely held-out one; that is the protocol
+  on both problems, not a synthetic defect.
+- **Synthetic folds are 5** (`cv_calibration.n_kfold`, was 4), matching
+  `run_cv.py`'s model-selection CV so both CV stages read the same folds. One solve
+  per fold means feasibility takes only `0, 0.2, ..., 1.0`, so **the 0.9 target is
+  met only by 1.0**: synthetic `rho*` reads as "the largest rho at which every fold
+  is feasible". Read the curve there.
 - Every cell carries `status`, `n_capped`, and a wall clock split into the
   **master** phase (for CP, the whole cut loop) and the **test-point** phase — the
   comparison CP's MIP-size claim rests on. Capped cells are **kept and flagged**.
@@ -448,12 +570,20 @@ Stated limitations of the current numbers, not bugs to fix silently.
 1. **The rho axis is unresolved** — CP censored at the grid max on both problems;
    extend past rho=1. Unexplained: CP's dip at rho=0.5 on gastric; synthetic
    robust_reg at rho >= 0.5 (objective better than nominal at feasibility 0).
-2. **The synthetic embedded model has never been CV'd** (hard-coded `rf` 50/5), and
-   the sweep would ignore a CV result if one existed.
-3. **Synthetic CV scoring is optimistic** — `make_cv_oracle` builds the oracle from
-   the *same* model class it judges, so oracle and candidate share errors (the
-   analytic `gt_constraints` are final-eval only). Val rows are unused and
-   feasibility is quantized to `1/n_folds`. **Read the curve, not rho\***, there.
+2. **RESOLVED (2026-08-21). The synthetic embedded model is CV'd** and the sweep
+   reads the result: `mlp` (50,), CV R^2 0.9639 / test 0.9990, via
+   `synthetic_selected_configs.json` -> `constraint_model_configs`. Required raising
+   `n_train` 200 -> 2500; at 200 the winner amplified a 0.128/row label shift into a
+   0.62 refit spread and the wrapper prescribed the box corner. Still **asserted**:
+   `n_features` is 2 and `noise_std` 0.1 by fiat, and `--seed`'s effect on `mlp`
+   refits has not been re-measured at the new `n`.
+3. **PARTLY RESOLVED (2026-08-21). Synthetic CV scoring** — the oracle is no
+   longer the candidate's own class (six-class ensemble, and no MLP in it, so no
+   class is shared), and `n_kfold` is 5 rather than 4. What **remains open** is the
+   part a fold scheme cannot fix: on a single-decision problem the fold-val rows
+   are unused, the oracle is fit on the full training rows, and feasibility is
+   quantized to `1/n_folds` — so a synthetic feasibility is an **m-out-of-n**
+   statement over 6 possible values. **Read the curve, not rho\***, there.
 4. **The DLT draw is inconsistent** — objection (4) above.
 5. **Nothing is confirmed on the test set under the ellipsoid**, so rho\* has no
    training-draw error bars.
@@ -461,8 +591,25 @@ Stated limitations of the current numbers, not bugs to fix silently.
    width model, and our folds are temporal while conformal needs exchangeability.
    Expected infeasible on gastric anyway: the 0.78-1.02 unexplained ratio gives a
    ~1.65 sd half-width on five constraints at once.
-7. **Only two instances.** WFP food basket (Maragno's own wrapper setting) is the
-   intended third.
+7. **PARTLY RESOLVED (2026-08-21). A third instance exists** — the C-MICL DMA-MR
+   reactor, with a mechanistic ODE oracle. WFP food basket (Maragno's own wrapper
+   setting) remains unimplemented, and no rho sweep has been *run* on the reactor
+   yet — only the instance, both judges and the wiring are in place.
+8. **NEW (2026-08-21). A fitted judge cannot score a boundary optimum.** A
+   constrained optimum sits ON the constraint by construction, which is exactly
+   where a fitted oracle's own error decides the verdict. Measured on synthetic:
+   the proxy judge's error in the decision band has sd 0.039 against margins of
+   0.015–0.020, it flips **31%** of verdicts against the analytic truth inside that
+   band, and it called **5 of 5** nominal decisions infeasible that `f_true` calls
+   feasible. A 0.0017 change in `sum(x)` moved reported wrapper feasibility from
+   0.000 to 1.000. **The bias is not neutral between methods**: robust methods
+   leave slack, where the judge is reliable, while nominal sits on the boundary,
+   where it is not — so it flatters the contribution. The reactor is the instance
+   where this is measurable: there the proxy agrees with the ODE on 5/5 nominal
+   decisions (margins of 4–7 against judge sd 1.6), while still flipping **25.9%**
+   of verdicts inside its own `|F - 50| < 5` band. Synthetic feasibility numbers
+   should be read as **judge-dominated near the boundary**; gastric is unmeasurable
+   and deliberately left alone.
 
 ## Presentations (`presentations/`)
 

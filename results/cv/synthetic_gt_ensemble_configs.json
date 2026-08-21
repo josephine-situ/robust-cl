@@ -1,0 +1,59 @@
+{
+  "synthetic_constraint": [
+    {
+      "model_type": "linear",
+      "params": {
+        "alpha": 0.01,
+        "l1_ratio": 1.0,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "svm",
+      "params": {
+        "C": 10.0,
+        "epsilon": 0.01,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "cart",
+      "params": {
+        "max_depth": 8,
+        "max_features": 1.0,
+        "min_samples_leaf": 0.02,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "rf",
+      "params": {
+        "max_depth": 8,
+        "max_features": "sqrt",
+        "n_estimators": 250,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "gbm",
+      "params": {
+        "learning_rate": 0.05,
+        "max_depth": 3,
+        "n_estimators": 250,
+        "subsample": 0.7,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "xgb",
+      "params": {
+        "colsample_bytree": 0.3,
+        "learning_rate": 0.05,
+        "max_depth": 2,
+        "n_estimators": 250,
+        "subsample": 0.7,
+        "random_state": 1
+      }
+    }
+  ]
+}

@@ -93,7 +93,48 @@
   \]
   \begin{itemize}
     \item One LP, one learned constraint, no context.
-    \item $n=200$, $d=2$, $\sigma=0.1$. Coherence vacuous (one outcome).
+    \item $n=2500$, $d=2$, $\sigma=0.1$. Coherence vacuous (one outcome).
+    \item Embedded model \textbf{CV-selected} (MLP $(50)$, CV $R^2$ 0.964); was a
+      hard-coded \texttt{rf}. $n$ raised from 200: there the CV winner amplified a
+      $0.128$/row label shift into a $0.62$ refit spread and the wrapper
+      prescribed the box corner.
+    \item \textbf{Read feasibility here with care.} The tuning judge is a fitted
+      proxy, and a constrained optimum sits \emph{on} the boundary --- error sd
+      $0.039$ against margins $0.015$--$0.020$, $31\%$ of verdicts flipped vs
+      $f_{\text{true}}$ in that band. Not neutral between methods: robust methods
+      leave slack, nominal does not.
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Problem settings: reactor (C-MICL)}
+  \small
+  DMA-MR membrane reactor, methane $\to$ hydrogen + benzene
+  (Ovalle et al.\ 2025 App.~D.1; reactor of Carrasco \& Lima 2017).
+  \vspace{-0.3em}
+  \[
+    \min_{x}\; c^\top x \quad\text{s.t.}\quad \hat h(x;\theta)\ge 50,
+    \qquad x=(v_0, v_{\mathrm{He}}, T, d_t, L)
+  \]
+  \vspace{-1.4em}
+  \begin{itemize}
+    \item \textbf{Ground truth is a system of ODEs}, not a fitted model --- the only
+      such oracle here, and the reason for the instance. Feasibility is
+      \emph{integrated}.
+    \item \textbf{Two judges, kept apart.} ODE $\Rightarrow$ final evaluation and
+      audits. Proxy ensemble $\Rightarrow$ $\rho$ tuning: calibrating $\rho$
+      against exact truth is the same error as pinning $\mathcal D$ to synthetic's
+      known $\sigma$.
+    \item $n=1000$ uniform over the box; 4 linear ratio constraints (D.1b--e).
+      Lower bound, so $w=-1$, $\text{rhs}=-50$. $c$ \textbf{fixed} at ones --- a new
+      $c$ is a different problem.
+    \item \textbf{Design $\ne$ feasible set}: only $216/1000$ ($21.6\%$) rows meet
+      the ratio constraints, $30$ ($3.0\%$) also reach $50$. Kept --- it is what the
+      paper specifies, and it makes boundary uncertainty genuine.
+    \item \textbf{Published baseline}: their Fig.~1 has W-MICL --- our wrapper ---
+      at $0.45$--$0.85$ ground-truth feasibility, never reaching $0.9$.
+    \item Validated: RF $0.855$ vs their $0.864$, GBM $0.912$ vs $0.907$
+      (5-fold $R^2$). Table 1 agrees to a consistent $-1.6\%$.
   \end{itemize}
 \end{frame}
 
@@ -530,13 +571,15 @@
 \begin{frame}{Evaluation}
   \small
   \begin{center}
-  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.4cm}>{\raggedright\arraybackslash}p{3.8cm}>{\raggedright\arraybackslash}p{3.6cm}@{}}
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{1.8cm}>{\raggedright\arraybackslash}p{3.0cm}>{\raggedright\arraybackslash}p{2.6cm}>{\raggedright\arraybackslash}p{2.4cm}@{}}
     \toprule
-    & Gastric & Synthetic \\
+    & Gastric & Synthetic & Reactor \\
     \midrule
-    Ground truth & GT ensemble, fit on all \textbf{416} arms (train + test) & Exact analytic constraint \\
+    Ground truth & GT ensemble, fit on all \textbf{416} arms (train + test)
+      & Exact analytic constraint & \textbf{ODE integration} \\
     New train draw & $m$ of $n=320$ arms, no replacement; headline $m/n=0.5$,
-      $R=10$ draws & Fresh noise, seeded per draw \\
+      $R=10$ draws & Fresh noise, seeded per draw & Fresh noise on cached
+      ODE design \\
     \bottomrule
   \end{tabular}
   \end{center}
@@ -547,6 +590,12 @@
     \item GT is fit on a \emph{superset} of the constraint rows $\Rightarrow$ a
       single full-data draw favours nominal. Hence subsampling.
     \item Common random numbers across methods; \texttt{all\_constraints} only.
+    \item \textbf{A fitted judge cannot score a boundary optimum.} Gastric and
+      synthetic both judge with a fitted model, whose error decides the verdict
+      exactly where the optimum sits. Reactor is where this is measurable: the
+      proxy agrees with the ODE on $5/5$ nominal decisions (margins $4$--$7$ vs
+      judge sd $1.6$) yet still flips $25.9\%$ of verdicts inside its own
+      $|F-50|<5$ band.
   \end{itemize}
   \smallskip
   \footnotesize
