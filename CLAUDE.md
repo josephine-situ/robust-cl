@@ -44,16 +44,32 @@ sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu
 uv run python experiments/run_rho_sweep.py --problem gastric --ablate    # coherent cell (default)
 uv run python experiments/run_rho_sweep.py --problem gastric --incoherent --ablate
 uv run python experiments/run_rho_sweep.py --problem gastric --match-bank    # B=P
-uv run python experiments/run_rho_sweep.py --problem synthetic --n-folds 10  # 4 folds quantizes feas to 0.25
+uv run python experiments/run_rho_sweep.py --problem synthetic --n-folds 5   # 4 folds quantizes feas to 0.25
+uv run python experiments/run_rho_sweep.py --seed 7          # repeat the sweep on another bank
 uv run python experiments/run_rho_sweep.py --rho-star-only --feas-target 0.8 --out-suffix _t080
+uv run python experiments/pool_rho_seeds.py --problem gastric --cell _coh  # spread across seeds
 uv run python experiments/plot_rho_sweep.py --suffix _coh    # -> results/figures/fig_rho_*.pdf
-sbatch experiments/submit_rho_sweep.sh                       # PROBLEM/COHERENCE/MATCH_BANK/RHO_GRID env
+sbatch experiments/submit_rho_sweep.sh                       # seed job array; PROBLEM/COHERENCE/MATCH_BANK/RHO_GRID/SEEDS env
 ```
 
 Grids: rho `[0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]`, tau `[1.0, 0.1, 0.01, 0.001]`,
 alpha `[0.0, 0.1, 0.2, 0.3, 0.5]`. Runs resume from a checkpoint keyed
 `(method@rho, knob)` **only**, so **always pass the cell flags** — otherwise a
-second cell resumes the first's rows and overwrites its curve.
+second cell resumes the first's rows and overwrites its curve. The cell is
+`_coh`/`_incoh` + `_matchbank` + `_f<n>` (`--n-folds`) + `_s<seed>` (`--seed`).
+
+**`--seed` is the bank axis** (since 2026-08-21). D is *sampled*: CP cuts against
+B=200 draws, the wrapper embeds P=20, so one curve cannot separate the method from
+the bank it drew. The flag reseeds the `ScenarioBank` **and** every model's
+`random_state` — which moves `oof_sd`, so `R_c` wobbles a few percent between
+seeds (synthetic fold 1: 0.1314 at seed 7 vs 0.1238 at seed 42) — while the data
+and the evaluation folds keep `uncertainty.bootstrap_seed` and stay bit-identical.
+`pool_rho_seeds.py` writes `*_pooled.csv`: mean/sd of feasibility per (method,
+rho) and rho* per seed. With ~3 seeds that is a **range, not a CI**, and it leaves
+the training-draw half of Known gap #5 open (the folds are fixed by construction).
+`submit_rho_sweep.sh` runs one seed per array task (`SEEDS="42 7 13"`,
+`--array=0-2%2`), ablations on task 0 only, and **omits `robust_reg`** — see Known
+gaps #1; put it back with `METHODS="nominal cp wrapper robust_reg"`.
 
 **Only `results/rho_sweep/` and `results/figures/fig_rho_*` are current** —
 ellipsoid geometry and fixed temporal folds (2026-08-17/19). Everything else

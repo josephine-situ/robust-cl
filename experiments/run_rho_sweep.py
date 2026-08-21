@@ -107,10 +107,38 @@ OUT_DIR = "results/rho_sweep"
 # ---------------------------------------------------------------------------
 # Per-problem setup: instance, folds, oracle, and build(knob) -> solver
 # ---------------------------------------------------------------------------
+def _bank_seed(config, args):
+    """Seed for the METHODS' own randomness, holding the data and the folds fixed.
+
+    D is sampled, not enumerated: CP cuts against B=200 vertices and the wrapper
+    embeds P=20, so a curve read off one bank confounds "this method absorbs more
+    rho" with "this bank happened to miss the direction that breaks it". Repeating
+    the sweep at several seeds is what turns a single curve into a spread.
+
+    It reaches everything downstream of the training rows: the ``ScenarioBank``
+    draws AND the ``random_state`` of every model fit. The second one is not a
+    side effect to be engineered away -- it moves the out-of-fold residual sd, so
+    ``R_c = rho * scale(y_c) * sqrt(n)`` wobbles a few percent between seeds
+    (measured on synthetic, fold 1: ``oof_sd`` 0.1314 at seed 7 vs 0.1238 at seed
+    42, 5.8%). That is the estimation noise a single-seed curve hides, and D stays
+    shared ACROSS METHODS within a seed, which is what the comparison needs.
+
+    It is deliberately NOT ``config["uncertainty"]["bootstrap_seed"]``, which also
+    seeds ``synthetic_nonlinear`` (the DATA) and the synthetic KFold split. Moving
+    that would resample the problem and the evaluation folds too, and the sources
+    of variation could not be told apart afterwards. Here the instance and the
+    folds stay bit-identical across seeds.
+    """
+    s = getattr(args, "seed", None)
+    return int(s) if s is not None else int(
+        config["uncertainty"].get("bootstrap_seed", 42))
+
+
 def _setup_synthetic(config, args):
     from experiments.run_sweep import _synth_instance, _synth_build
 
-    seed = config["uncertainty"].get("bootstrap_seed", 42)
+    seed = config["uncertainty"].get("bootstrap_seed", 42)   # data + folds
+    bank_seed = _bank_seed(config, args)                     # draws from D
     inst = _synth_instance(config)
     n_kfold = int(args.n_folds or
                   config.get("cv_calibration", {}).get("n_kfold", 4))
@@ -130,7 +158,7 @@ def _setup_synthetic(config, args):
             cfg.setdefault("methods", {}).setdefault("cp", {})["n_scenarios"] = \
                 int(cfg["uncertainty"].get("n_bootstrap", 20))
         return _synth_build(method, cfg, config["model"]["type"],
-                            config["model"]["params"], seed)
+                            config["model"]["params"], bank_seed)
 
     return inst, folds, oracle, make_build, None, False
 
@@ -152,9 +180,14 @@ def _setup_gastric(config, args):
     oracle = make_cv_oracle(inst, gt_specs=gt_configs)
     ranges = _cs_ranges(settings)
 
+    bank_seed = _bank_seed(config, args)
+
     def make_build(method, uset):
         cell = dict(settings)
         cell["uncertainty_set"] = uset
+        # Bank seed only: `folds` above were already built from the config seed
+        # (and gastric's scheme is temporal, so they do not move at all).
+        cell["bootstrap_seed"] = bank_seed
         if args.match_bank:
             cell["cp_n_scenarios"] = int(config["uncertainty"].get("n_bootstrap", 20))
         build, _ = _method_build_map(method, cell, ranges,
@@ -210,11 +243,19 @@ def _variant_suffix(args):
     ``--n-folds`` therefore gets its own suffix, including one that happens to
     equal the config default: a redundant file is recoverable, a silently merged
     checkpoint is not.
+
+    ``--seed`` scopes it for the third time, and there a shared file would fail
+    worse than in either case above: repeated seeds exist precisely to be compared,
+    so one checkpoint would hand every seed the FIRST seed's rows and the spread
+    would read as exactly zero -- a bank-variance study able only to report "no
+    variance". Seeds never share a file.
     """
     n = getattr(args, "n_folds", None)
-    return ("_coh" if args.coherent else "_incoh") + \
-           ("_matchbank" if getattr(args, "match_bank", False) else "") + \
-           (f"_f{int(n)}" if n else "")
+    seed = getattr(args, "seed", None)
+    return (("_coh" if args.coherent else "_incoh")
+            + ("_matchbank" if getattr(args, "match_bank", False) else "")
+            + (f"_f{int(n)}" if n else "")
+            + (f"_s{int(seed)}" if seed is not None else ""))
 
 
 def _load_cv_configs(args):
@@ -245,6 +286,7 @@ def run_sweep(config, args):
         geometry="ellipsoid", coherent=bool(args.coherent),
     )
     knobs = _fixed_knobs(problem, args, config)
+    bank_seed = _bank_seed(config, args)
     grid = [float(r) for r in (args.rho_grid or DEFAULT_GRID)]
     methods = args.methods or ["nominal", "cp", "wrapper", "robust_reg"]
 
@@ -255,7 +297,7 @@ def run_sweep(config, args):
     ckpt = load_detail_checkpoint(scores_path) if not args.refresh else {}
 
     print(f"[rho-sweep] problem={problem} geometry=ellipsoid "
-          f"coherent={args.coherent} folds={len(folds)} "
+          f"coherent={args.coherent} folds={len(folds)} bank_seed={bank_seed} "
           f"sense={oracle.objective_sense}", flush=True)
     print(f"[rho-sweep] grid={grid}", flush=True)
     print(f"[rho-sweep] fixed knobs: {knobs}", flush=True)
@@ -297,7 +339,8 @@ def run_sweep(config, args):
                     test_time_s=d["test_time_s"],
                     test_time_per_point_s=d["test_time_per_point_s"],
                     coherent=bool(args.coherent),
-                    matched_bank=bool(args.match_bank), **extra)
+                    matched_bank=bool(args.match_bank),
+                    seed=bank_seed, **extra)
 
     rows = []
     for rho in grid:
@@ -616,6 +659,11 @@ def main():
                    help="EXTRA suffix for the rho_star output, appended after the "
                         "cell suffix, so several CRITERIA can coexist within one "
                         "cell, e.g. --out-suffix _t080 (--rho-star-only)")
+    p.add_argument("--seed", type=int, default=None,
+                   help="seed for the DRAWS FROM D (CP's bank of B, the wrapper's "
+                        "P) only -- the data and the folds keep the config seed, so "
+                        "repeating the sweep across seeds isolates bank variance. "
+                        "Scopes every output with _s<seed>")
     p.add_argument("--refresh", action="store_true", help="discard the score cache")
     p.add_argument("--config", default="config.yaml")
     p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json")
