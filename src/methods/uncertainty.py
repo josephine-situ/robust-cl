@@ -343,12 +343,24 @@ class UncertaintySet:
     off a sweep, do not assume it.
 
     ``clip_labels`` intersects D with the outcome's ``label_bounds`` for the
-    *training* adversary, matching what :meth:`ScenarioBank.draw` already does to
-    every bank draw (:func:`_clip_to_bounds`). Off by default because every result
-    in ``results/`` predates it: with it off, robust_reg trains against the raw
-    ball while CP and the wrapper face the clipped one, so "shared D" holds only
-    up to the bounds. Measured on gastric at ``rho=1``, 46--49% of the shifted
-    percentile labels fall outside [0, 1] before clipping.
+    *training* adversary, matching what :meth:`ScenarioBank.draw` has always done
+    to every bank draw (:func:`_clip_to_bounds`). **``config.yaml`` turns it on**
+    (2026-08-21): with it off, robust_reg trained against the raw ball while CP
+    and the wrapper faced the clipped one, so "shared D" held only up to the
+    bounds -- and it binds hardest exactly there. Measured on the five gastric
+    toxicities at ``rho=1``: 45--49% of the shifted labels fall outside [0, 1] and
+    clipping roughly **halves** the realizable shift (DLT ``||delta||`` 4.56 ->
+    2.56); at ``rho=0.75``, 39--41% and 3.42 -> 2.22. OS, unbounded, is untouched.
+    The field itself still defaults ``False`` so an old config loads unchanged.
+
+    It bites only where ``label_bounds`` is set: gastric's five toxicities
+    (percentile ranks). Gastric OS and the synthetic constraint carry none, so
+    their numbers do not move. On the linear arm it costs the closed form --
+    ``robust_regression._train_label_robust_model`` routes a bounded linear
+    outcome (on gastric, GI) to the alternating loop, because
+    ``max ||r + delta||^2`` over a ball **intersected with a box** is not
+    ``(||r|| + R)^2``. Gastric robust_reg numbers predating 2026-08-21 are not
+    comparable across this switch.
 
     ``coherent_exclude`` names constraints drawn **independently** even when
     ``coherent=True`` -- the coherence grouping, not a global flag. Empty by

@@ -66,6 +66,11 @@ def _label_robust_linear(X, y, params, eps_abs, gamma,
     """Exact convex label-robust ElasticNet counterpart, solved as a QP (SOCP for
     the ellipsoid).
 
+    Exact for the **raw** D: the inner max is taken over the whole ball (or box),
+    with no label_bounds intersection -- see ``_train_label_robust_model``, which
+    routes bounded outcomes elsewhere rather than calling this with a set it does
+    not model.
+
     Returns a fitted ``Pipeline(StandardScaler, ElasticNet)`` whose coefficients
     minimize ``(1/2n)[sum r_i^2 + 2 eps * (sum of m largest |r_i|)] + enet_penalty``
     with ``r = y - beta^T z - b0`` on standardized features ``z`` and
@@ -182,7 +187,16 @@ def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K,
     radius = float(np.sqrt(n)) * eps_abs
     if label_eps <= 0 or scale == 0.0:
         return train_model(X, y, m_type, m_params)
-    if m_type == "linear":
+    if m_type == "linear" and label_bounds is None:
+        # The closed form is exact on the RAW set only. It puts the adversary at
+        # delta* = R * r/||r||, which an outcome with label_bounds cannot realize;
+        # over a ball intersected with a box the inner max has no closed form. So
+        # a BOUNDED linear outcome falls through to the alternating loop, taking
+        # the same clip-the-worst-direction step the bank applies to every draw.
+        # That trades this arm's exactness for the shared set, and only where the
+        # bounds exist -- on gastric, GI alone (the other linear outcome, OS, is
+        # unbounded, and so is synthetic's). With clip_labels off the caller
+        # passes label_bounds=None throughout and the exact path is unchanged.
         return _label_robust_linear(X, y, m_params or {}, eps_abs, gamma,
                                     geometry=geometry, radius=radius)
     return _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K,

@@ -244,7 +244,11 @@
     \item \mc{Coherent: one standardized direction shared across the \emph{group},
       scaled by each outcome's own radius. Incoherent: independent draws.}
     \item \mc{Percentile labels are clipped to $[0,1]$ (clipping only shrinks
-      $|\delta_i|$, so the draw stays in $\mathcal D$).}
+      $|\delta_i|$, so the draw stays in $\mathcal D$). \textbf{Every} method that
+      faces $\mathcal D$ clips --- bank draws \emph{and} robust reg's training
+      adversary --- so the shared set is $\mathcal D\cap[0,1]$. It binds: at
+      $\rho{=}1$, 45--49\% of shifted labels leave $[0,1]$ and the realizable
+      shift roughly \textbf{halves} ($\lVert\delta\rVert$ 4.56$\to$2.56, DLT).}
     \item \textbf{Built once}, not per iteration: with the draws fixed,
       $\theta(\delta_b)$ no longer depends on $x^\ast$, so CP's
       worst-violation-over-the-bank is monotone and $\tau$ means something.
@@ -286,9 +290,13 @@
     \min_\theta \max_{\delta\in\mathcal D_c} \mathcal L(\theta; X, y_c+\delta)
   \]
   \begin{itemize}
-    \item \textbf{Linear and one constraint}: exact SOCP, solved once (next 2 slides).
+    \item \textbf{Linear, unbounded labels}: exact SOCP, solved once (next 2 slides).
     \item \textbf{Trees / ensembles}: no closed form --- alternate worst $\delta$ /
       retrain, $K=5$ times.
+    \item \mc{\textbf{Bounded labels}: same alternation, each $\delta$ clipped ---
+      $\max\lVert r+\delta\rVert^2$ over a ball $\cap$ box is not
+      $(\lVert r\rVert+R)^2$. Costs GI its closed form, buys the shared
+      $\mathcal D$.}
   \end{itemize}
 \end{frame}
 
@@ -339,6 +347,8 @@
       $S_m(|r|)$ and its $2n{+}1$ LP epigraph variables. Here: one cone.
     \item Convex QP $\to$ convex SOCP. Penalty still matches sklearn's ElasticNet
       scaling $\Rightarrow$ comparable to the nominal fit; $R=0$ recovers it.
+    \item Exact for the \textbf{raw} ball only: $\delta^\ast=R\,r/\lVert r\rVert$ is
+      unrealizable once labels are bounded, so \mc{gastric GI} takes the loop.
   \end{itemize}
 \end{frame}
 

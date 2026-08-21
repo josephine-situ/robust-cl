@@ -60,6 +60,11 @@ ellipsoid geometry and fixed temporal folds (2026-08-17/19). Everything else
 (`results/gastric/` all <= 2026-08-13, `results/synthetic/`, `adversary_probe/`,
 `cv/*_robustness_knobs.json`) is `box_l1` and/or random-KFold-scaled. **Never read
 a `box_l1` number against an ellipsoid one**; re-run before citing.
+One exception inside the current set: **gastric `robust_reg` rows predate
+`clip_labels` (2026-08-21)**, so its gastric curve and rho\* are against the raw
+ball while CP's and the wrapper's are against the clipped one — re-run the gastric
+sweep before reading robust_reg against them. CP, the wrapper and everything
+synthetic are unaffected.
 
 ## Architecture
 
@@ -71,11 +76,14 @@ returns a `SolutionResult`.
 
 - **`nominal.py`** — no robustness, plus the toolkit everything else imports.
 - **`robust_regression.py`** — robustify the *fit*:
-  `min_theta max_{delta in D_c} L(theta; X, y_c + delta)`. **Linear** is exact: on
-  the ball the inner max is closed form (`delta* = R*r/||r||`, giving
-  `(||r||_2 + R)^2`), so one second-order cone `nu >= ||r||_2` turns the ElasticNet
-  QP into an **SOCP** (`_label_robust_linear`); `R=0` recovers sklearn exactly.
-  **Trees/ensembles** alternate worst-delta / retrain `robust_reg.K` (=5) times.
+  `min_theta max_{delta in D_c} L(theta; X, y_c + delta)`. **Linear with unbounded
+  labels** is exact: on the ball the inner max is closed form (`delta* = R*r/||r||`,
+  giving `(||r||_2 + R)^2`), so one second-order cone `nu >= ||r||_2` turns the
+  ElasticNet QP into an **SOCP** (`_label_robust_linear`); `R=0` recovers sklearn
+  exactly. **Trees/ensembles** alternate worst-delta / retrain `robust_reg.K` (=5)
+  times. **A linear outcome with `label_bounds` also takes the loop** — the closed
+  form is exact on the raw ball only, and `delta*` is unrealizable once labels are
+  bounded; on gastric that is **GI** (the coherent arm never used the SOCP anyway).
   Its dial `label_eps` **is** D's radius, so on the sweep it tracks rho.
 - **`wrapper.py`** — Maragno ensemble chance constraint: `(1-alpha)` of `P` models
   must satisfy each constraint. **The P models are not bootstrapped by default** —
@@ -106,6 +114,20 @@ ellipsoid — `budget_frac` cannot constrain an L2 ball, so the pair would be
 non-identifiable there. Caveat: `uncertainty_set_from_config`'s *code* fallback is
 still `box_l1`; only `config.yaml` carries the ellipsoid default.
 
+- **D is intersected with the label range** (`clip_labels`, on in `config.yaml`
+  since **2026-08-21**; the dataclass field still defaults `False`). Applies to
+  every method that faces D: `ScenarioBank` has always clipped its draws
+  (`_clip_to_bounds`), and robust_reg's training adversary now clips too — before
+  this, CP and the wrapper faced `D n [0,1]` on the gastric toxicities while
+  robust_reg faced the raw ball, so **shared D held only up to the bounds**. It
+  binds hardest exactly there: on the five gastric toxicities at `rho=1`, 45-49%
+  of shifted labels leave `[0,1]` and clipping roughly **halves** the realizable
+  shift (DLT `||delta||` 4.56 -> 2.56); at `rho=0.75`, 39-41% and 3.42 -> 2.22.
+  Clipping only shrinks `|delta_i|`, so the shift stays in D. Bites
+  only where `label_bounds` is set — gastric's five toxicities; **gastric OS and
+  synthetic carry none and do not move**. **Gastric robust_reg numbers predating
+  2026-08-21 are not comparable across this switch**; set `clip_labels: false` to
+  reproduce them.
 - **Scale = out-of-fold residual sd** (`scale_stat: "oof_sd"`), so `rho = 1` is one
   unexplained sd per row. delta is added to labels *before* training and the model
   refit, so the radius must be label-space. Measured: gastric toxicities
@@ -350,14 +372,16 @@ over few survivors is not a win, and it is what binds the wrapper. Measured
 | problem | method | rho\* | feas | obj | solved | master s | `bound` |
 |---|---|---|---|---|---|---|---|
 | gastric | cp | 1.0 | 0.934 | 9.63 | 0.59 | 494 | `grid_max` (censored) |
-| gastric | robust_reg | 0.75 | 0.933 | 10.55 | 0.91 | 1.0 | `feasibility` |
+| gastric | robust_reg | 0.75 | 0.933 | 10.55 | 0.91 | 1.0 | `feasibility` (pre-`clip_labels`) |
 | gastric | wrapper | 0.5 | 0.940 | 10.57 | 0.60 | 24 | `solved_floor` |
 | gastric | nominal | — | | | | | never reaches 0.9 |
 | synthetic | cp | 1.0 | 1.00 | -1.207 | 1.00 | 123 | `grid_max` (censored) |
 | synthetic | others | — | | | | | never reach 0.9 |
 
 Read `bound` before quoting a rho\*: `grid_max` means the grid ran out. **CP is
-censored on both problems.**
+censored on both problems.** The gastric `robust_reg` row is **pre-`clip_labels`**
+(raw ball, so a wider adversary than it now faces) — stale until that sweep is
+re-run; the other rows are unaffected.
 
 - **Evaluation then runs each method at its own rho\***, so the match at evaluation
   is on held-out feasibility, **not** on D. **This is not wired up yet** — no runner

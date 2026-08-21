@@ -132,6 +132,22 @@ uncertainty:
   # noise_std (calibrates D to the DGP, which CP would then win by construction).
   # This value is only the single point a one-off solve uses.
   rho: 1.0
+  # Intersect D with each outcome's label_bounds, for EVERY method that faces it.
+  # ScenarioBank has always clipped its draws (uncertainty._clip_to_bounds), so
+  # with this off CP and the wrapper faced D n [0,1] on the gastric toxicities
+  # while robust_reg's training adversary faced the raw ball -- "shared D" held
+  # only up to the bounds, and it binds hardest exactly there. Measured on the
+  # five gastric toxicities at rho = 1: 45-49% of the shifted labels fall outside
+  # [0, 1], and clipping roughly HALVES the realizable shift (DLT ||delta||
+  # 4.56 -> 2.56). At rho = 0.75, 39-41% and 3.42 -> 2.22.
+  # Only bites where label_bounds is set: gastric's five toxicities (percentile
+  # ranks, [0, 1]). Gastric OS and the synthetic constraint carry no bounds, so
+  # they are untouched and their numbers are unchanged.
+  # Clipping only shrinks |delta_i|, so the applied shift stays inside D.
+  # COST: it costs the linear arm its closed form -- see robust_regression's
+  # _train_label_robust_model. Set false to reproduce results predating
+  # 2026-08-21.
+  clip_labels: true
   # "oof_sd" = sd of out-of-fold residuals: the UNEXPLAINED label spread. Preferred
   # over marginal "sd", which is mostly signal wherever the model fits -- on
   # synthetic sd(y)=0.545 vs a true noise of 0.100, so eps_0=1 under "sd" corrupts
