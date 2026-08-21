@@ -15,7 +15,7 @@
     "model_params": {
       "colsample_bytree": 0.3,
       "learning_rate": 0.2,
-      "max_depth": 4,
+      "max_depth": 3,
       "n_estimators": 20,
       "subsample": 0.9,
       "random_state": 1
@@ -27,7 +27,7 @@
       "colsample_bytree": 0.5,
       "learning_rate": 0.2,
       "max_depth": 4,
-      "n_estimators": 20,
+      "n_estimators": 10,
       "subsample": 0.9,
       "random_state": 1
     }

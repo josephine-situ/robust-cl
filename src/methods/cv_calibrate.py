@@ -102,10 +102,15 @@ class SyntheticOracle:
     """Proxy-ensemble oracle for a single-constraint problem: feasible iff
     ``weight * prediction <= rhs``; objective = c'x (minimize).
 
-    ``model`` is a MIXED-TYPE ensemble (six model classes averaged), not the class
-    the candidate embeds. Until 2026-08-21 it was a single model of that same
-    class, so oracle and candidate shared their approximation error and an rf
-    artifact the optimizer exploited was judged by an rf that had it too.
+    ``model`` is a MIXED-TYPE ensemble (seven model classes averaged). Until
+    2026-08-21 it was a single model of the same class the candidate embeds, so
+    oracle and candidate shared their approximation error and an rf artifact the
+    optimizer exploited was judged by an rf that had it too. The `mlp` member is
+    deliberately kept even though synthetic and reactor now embed an MLP: a judge
+    missing the candidate's class cannot follow it into the region where it is
+    wrong, and one shared class out of seven is diluted to 1/7 of the average.
+    Gastric is the exception and averages six -- its ensemble replicates Table
+    EC.12, which has no MLP.
 
     ``weight`` carries the constraint's sign, matching ``LearnedConstraint``'s
     ``sum(w_i f_i(x)) <= rhs``. Synthetic is an upper bound (``w = +1``); the
@@ -115,9 +120,10 @@ class SyntheticOracle:
 
     KNOWN LIMITATION, and it is not small. This judge is a fitted model, so it has
     an error of its own precisely where a constrained optimum lives -- on the
-    boundary. Measured on synthetic (2026-08-21): error sd 0.039 in the decision
-    band against margins of 0.015-0.020, 31% of verdicts flipped versus the
-    analytic truth inside that band, and 5 of 5 nominal decisions misjudged. The
+    boundary. Measured on synthetic (2026-08-21, seven members, |f_true - b| <
+    0.05): error sd 0.033 in the decision band against margins of 0.015-0.020,
+    26% of verdicts flipped versus the analytic truth inside that band, and 5 of 5
+    nominal decisions misjudged. Six members (no mlp) gave 0.038 and 28%. The
     bias is not neutral between methods: robust methods leave slack, where the
     judge is reliable, while nominal sits on the boundary, where it is not. Prefer
     the reactor's ODE oracle for any FINAL feasibility claim.

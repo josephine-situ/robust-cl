@@ -349,12 +349,53 @@ a lazy wrapper at alpha=0**.
   `EvalOutcome`s, trust-region hull). `synthetic_nonlinear()` / `gastric_cancer()`
   build them; `filter_constraints()` subsets them.
 - **`gastric_v11.py`** — data processing per the CL v11 notebook / Maragno D.1.
+  **The blood `IterativeImputer` did not converge, and the labels were an
+  arbitrary iterate** (fixed 2026-08-21). `Lympho34`/`Lympho4` carry **9 and 8
+  observed values out of 355**; each round refit them on ~8 rows against 14
+  predictors and wrote ~347 fabricated values back into the frame, which then fed
+  every other column's regression. With the `min_value=0` clip on top the
+  iteration **cycled**: it hit `max_iter` at 500, 1000, 2000 *and* 5000, the
+  per-round change plateauing at 5e-3–6e-2 against a 1e-3 tolerance, and `BLOOD_4`
+  moved **up to 0.32** between the 500- and 5000-round answers. A fabricated
+  `Lympho4` was the max of the five grade-4 columns on **27/355** rows (surviving
+  the `min` with `BLOOD_34` on 22), and with no `max_value` the imputer emitted
+  proportions up to **1.808**. The fix: exclude columns observed on
+  `< IMPUTE_MIN_OBS_FRAC` (0.05) of rows from the imputation *model* — their real
+  observations are rejoined and `.max(axis=1)` skips the NaNs — and clip to
+  `[0, 1]`. Converges in ~150 rounds, no warning, nothing out of range.
+  **This relabelled the cohort**, so every gastric number from before it is
+  against different labels: rows changed (of 495) `BLOOD_4` **264** (mean 0.0066,
+  max 0.202), `DLT_PROP` **394** (max 0.236), the three non-blood toxicities
+  55–221 (max 0.072); **394/495 rows moved on at least one outcome**. Raising
+  `max_iter` does not fix it and `tol` only silences it. The other two imputers
+  were always fine (tox 8 rounds, context 1).
+  **What this deviates from is the v11 notebook, not Maragno D.1.** The D.1
+  citation in this repo (`generate.py:189`) covers the **context** fill (`imp_x`),
+  which converges in one round; `_build_outcomes` is documented as "v11
+  definitions" and imputes *outcome* columns that are then max-reduced into a
+  label — label construction, not covariate fill. OptiCL's source is not vendored
+  here, so whether their published blood labels share the arbitrary-iterate
+  property is **open**. Note also that `IterativeImputer` at its default
+  `sample_posterior=False` is a single deterministic MICE pass, not the multiple
+  imputation D.1 describes.
 - **`gastric_model_specs.py`** — Table EC.10 embedded models and the EC.12 6-model
   GT ensemble; training seed 1 to match `run_MLmodels.py`.
 
 **Frozen gastric picks** (`results/cv/gastric_selected_configs.json`, by `run_cv.py`
 on R^2, *before* any robustness): **XGB** for DLT/blood/constitutional/infection,
 **linear (ElasticNet)** for GI and OS.
+
+**Gastric CV reproduces bit-identically**, like synthetic and reactor — verified
+2026-08-21 by running `run_cv.py --problem gastric` twice on the current code and
+diffing `gastric_cv_scores.csv` and `gastric_selected_configs.json` at full
+precision. `run_cv.py --problem gastric` still **overwrites** those files, so
+`git checkout` them after an inspection run unless you mean to re-freeze. If a
+re-run does not reproduce the committed JSON, the cause is a **code or label**
+change since it was written, not run-to-run noise: the picks above were re-frozen
+on 2026-08-21 against the corrected `IterativeImputer` labels, which moved
+dlt `max_depth` 4 -> 3 and blood `n_estimators` 20 -> 10 (winners unchanged;
+`os_constraint` scores moved by ~1e-9, confirming the relabel touched only the
+toxicities). Blood is the outcome the fix helped most: `xgb` CV R^2 0.175 -> 0.204.
 
 **Synthetic now goes through `run_cv.py` too** (2026-08-21), on the same grids and
 the same 5-fold R^2 criterion: `results/cv/synthetic_selected_configs.json`, loaded
@@ -559,19 +600,57 @@ re-run; the other rows are unaffected.
   criteria are written back as columns.
 - **The synthetic CV oracle is a mixed-type ensemble** (2026-08-21). It was a
   single model of *the same class the candidate embeds* — an `rf` judging an `rf` —
-  so oracle and candidate shared their approximation error. It is now the six
-  classes gastric's GT ensemble averages (`linear, svm, cart, rf, gbm, xgb`), tuned
+  so oracle and candidate shared their approximation error. It is now **seven**
+  classes (`linear, svm, cart, rf, gbm, xgb, mlp`), tuned
   by `run_cv.py --problem synthetic --ensemble` into
   `synthetic_gt_ensemble_configs.json` with fallback specs in
-  `src/data/synthetic_model_specs.py`. Since the *candidate* is now `mlp` and the
-  GT grids carry no MLP, judge and candidate currently share **no** model class at
-  all — a cleaner separation than gastric, where `xgb` appears in both. Two
+  `src/data/synthetic_model_specs.py`. Two
   properties are kept deliberately: it is fit on the **noisy** `y_train` (the
   analytic `gt_constraints` stay final-eval only, or D would be calibrated against
   the very truth it is judged by), and on the **full** training rows, a superset of
   any fold's — exactly as gastric's oracle is. So synthetic held-out feasibility is
   an **m-out-of-n** statement, not a genuinely held-out one; that is the protocol
   on both problems, not a synthetic defect.
+- **MLP is an ensemble member everywhere except gastric** (2026-08-21).
+  `GT_CV_PARAM_GRIDS` carries an `mlp` entry; `GASTRIC_GT_CV_PARAM_GRIDS` is that
+  dict minus `mlp` and is the only grid the gastric runner uses, because gastric's
+  ensemble is a **replication of Table EC.12** (six types) and its tuned JSON is
+  the *final evaluation* oracle there, not a tuning proxy. Elsewhere MLP is in for
+  the opposite reason: synthetic and reactor both **embed** an MLP after CV, and a
+  judge with no MLP cannot follow the candidate into the region where the candidate
+  is wrong — which near a constrained optimum is the boundary, where the verdict is
+  decided (Known gaps #8). This **gives up the class-disjointness** the 2026-08-21
+  mixed-type switch had bought on those two problems; the trade is measured, R^2
+  against **noiseless** truth, 6 members vs 7:
+
+  | problem | judge error sd, 6 (no mlp) | 7 (+mlp) | R^2 6 -> 7 |
+  |---|---|---|---|
+  | synthetic (independent 1000-row draw) | 0.0531 | **0.0466** | 0.9897 -> 0.9921 |
+  | reactor (vs the ODE, on the design rows) | 2.075 | **1.802** | 0.9663 -> 0.9746 |
+
+  A shared class is diluted to 1/7 of the average; a systematic blind spot is not.
+  **Caveat, reactor**: the tuned `mlp` member came out `(10,5,2)`/`alpha=0.01` —
+  *identical* to the embedded candidate, same rows and same `random_state`, so that
+  member is the candidate and contributes no independent error. The judge's
+  independence there rests on the other six. Synthetic drew `(100,)`/`alpha=0.1`
+  against the candidate's `(50,)`/`alpha=0.01`, so its member is genuinely distinct.
+- **Ensemble CV members are tuned inside their deployment pipeline** (fixed
+  2026-08-21). `run_cv_for_ensemble` tuned bare estimators while
+  `train_fixed_ensemble` -> `train_model(normalize=True)` deploys every member
+  inside `Pipeline(StandardScaler, est)` — so a scale-dependent penalty
+  (ElasticNet `alpha`/`l1_ratio`, SVR `C`/`epsilon`, MLP `alpha`) was selected for
+  a different fit than the one that ran. It is now wrapped exactly as
+  `train_best_model_cv` wraps the embedded candidates. Measured on the reactor
+  `mlp`: **CV R^2 0.849 unscaled vs 0.962 scaled**, a different architecture and a
+  100x different `alpha`, with lbfgs hitting `max_iter`. **Every
+  `*_gt_ensemble_configs.json` changed** — trees are scale-invariant and did not
+  move, `linear` and `svm` did, on all three problems, **gastric included** (its
+  member list is still the paper six). So any result read against a tuned GT
+  ensemble from before 2026-08-21 is stale, and on gastric that is the *evaluation*
+  oracle `run_chemo_robust.py` loads by default. The `--no-cv-configs` path
+  (paper `GT_ENSEMBLE_SPECS`) is untouched, as are all
+  `*_selected_configs.json` — re-running model selection reproduces them
+  bit-identically, since that path always scaled.
 - **Synthetic folds are 5** (`cv_calibration.n_kfold`, was 4), matching
   `run_cv.py`'s model-selection CV so both CV stages read the same folds. One solve
   per fold means feasibility takes only `0, 0.2, ..., 1.0`, so **the 0.9 target is
@@ -670,6 +749,12 @@ Stated limitations of the current numbers, not bugs to fix silently.
    of verdicts inside its own `|F - 50| < 5` band. Synthetic feasibility numbers
    should be read as **judge-dominated near the boundary**; gastric is unmeasurable
    and deliberately left alone.
+   **Adding the `mlp` member helps and does not fix it** (2026-08-21, re-measured
+   over 200k uniform draws with `|f_true - b| < 0.05`): band error sd **0.0375 ->
+   0.0328**, bias +0.0111 -> +0.0098, flipped verdicts **28.3% -> 26.4%**. The
+   original 0.039 / 31% above were the six-member judge; the reactor's 25.9% is
+   also pre-MLP. Tightening the band to 0.02 raises the flip rate to 39-40% for
+   both judges — the failure is the band, not the member list.
 
 ## Presentations (`presentations/`)
 

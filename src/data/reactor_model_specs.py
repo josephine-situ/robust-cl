@@ -47,6 +47,11 @@ _REACTOR_GT_RAW: List[Dict[str, Any]] = [
         "learning_rate": 0.05, "max_depth": 4, "n_estimators": 250,
         "subsample": 0.9, "colsample_bytree": 0.8,
     }},
+    # The embedded candidate here is an MLP (10,5,2); the judge carries a wider,
+    # shallower one so the class is covered without copying the architecture.
+    {"model_type": "mlp", "params": {
+        "hidden_layer_sizes": (50, 25), "solver": "lbfgs", "alpha": 1e-3,
+    }},
 ]
 
 REACTOR_GT_ENSEMBLE_SPECS: List[Dict[str, Any]] = [

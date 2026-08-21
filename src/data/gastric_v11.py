@@ -16,6 +16,10 @@ from sklearn.impute import IterativeImputer
 # Decimals kept on the context block after imputation -- see build_gastric_cohort.
 CTX_DECIMALS = 6
 
+# A column observed on fewer than this fraction of rows is excluded from the
+# imputation MODEL (its own observed values are kept). See _build_outcomes.
+IMPUTE_MIN_OBS_FRAC = 0.05
+
 # utils_gastric.py (constraint-learning v11)
 GASTRIC_CTX_COLS = [
     "Pub_Year", "Asia", "N_Patient", "FRAC_MALE", "AGE_MED",
@@ -59,6 +63,32 @@ def train_percentile_scores(y_train_ref: np.ndarray, y: np.ndarray) -> np.ndarra
 
     ref = np.asarray(y_train_ref, dtype=float)
     return np.array([stats.percentileofscore(ref, x) / 100.0 for x in y], dtype=float)
+
+
+def percentile_inverse(y_train_ref: np.ndarray):
+    """Inverse of :func:`train_percentile_scores` on the reference's own support.
+
+    The forward map is a step function, so no exact inverse exists off the
+    reference values. This returns the monotone interpolant through
+    ``(score, value)`` at the reference's DISTINCT values: it round-trips every
+    reference value exactly -- so a zero label shift derives a zero shift -- and
+    interpolates linearly between them. Scores outside the reference's own score
+    range clamp to its min/max value; these are proportions whose observed
+    minimum is 0, so nothing plausible is lost at the bottom.
+
+    Used by the DLT label link (``src/data/generate.py``): a perturbed percentile
+    label has to be carried back to the raw proportion scale before
+    ``DLT = 1 - prod(1 - tox)`` means anything.
+    """
+    ref = np.asarray(y_train_ref, dtype=float)
+    vals = np.unique(ref)
+    pcts = train_percentile_scores(ref, vals)
+
+    def inverse(p):
+        p = np.clip(np.asarray(p, dtype=float), 0.0, 1.0)
+        return np.interp(p, pcts, vals)
+
+    return inverse
 
 
 def _float(v) -> float:
@@ -189,12 +219,31 @@ def _build_outcomes(df: pd.DataFrame) -> pd.DataFrame:
         how="all", subset=[c for c in BLOOD_G4_COLS if c in df_blood.columns]
     )
 
-    imp_blood = IterativeImputer(random_state=0, max_iter=500, min_value=0)
+    # A column with almost no data cannot be imputed and poisons everything that
+    # is. Lympho34/Lympho4 carry 9 and 8 observed values out of 355 (97.5% /
+    # 97.7% missing): each round fits ~8 rows against 14 predictors and writes
+    # ~347 fabricated values back into the frame, where they enter every other
+    # column's regression. With min_value=0 clipping the map on top of that, the
+    # iteration CYCLES rather than contracting -- it ran to max_iter at 500,
+    # 1000, 2000 and 5000, and BLOOD_4 moved by up to 0.32 between the 500- and
+    # 5000-round answers, so the labels were an arbitrary iterate. Excluding
+    # these columns converges in ~150 rounds. Their real observations are kept
+    # and rejoined below; ``.max(axis=1)`` skips the NaNs, and no row survives
+    # the dropna above with all five G4 columns missing.
+    obs_frac = df_blood.notna().mean()
+    too_sparse = [c for c in df_blood.columns
+                  if obs_frac[c] < IMPUTE_MIN_OBS_FRAC]
+    df_blood_fit = df_blood.drop(columns=too_sparse)
+
+    # These are proportions: min_value=0 was set but max_value was not, and the
+    # imputer emitted values up to 1.808.
+    imp_blood = IterativeImputer(random_state=0, max_iter=500,
+                                 min_value=0, max_value=1)
     blood_complete = pd.DataFrame(
-        imp_blood.fit_transform(df_blood),
-        columns=df_blood.columns,
-        index=df_blood.index,
-    )
+        imp_blood.fit_transform(df_blood_fit),
+        columns=df_blood_fit.columns,
+        index=df_blood_fit.index,
+    ).join(df_blood[too_sparse])
     g4 = [c for c in BLOOD_G4_COLS if c in blood_complete.columns]
     blood4 = blood_complete[g4].max(axis=1)
     if "BLOOD_34" in blood_complete.columns:

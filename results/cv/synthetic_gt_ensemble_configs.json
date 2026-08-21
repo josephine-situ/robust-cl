@@ -4,14 +4,14 @@
       "model_type": "linear",
       "params": {
         "alpha": 0.01,
-        "l1_ratio": 1.0,
+        "l1_ratio": 0.01,
         "random_state": 1
       }
     },
     {
       "model_type": "svm",
       "params": {
-        "C": 10.0,
+        "C": 1.0,
         "epsilon": 0.01,
         "random_state": 1
       }
@@ -52,6 +52,17 @@
         "max_depth": 2,
         "n_estimators": 250,
         "subsample": 0.7,
+        "random_state": 1
+      }
+    },
+    {
+      "model_type": "mlp",
+      "params": {
+        "alpha": 0.1,
+        "hidden_layer_sizes": [
+          100
+        ],
+        "solver": "lbfgs",
         "random_state": 1
       }
     }

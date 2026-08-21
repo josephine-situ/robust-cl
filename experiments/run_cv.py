@@ -39,6 +39,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score
 from sklearn.model_selection import GridSearchCV, KFold
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -132,13 +134,36 @@ GT_CV_PARAM_GRIDS = {
         "subsample": [0.7, 0.9],
         "colsample_bytree": [0.3, 0.5],
     },
+    "mlp": {
+        "hidden_layer_sizes": [
+            (25,), (50,), (100,),          # 1-layer, one wider than the embedded grid
+            (25, 10), (25, 25), (50, 25),  # 2-layer
+            (10, 5, 2),                    # the 3-layer test
+        ],
+        "solver": ["lbfgs"],
+        "alpha": [1e-4, 1e-3, 0.01, 0.1],                # +1 stronger than embedded
+    },
+}
+
+# GASTRIC ONLY drops the MLP member. Its GT ensemble is a REPLICATION of Maragno
+# Table EC.12, whose ensemble is the six types below; a seventh member would make
+# our oracle a different object from the published one, and gastric's tuned JSON
+# is the FINAL evaluation oracle there (run_chemo_robust's --gt-cv-configs
+# default), not just a tuning proxy. Everywhere else MLP is in: synthetic and
+# reactor both EMBED an MLP after CV, and an oracle carrying no MLP cannot follow
+# the candidate into the region where the candidate is wrong.
+GASTRIC_GT_CV_PARAM_GRIDS = {
+    k: v for k, v in GT_CV_PARAM_GRIDS.items() if k != "mlp"
 }
 
 # Display order for model type columns in CV scores table
 MODEL_ORDER = ["linear", "svm", "cart", "rf", "gbm", "xgb", "mlp"]
 
-# Paper GT ensemble members (Table EC.12): average of these six model types
-GT_MODEL_ORDER = ["linear", "svm", "cart", "rf", "gbm", "xgb"]
+# GT ensemble members: the six paper types plus MLP
+GT_MODEL_ORDER = ["linear", "svm", "cart", "rf", "gbm", "xgb", "mlp"]
+
+# Paper GT ensemble members (Table EC.12) -- gastric's ensemble, no MLP
+GASTRIC_GT_MODEL_ORDER = ["linear", "svm", "cart", "rf", "gbm", "xgb"]
 
 # Human-readable labels for outcome/constraint names
 OUTCOME_LABELS = {
@@ -494,8 +519,10 @@ def _run_feature_importance_gastric(
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-    except ImportError:
-        warnings.warn("shap or matplotlib not installed; skipping feature importance.")
+    except Exception as exc:  # not just ImportError: switch_backend("Agg") raises
+        # AttributeError on an IPython/matplotlib mismatch, and this diagnostic
+        # plot must never take the GT ensemble CV that follows it down with it.
+        warnings.warn(f"shap/matplotlib unavailable ({exc}); skipping feature importance.")
         return
 
     from src.models.train import train_model
@@ -711,11 +738,21 @@ def run_cv_for_ensemble(
             if base is None:
                 continue
 
-            search = GridSearchCV(base, grid, cv=kf, scoring=sk_scoring, n_jobs=-1)
+            # Tune the member INSIDE the same Pipeline(StandardScaler, est) that
+            # train_fixed_ensemble -> train_model(normalize=True) will deploy it in,
+            # exactly as train_best_model_cv does for the embedded candidates. Tuned
+            # bare and deployed scaled, a penalty (ElasticNet alpha, SVR C, MLP
+            # alpha) means a different quantity in the two fits; an MLP on unscaled
+            # features barely converges at all, which is what forced this.
+            pipe = Pipeline([("scaler", StandardScaler()), ("model", base)])
+            prefixed = {f"model__{k}": v for k, v in grid.items()}
+
+            search = GridSearchCV(pipe, prefixed, cv=kf, scoring=sk_scoring, n_jobs=-1)
             search.fit(X_tr, y_tr)
 
             cv_score = float(search.best_score_)
-            best_params = dict(search.best_params_)
+            best_params = {k.replace("model__", ""): v
+                           for k, v in search.best_params_.items()}
             score_row[model_type] = cv_score
 
             print(
@@ -1074,7 +1111,7 @@ def run_cv_gastric_ensemble(args, out_dir: Path, instance=None) -> None:
     from src.data.gastric_v11 import train_percentile_scores
 
     print("\n" + "=" * 60)
-    print("GASTRIC CANCER — GT ENSEMBLE CV  (6 paper model types)")
+    print("GASTRIC CANCER — GT ENSEMBLE CV  (6 paper model types, no MLP)")
     print("=" * 60)
     print("  CV is run on the whole cohort (train + test arms, all 461 arms).")
 
@@ -1129,7 +1166,7 @@ def run_cv_gastric_ensemble(args, out_dir: Path, instance=None) -> None:
 
     df_scores, gt_configs = run_cv_for_ensemble(
         outcomes,
-        GT_CV_PARAM_GRIDS,
+        GASTRIC_GT_CV_PARAM_GRIDS,   # six paper types; no MLP -- see the grid comment
         scoring=args.scoring,
         cv_folds=args.cv_folds,
         seed=seed,
@@ -1158,13 +1195,13 @@ def run_cv_gastric_ensemble(args, out_dir: Path, instance=None) -> None:
         scores_tex,
         "Gastric Cancer: GT Ensemble CV R\\textsuperscript{2} by Model Type "
         "(Deep Grid, Table EC.11 Style)",
-        model_order=GT_MODEL_ORDER,
+        model_order=GASTRIC_GT_MODEL_ORDER,
     )
     _write_insample_r2_tex(
         df_insample,
         insample_tex,
         "Gastric Cancer: In-Sample R\\textsuperscript{2} — Individual Models and Ensemble",
-        model_order=GT_MODEL_ORDER,
+        model_order=GASTRIC_GT_MODEL_ORDER,
     )
 
     print(f"\n  Outputs saved to {out_dir}/")
@@ -1173,7 +1210,7 @@ def run_cv_gastric_ensemble(args, out_dir: Path, instance=None) -> None:
     print(f"    {configs_json.name}")
 
     print("\n  GT Ensemble CV Scores (5-fold R\u00b2):")
-    model_cols = [c for c in GT_MODEL_ORDER if c in df_scores.columns]
+    model_cols = [c for c in GASTRIC_GT_MODEL_ORDER if c in df_scores.columns]
     display_cols = ["outcome_label"] + model_cols
     print(df_scores[[c for c in display_cols if c in df_scores.columns]].to_string(index=False))
 
@@ -1282,8 +1319,9 @@ def main():
             "Also run GT ensemble CV with a deep grid (deeper trees, more estimators). "
             "Outputs {problem}_gt_cv_scores.{csv,tex} and "
             "{problem}_gt_ensemble_configs.json. On gastric that is the Table 6 "
-            "evaluation oracle; on synthetic it is the mixed-type CV oracle the "
-            "robustness sweep scores against. "
+            "evaluation oracle and keeps the six Table EC.12 types (no MLP); on "
+            "synthetic and reactor it is the mixed-type CV oracle the robustness "
+            "sweep scores against, and it does include MLP. "
             "Slow — omit for a quick constraint-model-only run."
         ),
     )
@@ -1338,7 +1376,11 @@ def main():
     print(f"  output_dir: {out_dir}")
     print(f"  constraint models : {list(CV_PARAM_GRIDS.keys())}")
     if args.ensemble:
-        print(f"  ensemble models   : {list(GT_CV_PARAM_GRIDS.keys())}")
+        if args.problem != "gastric":
+            print(f"  ensemble models   : {list(GT_CV_PARAM_GRIDS.keys())}")
+        if args.problem in ("gastric", "both"):
+            print("  ensemble models (gastric): "
+                  f"{list(GASTRIC_GT_CV_PARAM_GRIDS.keys())}")
     print(f"  embeddable: {sorted(EMBEDDABLE_TYPES)}")
 
     if args.problem in ("synthetic", "both"):

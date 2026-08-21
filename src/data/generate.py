@@ -42,6 +42,35 @@ class LearnedConstraint:
 
 
 @dataclass
+class LabelLink:
+    """A label that is a deterministic function of OTHER outcomes' labels.
+
+    Gastric is the only instance with one: ``DLT_PROP = 1 - prod(1 - tox)`` holds
+    exactly (2e-16) over the four modeled toxicities, so DLT carries no degree of
+    freedom of its own. Perturbing all five labels independently -- which is what
+    a per-outcome draw from D does -- produces a relabeling that is not a
+    relabeling of any trial: no ``delta in D`` leaves perturbed DLT equal to the
+    identity applied to the perturbed components.
+
+    ``derive`` maps ``{source constraint name -> perturbed labels}`` to the target's
+    labels, in the target's own label space (percentile ranks on gastric), which
+    means it has to undo the source percentile transform, apply the identity on the
+    raw scale, and re-percentile. ``baseline`` is ``derive`` at the *unperturbed*
+    sources: the shift handed to the target is ``derive(perturbed) - baseline``, not
+    ``derive(perturbed) - y_train``, so a zero source shift derives a zero target
+    shift **exactly** rather than to within the identity's own float error (which a
+    tie in ``percentileofscore`` would otherwise amplify to 1/n).
+
+    Consumed by ``ScenarioBank._draw`` under ``uncertainty.derive_linked_labels``.
+    """
+    target: str                                              # constraint name derived
+    sources: List[str]                                       # constraint names it derives from
+    derive: Callable[[Dict[str, np.ndarray]], np.ndarray]
+    baseline: np.ndarray                                     # derive() at the unperturbed sources
+    identity: str = ""                                       # human-readable, for logs
+
+
+@dataclass
 class EvalOutcome:
     """Ground-truth outcome used for Table 6-style prescriptive evaluation."""
     label: str
@@ -101,6 +130,11 @@ class ProblemInstance:
     # Publication year per X_train row (gastric), for temporal CV folds. None for
     # synthetic (no time) -> the robustness-parameter CV falls back to KFold.
     train_pub_years: Optional[np.ndarray] = None
+
+    # Deterministic identities between outcome labels (gastric: DLT). Empty
+    # elsewhere. Read by ScenarioBank only when uncertainty.derive_linked_labels
+    # is on; see LabelLink.
+    label_links: List[LabelLink] = field(default_factory=list)
 
 
 # Non-standard combined ECOG buckets (Bertsimas A.1: mark unavailable unless a
@@ -286,6 +320,12 @@ def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemIn
     configs = instance.constraint_model_configs
     if configs is not None:
         configs = [configs[i] for i in indices]
+    # A label link needs its target AND every source still modeled: under
+    # `dlt_only` the four components are gone, so the identity has nothing to
+    # derive from and DLT falls back to a free draw (ScenarioBank says so).
+    kept = {instance.constraints[i].name for i in indices}
+    links = [ln for ln in (instance.label_links or [])
+             if ln.target in kept and kept.issuperset(ln.sources)]
     return ProblemInstance(
         X_test=instance.X_test,
         cost_vector=instance.cost_vector,
@@ -307,6 +347,7 @@ def filter_constraints(instance: ProblemInstance, names: List[str]) -> ProblemIn
         binary_var_indices=list(instance.binary_var_indices or []),
         feature_names=instance.feature_names,
         train_pub_years=instance.train_pub_years,
+        label_links=links,
     )
 
 def _synthetic_f_true(x):
@@ -596,6 +637,7 @@ def gastric_cancer(seed: int = 42,
             GASTRIC_TOX_UB,
             build_gastric_cohort,
             cohort_to_arrays,
+            percentile_inverse,
             split_gastric_v11,
             train_percentile_scores,
         )
@@ -606,6 +648,7 @@ def gastric_cancer(seed: int = 42,
             GASTRIC_TOX_UB,
             build_gastric_cohort,
             cohort_to_arrays,
+            percentile_inverse,
             split_gastric_v11,
             train_percentile_scores,
         )
@@ -756,6 +799,42 @@ def gastric_cancer(seed: int = 42,
             rhs=tox_ub,
             f_true=None,
         ))
+
+    # ------------------------------------------------------------------
+    # 10.1  DLT is not free: DLT_PROP = 1 - prod(1 - tox) over the four modeled
+    #       toxicities, exactly. Give the bank the identity so a scenario is a
+    #       relabeling of a *trial* rather than five unrelated label shifts.
+    # ------------------------------------------------------------------
+    # The identity lives on the raw proportion scale, the labels on the percentile
+    # scale, so the round trip is: perturbed percentile -> raw (percentile_inverse,
+    # against the same full-training reference the forward transform used) ->
+    # 1 - prod(1 - .) -> percentile again against DLT's own reference. Every map is
+    # the one the nominal labels were built with, so at a zero shift this returns
+    # the nominal DLT labels (up to the identity's 2e-16; `baseline` absorbs that).
+    DLT_COMPONENTS = ["blood", "constitutional", "infection", "gi"]
+    _pct_inv = {name: percentile_inverse(raw_train_targets[name])
+                for name in DLT_COMPONENTS}
+    _dlt_ref = raw_train_targets["dlt"]
+
+    def _dlt_from_components(pct_by_constraint):
+        survive = 1.0
+        for name in DLT_COMPONENTS:
+            tox_raw = _pct_inv[name](pct_by_constraint[f"{name}_constraint"])
+            survive = survive * (1.0 - tox_raw)
+        return train_percentile_scores(_dlt_ref, 1.0 - survive)
+
+    _dlt_baseline = _dlt_from_components({
+        f"{name}_constraint": train_percentile_scores(raw_train_targets[name],
+                                                      _sub(raw_train_targets[name]))
+        for name in DLT_COMPONENTS
+    })
+    label_links = [LabelLink(
+        target="dlt_constraint",
+        sources=[f"{name}_constraint" for name in DLT_COMPONENTS],
+        derive=_dlt_from_components,
+        baseline=_dlt_baseline,
+        identity="DLT = 1 - prod(1 - tox) over " + ", ".join(DLT_COMPONENTS),
+    )]
 
     # Inject OS model as an unconstrained bounding system directly applied to the objective
     os_fit = _sub(os_train)
@@ -948,6 +1027,7 @@ def gastric_cancer(seed: int = 42,
         binary_var_indices=binary_var_indices,
         feature_names=feature_names,
         train_pub_years=_sub(train_years_full),
+        label_links=label_links,
     )
 
 

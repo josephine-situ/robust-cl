@@ -5,11 +5,11 @@
 \toprule
 Outcome & Best Model & CV R$^2$ & Test R$^2$ & Best Parameters \\
 \midrule
-Any DLT & xgb & 0.201 & 0.181 & colsample_bytree=0.3, learning_rate=0.2, max_depth=3, n_estimators=20, subsample=0.9 \\
-Blood & xgb & 0.175 & 0.094 & colsample_bytree=0.3, learning_rate=0.2, max_depth=4, n_estimators=20, subsample=0.9 \\
-Constitutional & xgb & 0.116 & 0.005 & colsample_bytree=0.5, learning_rate=0.2, max_depth=4, n_estimators=20, subsample=0.9 \\
-Infection & xgb & 0.130 & 0.019 & colsample_bytree=0.3, learning_rate=0.1, max_depth=4, n_estimators=20, subsample=0.7 \\
-Gastrointestinal & linear & 0.151 & 0.197 & alpha=0.01, l1_ratio=1.0 \\
+Any DLT & xgb & 0.200 & 0.126 & colsample_bytree=0.3, learning_rate=0.2, max_depth=3, n_estimators=20, subsample=0.9 \\
+Blood & xgb & 0.204 & 0.082 & colsample_bytree=0.3, learning_rate=0.2, max_depth=3, n_estimators=20, subsample=0.9 \\
+Constitutional & xgb & 0.105 & 0.076 & colsample_bytree=0.5, learning_rate=0.2, max_depth=4, n_estimators=10, subsample=0.9 \\
+Infection & xgb & 0.121 & 0.033 & colsample_bytree=0.3, learning_rate=0.1, max_depth=4, n_estimators=20, subsample=0.7 \\
+Gastrointestinal & linear & 0.149 & 0.196 & alpha=0.01, l1_ratio=1.0 \\
 Overall Survival & linear & 0.391 & 0.276 & alpha=0.1, l1_ratio=1.0 \\
 \bottomrule
 \end{tabular}

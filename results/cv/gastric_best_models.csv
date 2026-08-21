@@ -1,7 +1,7 @@
 name,outcome_label,best_model,cv_r2,test_r2,best_params_str
-dlt_constraint,Any DLT,xgb,0.20112629609930882,0.18050821077944634,"colsample_bytree=0.3, learning_rate=0.2, max_depth=3, n_estimators=20, subsample=0.9"
-blood_constraint,Blood,xgb,0.1746577004354672,0.09392106969279468,"colsample_bytree=0.3, learning_rate=0.2, max_depth=4, n_estimators=20, subsample=0.9"
-constitutional_constraint,Constitutional,xgb,0.11591558022246655,0.004950890686924225,"colsample_bytree=0.5, learning_rate=0.2, max_depth=4, n_estimators=20, subsample=0.9"
-infection_constraint,Infection,xgb,0.12954400159856913,0.01912456226574155,"colsample_bytree=0.3, learning_rate=0.1, max_depth=4, n_estimators=20, subsample=0.7"
-gi_constraint,Gastrointestinal,linear,0.151458098080975,0.19715530140576742,"alpha=0.01, l1_ratio=1.0"
-os_constraint,Overall Survival,linear,0.3909465539221348,0.27605539846223404,"alpha=0.1, l1_ratio=1.0"
+dlt_constraint,Any DLT,xgb,0.199519733048393,0.12623577526627694,"colsample_bytree=0.3, learning_rate=0.2, max_depth=3, n_estimators=20, subsample=0.9"
+blood_constraint,Blood,xgb,0.20383165477690737,0.08247776841071275,"colsample_bytree=0.3, learning_rate=0.2, max_depth=3, n_estimators=20, subsample=0.9"
+constitutional_constraint,Constitutional,xgb,0.10478600172055078,0.07649785745914306,"colsample_bytree=0.5, learning_rate=0.2, max_depth=4, n_estimators=10, subsample=0.9"
+infection_constraint,Infection,xgb,0.12121019413960019,0.033175837698737776,"colsample_bytree=0.3, learning_rate=0.1, max_depth=4, n_estimators=20, subsample=0.7"
+gi_constraint,Gastrointestinal,linear,0.1486218654591805,0.1964134858612866,"alpha=0.01, l1_ratio=1.0"
+os_constraint,Overall Survival,linear,0.39094655481648866,0.2760554030459521,"alpha=0.1, l1_ratio=1.0"

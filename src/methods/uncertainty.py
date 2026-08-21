@@ -366,6 +366,20 @@ class UncertaintySet:
     ``coherent=True`` -- the coherence grouping, not a global flag. Empty by
     default so existing banks are bit-identical; ``config.yaml`` sets it to the
     OS outcome on gastric. See :meth:`ScenarioBank._draw` for the measurement.
+
+    ``derive_linked_labels`` (on in ``config.yaml`` since 2026-08-21) makes a
+    label that is a deterministic function of others follow that function instead
+    of drawing its own shift: gastric's ``DLT = 1 - prod(1 - tox)``, declared as a
+    :class:`~src.data.generate.LabelLink` on the instance. It removes a degree of
+    freedom D never had -- with it off, D spends five outcomes' radius on four
+    d.o.f. and **no** draw is a relabeling of an actual trial. Effective on
+    gastric alone (nothing else declares a link) and, within gastric, only where
+    the four components are still modeled: under ``dlt_only`` the link is dropped
+    by ``filter_constraints`` and DLT draws freely again. It reaches the
+    **ScenarioBank**, i.e. CP and the wrapper; robust_reg's per-outcome training
+    adversary is not linked (its inner max would have to become joint across
+    outcomes, with no closed form). The field defaults ``False`` so an old config
+    reproduces old banks.
     """
     eps_0: float = 1.0
     budget_frac: float = 0.5
@@ -375,6 +389,7 @@ class UncertaintySet:
     rho: float = 1.0
     coherent_exclude: tuple = ()
     clip_labels: bool = False
+    derive_linked_labels: bool = False
 
     def __post_init__(self):
         if self.geometry not in GEOMETRIES:
@@ -441,6 +456,7 @@ def uncertainty_set_from_config(config: dict, coherent: Optional[bool] = None) -
         rho=float(unc.get("rho", 1.0)),
         coherent_exclude=tuple(unc.get("coherent_exclude", ()) or ()),
         clip_labels=bool(unc.get("clip_labels", False)),
+        derive_linked_labels=bool(unc.get("derive_linked_labels", False)),
     )
 
 
@@ -613,9 +629,11 @@ class ScenarioBank:
                     seen.add(id(md))
                     self._mds.append(md)
                     self._md_name[id(md)] = constraint.name
+        self._md_by_id = {id(md): md for md in self._mds}
         # Constraints that keep their own independent direction under coherence.
         self._excluded = {id(md) for md in self._mds
                           if self._md_name[id(md)] in set(uset.coherent_exclude)}
+        self._links = self._resolve_links(instance, verbose=verbose)
         # Reported, not raised: one config.yaml drives both problems, and
         # "os_constraint" legitimately does not exist on synthetic. A typo should
         # still be visible, hence the note rather than silence.
@@ -655,8 +673,64 @@ class ScenarioBank:
         if verbose:
             self._log_scales()
         self.extend(self.n_scenarios, verbose=verbose)
+        if verbose and self._links:
+            self._log_links()
 
     # -- construction --------------------------------------------------------
+    def _resolve_links(self, instance: ProblemInstance, verbose: bool = True) -> list:
+        """Bind each declared :class:`LabelLink` to the md ids it names.
+
+        A link applies only when the target and **every** source is still modeled
+        by exactly one md in this instance -- ``filter_constraints`` already drops
+        links whose constraints were filtered out (``dlt_only``), so anything that
+        survives to here and still fails is a shape this bank cannot honour, and
+        the target falls back to a free draw with a note. Returns
+        ``[(link, target_md_id, {source name -> md id})]``.
+        """
+        links = list(getattr(instance, "label_links", None) or [])
+        if not links or not self.uset.derive_linked_labels:
+            if links and verbose:
+                print("    [bank] note: label link(s) declared but "
+                      "uncertainty.derive_linked_labels is off; every outcome "
+                      "draws its own shift", flush=True)
+            return []
+        by_name: Dict[str, list] = {}
+        for md in self._mds:
+            by_name.setdefault(self._md_name[id(md)], []).append(md)
+        resolved = []
+        for link in links:
+            named = [link.target] + list(link.sources)
+            if any(len(by_name.get(nm, [])) != 1 for nm in named):
+                if verbose:
+                    missing = [nm for nm in named if len(by_name.get(nm, [])) != 1]
+                    print(f"    [bank] note: label link {link.target} <- "
+                          f"{list(link.sources)} not applicable here "
+                          f"({missing} absent or multi-model); {link.target} "
+                          f"draws freely", flush=True)
+                continue
+            resolved.append((link, id(by_name[link.target][0]),
+                             {nm: id(by_name[nm][0]) for nm in link.sources}))
+        return resolved
+
+    def _log_links(self) -> None:
+        """What the identity cost the target's shift, against its own radius.
+
+        The derived shift is NOT constrained to the target's own D -- that radius
+        described a free outcome, and under the link the target has no freedom
+        left. Its size is an output of the four component radii, so it is reported
+        rather than enforced.
+        """
+        for link, tgt_id, _src in self._links:
+            md = self._md_by_id[tgt_id]
+            n = len(md.y_train)
+            R = self.uset.magnitude(self.scales[tgt_id], n)
+            norms = np.array([np.linalg.norm(d) for d in self._deltas[tgt_id]])
+            if not len(norms):
+                continue
+            print(f"    [bank] link {link.target} = derived ({link.identity}): "
+                  f"||delta|| mean={norms.mean():.4f} max={norms.max():.4f} "
+                  f"vs own R={R:.4f} (ratio {norms.mean() / R:.2f}); "
+                  f"radius reported, not imposed", flush=True)
     def _log_scales(self) -> None:
         if self.uset.geometry == "ellipsoid":
             size = f"rho={self.uset.rho:g} x scale(y) x sqrt(n)"
@@ -777,6 +851,19 @@ class ScenarioBank:
                 u = _draw_direction(n, self.uset, rng)
             delta = self.uset.magnitude(self.scales[id(md)], n) * u
             out[id(md)] = _clip_to_bounds(md, delta)
+        # A linked target's free draw above is DISCARDED, not skipped: the loop
+        # still consumes its rng draw (and, on gastric, still creates the shared
+        # direction, since DLT is the first non-excluded outcome), so every other
+        # outcome's shift is bit-identical to a bank built with the link off. The
+        # link changes DLT alone.
+        for link, tgt_id, src_ids in self._links:
+            perturbed = {}
+            for name, md_id in src_ids.items():
+                src = self._md_by_id[md_id]
+                perturbed[name] = np.asarray(src.y_train, dtype=float) + out[md_id]
+            derived = np.asarray(link.derive(perturbed), dtype=float)
+            tgt = self._md_by_id[tgt_id]
+            out[tgt_id] = _clip_to_bounds(tgt, derived - link.baseline)
         return out
 
     # -- consumption ---------------------------------------------------------

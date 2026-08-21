@@ -9,9 +9,18 @@ train-only proxy oracle (``cv_calibrate.make_cv_oracle``). Until 2026-08-21 the
 synthetic oracle was a single model of the *same class* the candidate embeds -- an
 ``rf`` judging an ``rf`` -- so oracle and candidate shared their approximation
 error, and a decision that exploited an rf artifact was scored feasible by an rf
-that had the same artifact. Averaging six model types is what gastric already does
+that had the same artifact. Averaging many model types is what gastric already does
 (``gastric_model_specs.GT_ENSEMBLE_SPECS``, Table EC.12), so this puts the two
 problems on the same convention.
+
+WHY MLP IS A MEMBER ANYWAY (2026-08-21). The judge carries all SEVEN types,
+including the class the candidate now embeds. Excluding it would buy formal
+class-disjointness at the price of a judge that cannot follow an MLP candidate
+into the region where that candidate is wrong -- and near a constrained optimum
+that region IS the boundary, which is where the verdict is decided. Averaging
+seven members dilutes any single member's artifact to 1/7; sharing zero classes
+does not help if the remaining six systematically miss the failure. Gastric is the
+one exception, and only because its ensemble is a replication of Table EC.12.
 
 WHAT IT DOES NOT FIX. The ensemble is fit on the **noisy** ``y_train`` -- the
 analytic ``f_true`` stays reserved for final evaluation (``evaluation/metrics.py``),
@@ -34,7 +43,7 @@ from typing import Any, Dict, List
 # Matches run_cv.py's default --seed, and gastric's GASTRIC_ML_SEED.
 SYNTHETIC_ML_SEED = 1
 
-# Order mirrors GT_MODEL_ORDER in run_cv.py: linear, svm, cart, rf, gbm, xgb.
+# Order mirrors GT_MODEL_ORDER in run_cv.py: linear, svm, cart, rf, gbm, xgb, mlp.
 # Tuned by hand for n=200, d=2, sigma=0.1 over [0,1]^2 -- rich enough to track a
 # smooth quadratic, not so rich as to interpolate the noise.
 _SYNTH_GT_RAW: List[Dict[str, Any]] = [
@@ -52,6 +61,11 @@ _SYNTH_GT_RAW: List[Dict[str, Any]] = [
     {"model_type": "xgb", "params": {
         "learning_rate": 0.05, "max_depth": 3, "n_estimators": 250,
         "subsample": 0.9, "colsample_bytree": 1.0,
+    }},
+    # Wider and two-layer where the embedded candidate is (50,): the judge shares
+    # the candidate's model CLASS here, deliberately, but not its architecture.
+    {"model_type": "mlp", "params": {
+        "hidden_layer_sizes": (50, 25), "solver": "lbfgs", "alpha": 1e-3,
     }},
 ]
 

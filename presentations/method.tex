@@ -99,9 +99,10 @@
       $0.128$/row label shift into a $0.62$ refit spread and the wrapper
       prescribed the box corner.
     \item \textbf{Read feasibility here with care.} The tuning judge is a fitted
-      proxy, and a constrained optimum sits \emph{on} the boundary --- error sd
-      $0.039$ against margins $0.015$--$0.020$, $31\%$ of verdicts flipped vs
-      $f_{\text{true}}$ in that band. Not neutral between methods: robust methods
+      proxy (7-model ensemble, incl.\ MLP), and a constrained optimum sits
+      \emph{on} the boundary --- error sd $0.033$, $26\%$ of verdicts flipped vs
+      $f_{\text{true}}$ within $|f-b|<0.05$. The MLP member helps ($0.038$, $28\%$
+      without) but does not fix it. Not neutral between methods: robust methods
       leave slack, nominal does not.
   \end{itemize}
 \end{frame}
@@ -122,7 +123,8 @@
       such oracle here, and the reason for the instance. Feasibility is
       \emph{integrated}.
     \item \textbf{Two judges, kept apart.} ODE $\Rightarrow$ final evaluation and
-      audits. Proxy ensemble $\Rightarrow$ $\rho$ tuning: calibrating $\rho$
+      audits. Proxy ensemble (7 types, incl.\ MLP) $\Rightarrow$ $\rho$ tuning:
+      calibrating $\rho$
       against exact truth is the same error as pinning $\mathcal D$ to synthetic's
       known $\sigma$.
     \item $n=1000$ uniform over the box; 4 linear ratio constraints (D.1b--e).
@@ -182,7 +184,7 @@
     Constraints / LP & 1 & 5 + objective \\
     LPs at evaluation & 1 & many (one per arm) \\
     Coherence & vacuous & \textbf{binding}: 6 models, one set of arms \\
-    Ground truth & exact analytic & GT ensemble, 6 models/outcome \\
+    Ground truth & exact analytic & GT ensemble, 6 models/outcome (EC.12; no MLP) \\
     CV Folds & KFold, 5 & temporal forward-chaining, 5 \\
     \bottomrule
   \end{tabular}
