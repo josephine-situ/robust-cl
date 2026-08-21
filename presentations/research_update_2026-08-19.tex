@@ -69,6 +69,66 @@
   Synthetic feasibility resolves only to $0.25$ (4 folds).}
 \end{frame}
 
+\begin{frame}{Feasibility Discussion}
+  \small
+  \begin{itemize}
+    \item Robust reg becomes less robust as we increase $\rho$.
+      Intuitively, this is because $\rho$ increases the weight on the residuals,
+      rather than the penalty terms (for elastic net).
+  \end{itemize}
+  \vspace{-0.6em}
+  \[
+    \bar g(v)=\max_{\|\delta\|_2\le\rho}\|v+\delta\|_2^2=(\|v\|_2+\rho)^2,
+    \qquad \delta^\star=\rho\,v/\|v\|_2
+  \]
+  \vspace{-1.4em}
+  \[
+    \min_f\;\bar g\big(y-f(X)\big)
+    =\min_f\Big[\underbrace{\|y-f(X)\|_2^2}_{\text{ordinary MSE}}
+      +\underbrace{2\rho\|y-f(X)\|_2}_{\text{new, }f\text{-dependent}}\Big]+\rho^2
+  \]
+  \vspace{-0.8em}
+  \begin{itemize}
+    \item Robust classification doesn't have the same problem because they look 
+      at label flips, rather than regression.
+    \item Gastric is very noisy. May need to run more draws.
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Feasibility Discussion --- two ways out}
+  \small
+  \textbf{A. Drop robust\_reg.} The tuned-nominal baselines cover the slot:
+  RHS margin $f(x)\le b-m$, or a penalty multiplier $c\,\alpha$.
+  \vspace{-0.2em}
+  \begin{itemize}\footnotesize
+    \item Margin monotone in $m$, so $m^\star$ always exists. $c\,\alpha$ is
+      robust\_reg reversed: $\alpha_{\mathrm{eff}}=\alpha/(1+\rho/\|r^\star\|_2)$
+      only ever \emph{shrinks} $\alpha$.
+  \end{itemize}
+  \medskip
+  \textbf{B. Change the shared $D$ to budgeted} --- still one set, one dial, all methods:
+  \vspace{-0.5em}
+  \[
+    D_c=\{\delta:\ |\delta_i|\le\varepsilon_c,\ \|\delta\|_1\le m\varepsilon_c\},
+    \quad \varepsilon_c=\rho\,\mathrm{scale}(y_c),\ m=\phi n
+  \]
+  \vspace{-1.5em}
+  \[
+    \bar g(v)=\|v\|_2^2
+      +2\varepsilon\underbrace{S_m(|v|)}_{\text{sum of }m\text{ largest }|v_i|}
+      +m\varepsilon^2
+  \]
+  \vspace{-0.6em}
+  \begin{itemize}\footnotesize
+    \item \emph{Not} a function of $\|v\|_2$ alone $\Rightarrow$ moves the argmin
+      even unpenalised. $S_m=m\,\mathrm{CVaR}_{\phi}(|r|)$: penalises fits that
+      fail badly on a few rows.
+    \item Convex, LP-representable; Hessian $2I$ a.e.\ (drop-in XGB \texttt{obj}).
+    \item Cost: re-run everything (CP $\approx494$\,s/cell).
+  \end{itemize}
+\end{frame}
+
 % ===========================================================================
 \begin{frame}{Objective vs $\rho$ --- the price}
   \begin{center}
@@ -145,11 +205,13 @@
   \begin{enumerate}
     \item \textbf{Resolve the axis.} Grid past $\rho{=}1$ (CP censored); CP's
       $\rho{=}0.5$ dip; synthetic robust\_reg $\rho\ge0.5$ (obj $>$ nominal,
-      feasibility $0$).
-    \item \textbf{CV the synthetic embedded model.} Hard-coded \texttt{rf} 50/5;
-      its CV has never been run and the sweep would ignore it.
-    \item \textbf{Fix synthetic scoring.} Oracle is that same \texttt{rf} 50/5
-      $+50$ rows: correlated errors, feasibility optimistic. Val rows unused
+      feasibility $0$). 
+      \begin{itemize}
+        \item \textbf{Gastric CP $\rho{=}0.5$ dip.} Re-run with more draws.
+          \textbf{Drop robust regression.}
+      \end{itemize}
+    \item \textbf{CV the synthetic embedded model.} Hard-coded \texttt{rf} now.
+    \item \textbf{Fix synthetic scoring.} Oracle is that same \texttt{rf}. Val rows unused
       ($m$-out-of-$n$, not held-out), feasibility quantized to $1/4$. Use a
       mixed-type ensemble on noisy \texttt{y\_train}; raise \texttt{n\_kfold}.
     \item \textbf{Consistent DLT draw.} $\mathrm{DLT}=1-\prod(1-\mathrm{tox})$:
@@ -159,6 +221,9 @@
       real \texttt{X\_test}, GT ensemble. For synthetic, new draws. 
       $\rho^*$ has no training-draw error bars.
     \item \textbf{C-MICL as a fifth method.} Expect infeasible.
+    \item \textbf{More baselines.} Feasibility-tuned nominal (either RHS margin
+      $f(x) \leq b -m$ or penalty multiplier on outcome's regularization).
+    \item Change results to feasibility vs objective, not $\rho$.
     \item \textbf{More instances.} WFP food basket --- Maragno's own wrapper
       setting.
   \end{enumerate}

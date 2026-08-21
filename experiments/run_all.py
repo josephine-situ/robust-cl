@@ -19,7 +19,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data.generate import synthetic_nonlinear, gastric_cancer
-from src.methods.nominal import solve_nominal
+from src.methods.nominal import resolve_mip_gap, solve_nominal
 from src.methods.robust_regression import solve_robust_regression
 from src.methods.wrapper import solve_wrapper, _get_shared_bootstrap_indices
 from src.methods.cp import solve_cp
@@ -112,8 +112,13 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
 
     solver_fns = {}
 
+    # One optimality tolerance for every method -- the objective is what they are
+    # compared on, so a per-method gap would confound that comparison.
+    mip_gap = resolve_mip_gap(config)
+
     solver_fns["nominal"] = partial(
-        solve_nominal, model_type=model_type, model_params=model_params, rho=0.0
+        solve_nominal, model_type=model_type, model_params=model_params, rho=0.0,
+        mip_gap=mip_gap,
     )
 
     # robust_param is intentionally NOT run: it is commented out of the gastric
@@ -132,6 +137,7 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
         seed=bootstrap_seed,
         rho=0.0,
         uncertainty_set=uncertainty_set_from_config(config),
+        mip_gap=mip_gap,
     )
 
     wrapper_cfg = config["methods"]["wrapper"]
@@ -150,6 +156,7 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
         scenario_source=wrapper_cfg.get("scenario_source", "noise"),
         uncertainty_set=uncertainty_set_from_config(config),
         robustify_objective=wrapper_cfg.get("robustify_objective", False),
+        mip_gap=mip_gap,
     )
 
     cp_cfg = config["methods"]["cp"]
@@ -176,7 +183,7 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
         cp_d0_quantile=cp_cfg.get("d0_quantile", 0.9),
         cp_tolerance_basis=cp_cfg.get("tolerance_basis", "scale"),
         cp_objective_monotone=cp_cfg.get("objective_monotone", False),
-        cp_mip_gap=float(cp_cfg.get("mip_gap", 1e-4)),
+        cp_mip_gap=mip_gap,
         cp_cut_whole_scenario=cp_cfg.get("cut_whole_scenario", True),
         cp_uncertainty=uncertainty_set_from_config(config),
     )

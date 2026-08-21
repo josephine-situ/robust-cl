@@ -13,6 +13,7 @@ from typing import Optional
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    DEFAULT_MIP_GAP,
     SolutionResult,
     resolve_constraint_config,
     build_decision_vars,
@@ -134,7 +135,8 @@ def solve_wrapper(instance: ProblemInstance,
                   uncertainty_set=None,
                   bank=None,
                   robustify_objective: bool = False,
-                  coherent: Optional[bool] = None) -> SolutionResult:
+                  coherent: Optional[bool] = None,
+                  mip_gap: float = DEFAULT_MIP_GAP) -> SolutionResult:
     """Maragno et al.'s wrapper: at least ``(1 - alpha)`` of P plausible
     relabelings must satisfy the constraints at ``x``.
 
@@ -228,7 +230,7 @@ def solve_wrapper(instance: ProblemInstance,
 
     opt = gp.Model("wrapper")
     opt.Params.OutputFlag = 0
-    opt.Params.MIPGap = 1e-4
+    opt.Params.MIPGap = mip_gap
     opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)
@@ -361,7 +363,8 @@ def solve_tree_violation_wrapper(instance: ProblemInstance,
                                  model_type: str = "rf",
                                  model_params: dict = None,
                                  alpha: float = 0.25,
-                                 rho: float = 0.0) -> SolutionResult:
+                                 rho: float = 0.0,
+                                 mip_gap: float = DEFAULT_MIP_GAP) -> SolutionResult:
     """OptiCL chemo-style wrapper with per-tree RF chance constraints."""
     import time
     from src.methods.nominal import train_constraint_models
@@ -375,7 +378,7 @@ def solve_tree_violation_wrapper(instance: ProblemInstance,
 
     opt = gp.Model("tree_violation_wrapper")
     opt.Params.OutputFlag = 0
-    opt.Params.MIPGap = 1e-4
+    opt.Params.MIPGap = mip_gap
     opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)

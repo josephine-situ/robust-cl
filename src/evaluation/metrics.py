@@ -92,8 +92,11 @@ def evaluate_prescriptive_performance(solver_fn: Callable,
 
                 # Re-optimize for new context bounds
                 result.opt.Params.DualReductions = 0
-                if n_obs > 1:
-                    result.opt.Params.MIPGap = 0.01
+                # Prescribe at the gap the model was BUILT at (left untouched here).
+                # This used to coarsen to 1% for multi-row evaluation, which put
+                # every method's prescriptions an order of magnitude looser than its
+                # own solve -- and, for CP, looser than the distances its cut loop
+                # separates.
                 result.opt.update()
                 result.opt.optimize()
                 

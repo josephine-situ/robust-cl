@@ -20,7 +20,7 @@ import yaml
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data.generate import gastric_cancer, filter_constraints
-from src.methods.nominal import solve_nominal
+from src.methods.nominal import resolve_mip_gap, solve_nominal
 from src.methods.robust_regression import solve_robust_regression
 from src.methods.wrapper import (
     solve_wrapper,
@@ -120,7 +120,10 @@ def _resolve_run_settings(config, args):
     settings["cp_d0_quantile"] = cp_cfg.get("d0_quantile", 0.9)
     settings["cp_tolerance_basis"] = cp_cfg.get("tolerance_basis", "scale")
     settings["cp_objective_monotone"] = cp_cfg.get("objective_monotone", False)
-    settings["cp_mip_gap"] = float(cp_cfg.get("mip_gap", 1e-4))
+    # One optimality tolerance for the whole run: CP's cut loop and final solve,
+    # the wrapper, robust_reg, nominal, and the prescribe-time re-solve. The
+    # methods are compared on their objective, so a per-method gap confounds it.
+    settings["mip_gap"] = resolve_mip_gap(config)
     settings["cp_cut_whole_scenario"] = cp_cfg.get("cut_whole_scenario", True)
     # B: CP embeds one extra scenario per iteration, so it can afford a bank far
     # larger than the wrapper's P (which is embedded in full). --quick shrinks it.
@@ -189,6 +192,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
     seed = settings["bootstrap_seed"]
     embedding_mode = settings["embedding_mode"]
     rf_alpha = settings["rf_alpha"]
+    mip_gap = settings["mip_gap"]   # one gap for every method (see _resolve_run_settings)
 
     solvers = {
         "nominal": partial(
@@ -198,6 +202,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             rho=0.0,
             embedding_mode=embedding_mode,
             rf_alpha=rf_alpha,
+            mip_gap=mip_gap,
         ),
         "tree_violation": partial(
             solve_tree_violation_wrapper,
@@ -205,6 +210,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             model_params=model_params,
             alpha=rf_alpha,
             rho=0.0,
+            mip_gap=mip_gap,
         ),
         "robust_param": partial(
             solve_nominal,
@@ -213,6 +219,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             rho=settings["robust_rho"],
             embedding_mode=embedding_mode,
             rf_alpha=rf_alpha,
+            mip_gap=mip_gap,
         ),
         "robust_reg": partial(
             solve_robust_regression,
@@ -226,6 +233,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             embedding_mode=embedding_mode,
             rf_alpha=rf_alpha,
             uncertainty_set=settings["uncertainty_set"],
+            mip_gap=mip_gap,
         ),
         "wrapper": partial(
             solve_wrapper,
@@ -240,6 +248,7 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
             scenario_source=settings["wrapper_scenario_source"],
             uncertainty_set=settings["uncertainty_set"],
             robustify_objective=settings["wrapper_robustify_objective"],
+            mip_gap=mip_gap,
         ),
         # Single driver; gastric (multiple toxicity constraints over many
         # patients) auto-selects coherent separation with the shared alpha as the
@@ -283,7 +292,7 @@ def _cp_solver(settings, model_type, model_params, cp_alpha=0.0,
         cp_d0_quantile=settings["cp_d0_quantile"],
         cp_tolerance_basis=settings.get("cp_tolerance_basis", "scale"),
         cp_objective_monotone=settings["cp_objective_monotone"],
-        cp_mip_gap=settings["cp_mip_gap"],
+        cp_mip_gap=settings["mip_gap"],
         cp_cut_whole_scenario=settings["cp_cut_whole_scenario"],
         cp_uncertainty=settings["uncertainty_set"],
     )
@@ -307,6 +316,7 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
     seed = settings["bootstrap_seed"]
     em = settings["embedding_mode"]
     rf_alpha = settings["rf_alpha"]
+    mip_gap = settings["mip_gap"]
 
     if method == "wrapper":
         amax = ranges["wrapper_alpha_max"]
@@ -319,13 +329,14 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
             scenario_source=settings["wrapper_scenario_source"],
             uncertainty_set=settings["uncertainty_set"],
             robustify_objective=settings["wrapper_robustify_objective"],
+            mip_gap=mip_gap,
         )
     elif method == "tree_violation":
         amax = ranges["tree_alpha_max"]
         strength_to_knob = lambda s: amax * (1.0 - s)  # s=1 strongest -> alpha_t=0
         build = lambda knob: partial(
             solve_tree_violation_wrapper, model_type=model_type,
-            model_params=model_params, alpha=knob, rho=0.0,
+            model_params=model_params, alpha=knob, rho=0.0, mip_gap=mip_gap,
         )
     elif method == "robust_param":
         rho_min = ranges.get("rho_min", 0.0)
@@ -333,14 +344,14 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
         strength_to_knob = lambda s: rho_min + (rho_max - rho_min) * s
         build = lambda knob: partial(
             solve_nominal, model_type=model_type, model_params=model_params,
-            rho=knob, embedding_mode=em, rf_alpha=rf_alpha,
+            rho=knob, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap,
         )
     elif method == "nominal":
         # No robustness knob: a single reference point (same at every strength).
         strength_to_knob = lambda s: 0.0
         build = lambda knob: partial(
             solve_nominal, model_type=model_type, model_params=model_params,
-            rho=0.0, embedding_mode=em, rf_alpha=rf_alpha,
+            rho=0.0, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap,
         )
     elif method == "robust_reg":
         eps_max = ranges["robust_reg_eps_max"]
@@ -351,6 +362,7 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
             K=settings["robust_reg_K"], seed=seed, rho=0.0,
             embedding_mode=em, rf_alpha=rf_alpha,
             uncertainty_set=settings["uncertainty_set"],
+            mip_gap=mip_gap,
         )
     elif method == "cp":
         # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, with

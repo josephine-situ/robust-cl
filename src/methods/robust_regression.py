@@ -34,6 +34,7 @@ from sklearn.preprocessing import StandardScaler
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    DEFAULT_MIP_GAP,
     SolutionResult,
     build_decision_vars,
     add_problem_constraints,
@@ -44,6 +45,20 @@ from src.methods.nominal import (
 from src.models.train import train_model, retrain_on_perturbed
 from src.methods.uncertainty import label_scale, instance_folds
 from src.utils.perturbations import worst_case_label_shift, l2_worst_case_shift
+
+
+def _clip_delta(delta, y, bounds):
+    """Shrink ``delta`` so ``y + delta`` stays inside ``bounds``.
+
+    The bank clips every draw this way (``uncertainty._clip_to_bounds``); without
+    it the training adversary faces the raw ball while CP and the wrapper face the
+    ball intersected with the label range, so the three do not share D after all.
+    Clipping only shrinks ``|delta_i|``, so the result stays inside D.
+    """
+    if bounds is None:
+        return delta
+    lo, hi = bounds
+    return np.clip(np.asarray(y, dtype=float) + delta, lo, hi) - np.asarray(y, dtype=float)
 
 
 def _label_robust_linear(X, y, params, eps_abs, gamma,
@@ -120,7 +135,7 @@ def _label_robust_linear(X, y, params, eps_abs, gamma,
 
 
 def _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K,
-                       geometry="box_l1", radius=None):
+                       geometry="box_l1", radius=None, label_bounds=None):
     """Adversarial-training approximation of the label-robust counterpart for model
     classes with no closed form (trees, xgb, mlp). Alternates: find the worst-case
     label shift for the current model, retrain on the shifted labels, repeat.
@@ -141,6 +156,7 @@ def _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K,
         residuals = y - model.predict(X)
         delta = (l2_worst_case_shift(residuals, radius) if ellipsoid
                  else worst_case_label_shift(residuals, eps_abs, gamma))
+        delta = _clip_delta(delta, y, label_bounds)
         if prev is not None and np.allclose(delta, prev, atol=1e-12):
             break
         model = retrain_on_perturbed(X, y, delta, m_type, m_params)
@@ -149,7 +165,8 @@ def _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K,
 
 
 def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K,
-                              scale_stat="oof_sd", folds=None, geometry="box_l1"):
+                              scale_stat="oof_sd", folds=None, geometry="box_l1",
+                              label_bounds=None):
     """One label-robust model for a single outcome; dispatch on model class."""
     y = np.asarray(y, dtype=float)
     n = len(y)
@@ -169,12 +186,13 @@ def _train_label_robust_model(X, y, m_type, m_params, label_eps, budget_frac, K,
         return _label_robust_linear(X, y, m_params or {}, eps_abs, gamma,
                                     geometry=geometry, radius=radius)
     return _label_robust_loop(X, y, m_type, m_params, eps_abs, gamma, K,
-                              geometry=geometry, radius=radius)
+                              geometry=geometry, radius=radius,
+                              label_bounds=label_bounds)
 
 
 def _train_coherent_label_robust(specs, label_eps, budget_frac, K,
                                  scale_stat="oof_sd", folds=None,
-                                 geometry="box_l1"):
+                                 geometry="box_l1", label_bounds=None):
     """Label-robust models for ALL outcomes against one **shared** row set.
 
     The incoherent default (``solve_robust_regression``'s per-outcome loop) lets
@@ -192,8 +210,11 @@ def _train_coherent_label_robust(specs, label_eps, budget_frac, K,
     linear result stays available from the incoherent arm.
 
     ``specs`` is ``[(X, y, m_type, m_params), ...]``; returns models in that order.
+    ``label_bounds`` (same order, ``None`` entries allowed) intersects each
+    outcome's shift with its label range, as the bank does; ``None`` disables it.
     """
     ys = [np.asarray(y, dtype=float) for _, y, _, _ in specs]
+    bounds = list(label_bounds) if label_bounds is not None else [None] * len(specs)
     n = len(ys[0])
     if any(len(y) != n for y in ys):
         raise ValueError("coherent robust regression needs one shared row set: "
@@ -228,9 +249,10 @@ def _train_coherent_label_robust(specs, label_eps, budget_frac, K,
                 break
             prev = w
             models = []
-            for (X, _, mt, mp), y, r, s in zip(specs, ys, resid, scales):
+            for (X, _, mt, mp), y, r, s, b in zip(specs, ys, resid, scales, bounds):
                 u = w * np.where(r >= 0, 1.0, -1.0)
                 delta = (np.sqrt(n) * label_eps * s) * u / (np.linalg.norm(u) or 1.0)
+                delta = _clip_delta(delta, y, b)
                 models.append(retrain_on_perturbed(X, y, delta, mt, mp))
             continue
         S = np.argsort(-norm)[:m]
@@ -238,10 +260,11 @@ def _train_coherent_label_robust(specs, label_eps, budget_frac, K,
             break
         prev = np.sort(S)
         models = []
-        for (X, _, mt, mp), y, r, s in zip(specs, ys, resid, scales):
+        for (X, _, mt, mp), y, r, s, b in zip(specs, ys, resid, scales, bounds):
             delta = np.zeros(n)
             # Each outcome moves in ITS OWN worst direction on the shared rows.
             delta[S] = (label_eps * s) * np.where(r[S] >= 0, 1.0, -1.0)
+            delta = _clip_delta(delta, y, b)
             models.append(retrain_on_perturbed(X, y, delta, mt, mp))
     return models
 
@@ -260,6 +283,7 @@ def solve_robust_regression(
         coherent: bool = None,
         uncertainty_set=None,
         scale_stat: str = None,
+        mip_gap: float = DEFAULT_MIP_GAP,
         **_ignored) -> SolutionResult:
     """Train a label-robust model per outcome (Bertsimas et al. counterpart), embed
     them nominally, and solve the constraint-learning MIP.
@@ -278,13 +302,16 @@ def solve_robust_regression(
     # robust_reg must be trained against the same D the bank draws from, or the
     # scenario bank stops matching its adversary.
     geometry = str(getattr(uncertainty_set, "geometry", "box_l1"))
+    # Clip the training adversary to the label range iff D says so, so robust_reg
+    # faces the same set the bank draws from. Off by default: see UncertaintySet.
+    clip = bool(getattr(uncertainty_set, "clip_labels", False))
     # Out-of-fold scales need a fold scheme; use the problem's own (temporal on
     # gastric) so the scale estimate cannot leak future information.
     folds = None if scale_stat == "sd" else instance_folds(instance, seed)
     print(
         f"    [robust_reg] Training label-robust models "
         f"(label_eps={label_eps:.3f}, budget_frac={budget_frac}, K={K}, "
-        f"coherent={coherent}, geometry={geometry})...",
+        f"coherent={coherent}, geometry={geometry}, clip_labels={clip})...",
         flush=True,
     )
 
@@ -292,7 +319,7 @@ def solve_robust_regression(
     config_idx = 0
     if coherent:
         # One shared adversary over every outcome; see _train_coherent_label_robust.
-        specs, layout = [], []
+        specs, layout, bounds = [], [], []
         for constraint in instance.constraints:
             row = []
             for model_data in constraint.models_data:
@@ -300,12 +327,13 @@ def solve_robust_regression(
                     instance, config_idx, model_type, model_params
                 )
                 specs.append((model_data.X_train, model_data.y_train, m_type, m_params))
+                bounds.append(getattr(model_data, "label_bounds", None) if clip else None)
                 row.append(model_data)
                 config_idx += 1
             layout.append(row)
         models = _train_coherent_label_robust(
             specs, label_eps, budget_frac, K, scale_stat=scale_stat, folds=folds,
-            geometry=geometry,
+            geometry=geometry, label_bounds=bounds,
         )
         it = iter(models)
         trained_constraints = [
@@ -322,6 +350,8 @@ def solve_robust_regression(
                     model_data.X_train, model_data.y_train,
                     m_type, m_params, label_eps, budget_frac, K,
                     scale_stat=scale_stat, folds=folds, geometry=geometry,
+                    label_bounds=(getattr(model_data, "label_bounds", None)
+                                  if clip else None),
                 )
                 row.append((model_data.weight, model, model_data.obj_weight))
                 config_idx += 1
@@ -329,7 +359,7 @@ def solve_robust_regression(
 
     opt = gp.Model("robust_regression")
     opt.Params.OutputFlag = 0
-    opt.Params.MIPGap = 0.01
+    opt.Params.MIPGap = mip_gap
     opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)

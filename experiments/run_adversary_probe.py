@@ -560,6 +560,8 @@ def main():
 
     config = load_config(args.config)
     cp_cfg = config.get("methods", {}).get("cp", {})
+    from src.methods.nominal import resolve_mip_gap
+    mip_gap = resolve_mip_gap(config)
     seed = int(config.get("uncertainty", {}).get("bootstrap_seed", 42))
     model_type = config["model"]["type"]
     model_params = config["model"]["params"]
@@ -596,7 +598,7 @@ def main():
     master, model_config_map = _build_master_with_nominal(
         instance, model_type, model_params, rho=0.0,
         robustify_objective=bool(cp_cfg.get("robustify_objective", False)),
-        mip_gap=float(cp_cfg.get("mip_gap", 1e-4)),
+        mip_gap=mip_gap,
     )
     anchors, ctx_bounds = _setup_anchors(
         instance, master, None, cp_cfg.get("anchor_source", "train"),
@@ -679,7 +681,7 @@ def main():
         loop_master, _ = _build_master_with_nominal(
             instance, model_type, model_params, rho=0.0,
             robustify_objective=bool(cp_cfg.get("robustify_objective", False)),
-            mip_gap=float(cp_cfg.get("mip_gap", 1e-4)),
+            mip_gap=mip_gap,
         )
         _, loop_ctx_bounds = _setup_anchors(
             instance, loop_master, None, cp_cfg.get("anchor_source", "train"),

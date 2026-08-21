@@ -201,9 +201,20 @@ def _variant_suffix(args):
 
     The rows already carried ``coherent`` and ``matched_bank`` columns, so they were
     always meant to coexist; only the paths had not caught up.
+
+    ``--n-folds`` scopes the cell for the same reason. The resume key is
+    ``(method@rho, knob)`` and carries no fold count, so a 10-fold synthetic run
+    would resume -- and then report as its own -- rows scored on 4 folds. The fold
+    count changes what feasibility MEANS on the single-decision problem (it is
+    quantized to 1/n_folds), so those are different experiments. Any explicit
+    ``--n-folds`` therefore gets its own suffix, including one that happens to
+    equal the config default: a redundant file is recoverable, a silently merged
+    checkpoint is not.
     """
+    n = getattr(args, "n_folds", None)
     return ("_coh" if args.coherent else "_incoh") + \
-           ("_matchbank" if getattr(args, "match_bank", False) else "")
+           ("_matchbank" if getattr(args, "match_bank", False) else "") + \
+           (f"_f{int(n)}" if n else "")
 
 
 def _load_cv_configs(args):

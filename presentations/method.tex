@@ -286,38 +286,116 @@
     \min_\theta \max_{\delta\in\mathcal D_c} \mathcal L(\theta; X, y_c+\delta)
   \]
   \begin{itemize}
-    \item \textbf{Linear and one constraint}: exact SOCP, solved once (next slide).
+    \item \textbf{Linear and one constraint}: exact SOCP, solved once (next 2 slides).
     \item \textbf{Trees / ensembles}: no closed form --- alternate worst $\delta$ /
       retrain, $K=5$ times.
   \end{itemize}
 \end{frame}
 
-\begin{frame}{Robust Regression: the linear counterpart is an exact SOCP\implnote}
+\begin{frame}{Robust Regression: the linear counterpart (1/2)\implnote}
   \small
+  The penalty does not see $\delta$; the perturbed residual is the nominal one shifted.
+  With $P_\alpha(\beta)=\alpha\lambda\lVert\beta\rVert_1+\tfrac{\alpha}{2}(1-\lambda)\lVert\beta\rVert_2^2$
+  (sklearn's $\alpha,\lambda$ --- \emph{not} the wrapper's):
+  \[
+    \mathcal L(\beta,b_0;\,y+\delta)
+      = \tfrac{1}{2n}\big\lVert \underbrace{(y-Z\beta-b_0\mathbf 1)}_{r}+\delta\big\rVert_2^2
+        + P_\alpha(\beta).
+  \]
   On the ball the inner max is closed form --- push every residual outward along
   itself, $\delta^\ast = R\,r/\lVert r\rVert$:
   \[
-    \max_{\lVert\delta\rVert_2\le R}\lVert r+\delta\rVert_2^2
-      = \big(\lVert r\rVert_2 + R\big)^2,
-    \qquad r = y - Z\beta - b_0 .
-  \]
-  Epigraph $\nu \ge \lVert r\rVert_2$ (one second-order cone) gives
-  \[
-  \begin{aligned}
-    \min_{\beta,b_0,r,\nu}\;\; & \tfrac{1}{2n}\big[\nu^2 + 2R\,\nu + R^2\big]
-      + \alpha\lambda\lVert\beta\rVert_1
-      + \tfrac{\alpha}{2}(1-\lambda)\lVert\beta\rVert_2^2 \\
-    \text{s.t.}\;\; & r_i = y_i - \beta^\top z_i - b_0, \quad i=1..n, \qquad
-                      \textstyle\sum_i r_i^2 \le \nu^2 .
-  \end{aligned}
+    \max_{\lVert\delta\rVert_2\le R}\mathcal L
+      = \tfrac{1}{2n}\max_{\lVert\delta\rVert_2\le R}\lVert r+\delta\rVert_2^2 + P_\alpha(\beta)
+      = \tfrac{1}{2n}\big(\lVert r\rVert_2+R\big)^2 + P_\alpha(\beta).
   \]
   \begin{itemize}
-    \item Relaxation is \textbf{tight}: $(\nu+R)^2$ increases in $\nu\ge0$ and we
-      minimize, so the optimum never buys slack it is charged for.
+    \item $\delta$ is \textbf{gone}: the outer $\min_\theta$ is an ordinary fit in
+      $(\beta,b_0)$. The $\beta$ terms are the nominal ElasticNet's, untouched ---
+      only the data term moved, $\lVert r\rVert^2\to(\lVert r\rVert+R)^2$.
+    \item Still convex: $r$ affine in $(\beta,b_0)\Rightarrow\lVert r\rVert_2$ convex;
+      $s\mapsto(s+R)^2$ convex and increasing on $s\ge0$.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Robust Regression: \dots is an exact SOCP (2/2)\implnote}
+  \small
+  Epigraph $\nu \ge \lVert r\rVert_2$ (one second-order cone), expand
+  $(\nu+R)^2=\nu^2+2R\nu+R^2$:
+  \[
+    \min_{\beta,b_0,r,\nu}\;\; \tfrac{1}{2n}\big[\nu^2 + 2R\,\nu + R^2\big] + P_\alpha(\beta)
+    \quad\text{s.t.}\quad
+    \begin{cases}
+      r = y - Z\beta - b_0\mathbf 1,\\[0.2em]
+      \lVert r\rVert_2^2 \le \nu^2,\;\; \nu\ge0 .
+    \end{cases}
+  \]
+  \begin{itemize}
+    \item Relaxation is \textbf{tight}: $\nu$ appears nowhere else, and the objective
+      \emph{increases} in $\nu\ge0$. Slack $\nu>\lVert r\rVert$ is charged
+      $\tfrac{1}{2n}(\nu^2+2R\nu)$ and buys nothing $\Rightarrow \nu^\ast=\lVert r^\ast\rVert_2$.
+    \item Constant $R^2$ kept --- puts the objective on the box arm's scale.
     \item \textbf{Simpler than the box$\cap$L1 case}, which needed the top-$m$ sum
       $S_m(|r|)$ and its $2n{+}1$ LP epigraph variables. Here: one cone.
     \item Convex QP $\to$ convex SOCP. Penalty still matches sklearn's ElasticNet
       scaling $\Rightarrow$ comparable to the nominal fit; $R=0$ recovers it.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{What $R$ actually does to the linear arm: it de-regularizes}
+  \small
+  $\nu^2$ \emph{is} the nominal SSE and $R^2$ is a constant, so $R$ reaches $\beta$
+  only through $2R\nu = 2R\lVert r\rVert_2$. Stationarity:
+  \[
+    -\tfrac{1}{n}\Big(1+\tfrac{R}{\lVert r\rVert}\Big)Z^\top r + \partial P_\alpha(\beta) \ni 0
+    \;\;\overset{\times\,\kappa}{\Longleftrightarrow}\;\;
+    -\tfrac{1}{n}Z^\top r + \partial P_{\kappa\alpha}(\beta) \ni 0 ,
+  \]
+  where $\kappa=\lVert r\rVert_2/(\lVert r\rVert_2+R)\in(0,1]$.
+  \begin{itemize}
+    \item So the ball's robust fit \textbf{is} a nominal ElasticNet at
+      $\alpha_{\text{eff}}=\kappa\alpha$ --- verified to $5\times10^{-4}$
+      ($n{=}200$, $p{=}8$, $\alpha{=}0.1$): $\kappa=0.92,\,0.85,\,0.53$ at
+      $\rho=0.1,\,0.2,\,1.0$; $\lVert\beta\rVert$ \emph{grows} $2.547\to2.676$.
+    \item $\kappa\approx 1/(1+\rho)$ when in-sample residual sd $\approx$ \texttt{oof\_sd}.
+    \item \textbf{At $\alpha=0$, $R$ does nothing}: $\arg\min(\lVert r\rVert+R)^2=\arg\min\lVert r\rVert^2$
+      = OLS. All of this arm's ``robustness'' is mediated by the penalty.
+    \item Direction is \emph{away} from shrinkage --- the label ball's power does not
+      depend on $\beta$ (unlike feature perturbations, which give
+      $\lVert r\rVert+R\lVert\beta\rVert$, i.e.\ lasso/ridge).
+    \item Gastric linear outcomes: GI ($\alpha{=}0.01$) and OS ($\alpha{=}0.1$), both
+      pure lasso. $\rho{=}1$ roughly halves their penalty.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{Fit-robust vs.\ decision-feasible: where the $\max$ sits}
+  \small
+  Both solve $\min_{x\in\mathcal X} c^\top x$ over the \emph{same} $\mathcal D$.
+  \textbf{robust\_reg} --- robustify the \emph{fit}:
+  \[
+  \begin{aligned}
+    \theta^\ast &= \arg\min_\theta
+      \underbrace{\max_{\delta\in\mathcal D}\mathcal L(\theta;\,y+\delta)}
+                 _{\text{\scriptsize max on the \textsc{loss}, no $x$}} \\
+    \text{s.t.}\;\; & \underbrace{f(x;\theta^\ast)\le b}
+                 _{\text{\scriptsize a \textsc{nominal} constraint}}
+  \end{aligned}
+  \]
+  \textbf{CP / wrapper} --- robustify the \emph{decision}:
+  \[
+  \begin{aligned}
+    \theta(\delta) &= \arg\min_\theta
+      \underbrace{\mathcal L(\theta;\,y+\delta)}
+                 _{\text{\scriptsize plain fit, \textsc{no} max}} \\
+    \text{s.t.}\;\; & \underbrace{\max_{\delta\in\mathcal D} f(x;\theta(\delta))\le b}
+                 _{\text{\scriptsize max on the \textsc{constraint}}}
+  \end{aligned}
+  \]
+  \begin{itemize}
+    \item An $x$-free max cannot give an $x$-dependent answer.
+    \item Top collapses $\mathcal D$ to \textbf{one} $\theta^\ast$ before the
+      optimizer sees anything --- fragility per decision is lost.
+    \item Bottom \textbf{is} the \textbf{Formulation} slide; robust\_reg departs from it.
   \end{itemize}
 \end{frame}
 
@@ -331,6 +409,24 @@
     \end{itemize}
     \item \mc{Coherent: $z_p=1$ iff $x$ satisfies \emph{every} constraint under replicate
       $p$ (one indicator per draw). Incoherent: $z_{c,p}$ per constraint.}
+      \vspace{-0.2em}
+      {\scriptsize
+      \[
+        \Delta_p=\left(
+        \begin{array}{r|rrrc}
+                       & \text{arm}_1 & \text{arm}_2 & \text{arm}_3 & \cdots\\\hline
+          \text{DLT}   & +0.31 & -0.22 & +0.05 & \cdots\\
+          \vdots       & \vdots & \vdots & \vdots & \\
+          \text{GI}    & +0.33 & -0.23 & +0.05 & \cdots\\\hline
+          \text{OS}    & -1.8\phantom{0} & -0.9\phantom{0} & +2.4\phantom{0} & \cdots
+        \end{array}\right)
+      \]}
+      \vspace{-0.5em}
+      \begin{itemize}\scriptsize
+        \item \mc{One $u_p$ scaled by each $R_c$; OS excluded,
+          draws on its own. \textbf{Incoherent}: every row its own direction.}
+      \end{itemize}
+      \vspace{-0.3em}
     \item Chance constraint: $\tfrac1P\sum_p z_p \ge 1-\alpha$.
     \item \mc{OS robustification \textbf{off} by default --- matches CP.}
     \item Parameter: $\alpha$. $P$ is capped by MIP size.
@@ -342,22 +438,21 @@
   \small
   \begin{enumerate}
     \item Solve master $\to x^\ast$ \mc{--- gastric: one \emph{shared} master, solved
-      per \textbf{anchor} (10 k-medoids over \emph{training} contexts - each test point
-      is solved using the same master)}.
+      per \textbf{anchor} (10 k-medoids over training contexts; every test point
+      reuses it)}.
     \item \textbf{Separate}: score bank draws at $x^\ast$; cut the worst if its
-      distance $>$ tolerance. Repeat.
+      distance $>$ tolerance.
+    \item \textbf{Feasibility rollback}: add the cut \emph{tentatively}; if the master
+      then has no solution \mc{at any \textbf{protected anchor}}, remove it,
+      \textbf{permanently reject} that draw, try the next-worst candidate. Repeat.
   \end{enumerate}
   \begin{itemize}
     \item \mc{\textbf{coherent} (gastric): a scenario is one shared relabeling training
-      all 5 constraints \emph{and} the objective; rank by \textbf{normalized average
-      distance} (mean relative exceedance over anchor $\times$ outcome), cut the
-      worst \emph{scenario}.}
-    \item \mc{\texttt{cut\_whole\_scenario}: cut \emph{all} of an accepted scenario's
-      constraints, not the breached subset --- makes per-scenario exclusion sound,
-      and matches the wrapper's per-replicate indicator.}
-    \item \mc{\textbf{OS robustification off}: ablation showed worse test feasibility
-      \emph{and} OS.}
-    \item $\tau$ (stopping tolerance) in units of unexplained SD.
+      all 5 constraints \emph{and} the objective; rank by mean relative exceedance
+      over anchor $\times$ outcome, cut the whole worst \emph{scenario}.}
+    \item \mc{\textbf{OS robustification off}: ablation gave worse feasibility \emph{and} OS.}
+    \item $\tau$ (stopping tolerance, in unexplained SD) is CP's \emph{only}
+      parameter --- no coverage dial.
     \item Separation \emph{pool}: $B{=}200$ scored, one cut/iter; wrapper embeds all $P{=}20$.
   \end{itemize}
 \end{frame}
@@ -372,7 +467,10 @@
     \item \textbf{MIP gap $10^{-4}$} in the cut loop (was 1\%). Gastric obj
       ${\approx}10$ $\Rightarrow$ gap ${\approx}0.1$ vs distances ${\approx}0.007$:
       cuts below the solver's tolerance left $x^\ast$ unmoved. Synthetic never hit
-      this (obj ${\approx}1.2$, distances ${\approx}0.1$).
+      this (obj ${\approx}1.2$, distances ${\approx}0.1$). \mc{Now
+      \texttt{optimization.mip\_gap}: one value for \emph{every} method and for the
+      prescribe-time re-solve --- the comparison is on the objective, so a
+      per-method gap confounds it.}
     \item \textbf{Nothing is removed} from the master: pruning off,
       \texttt{cut\_eviction: reject}. Removing a cut lets a previous $x^\ast$ recur
       --- that is what a cycle is. Eligible set strictly shrinks
@@ -426,7 +524,7 @@
     \toprule
     & Gastric & Synthetic \\
     \midrule
-    Ground truth & GT ensemble, fit on all \textbf{416} arms (train + test) & Exact analytic constraint \\[0.3em]
+    Ground truth & GT ensemble, fit on all \textbf{416} arms (train + test) & Exact analytic constraint \\
     New train draw & $m$ of $n=320$ arms, no replacement; headline $m/n=0.5$,
       $R=10$ draws & Fresh noise, seeded per draw \\
     \bottomrule

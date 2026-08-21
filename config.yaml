@@ -17,6 +17,16 @@ optimization:
   # min c'x s.t. f(x) <= b, x in X
   constraint_rhs: 0.5  # b
   variable_bounds: [0.0, 1.0]
+  # Relative MIP gap for EVERY method (nominal, robust_reg, wrapper, CP), for CP's
+  # cut loop, and for the prescribe-time re-solve. ONE value on purpose: the
+  # methods are compared on their objective, so solving one at 1% on a gastric
+  # objective of ~10 leaves ~0.1 months of solver slack -- the same order as the
+  # differences being reported (9.63 vs 10.55). It was 0.01 for nominal and
+  # robust_reg, 1e-4 for the wrapper and CP, until 2026-08-20.
+  # 1e-4 is set by what the cut loop needs: gastric scenario distances are ~0.007,
+  # so a 1% gap returns the same incumbent for different cut sets and x* stops
+  # moving (iterations 6 and 7 of the 2026-08-10 trace are identical to 4dp).
+  mip_gap: 1.0e-4
 
 uncertainty:
   n_bootstrap: 20  # P — number of wrapper replicates / ScenarioBank prefix length
@@ -431,14 +441,10 @@ methods:
     # pruning/eviction safely. Applies to BOTH paths (one global cut on synthetic's
     # single context, per-anchor transient bounds on gastric's ten).
     objective_monotone: false
-    # MIP gap for the CUT LOOP. Was hard-coded at 0.01 (1%), which on gastric is
-    # ~0.1 of an objective of ~10 -- while the scenario distances being separated
-    # are ~0.007. Cuts an order of magnitude below the solver's stopping tolerance
-    # left x* unmoved for different cut sets (iterations 6 and 7 of the 2026-08-10
-    # trace are identical to 4dp), which is also why tau collapsed below 0.75.
-    # 1e-4 matches the final solve and the prescribe-time solve, so cuts are
-    # generated at the same optimality the prescriptions are made at.
-    mip_gap: 1.0e-4
+    # MIP gap: moved to `optimization.mip_gap`, which every method now reads, so
+    # the cut loop, the final solve, the prescribe-time solve and the three rival
+    # methods all run at one optimality tolerance. A `mip_gap` left here is still
+    # honoured as a legacy fallback when `optimization.mip_gap` is absent.
     # Cut the WHOLE scenario (every constraint under the accepted relabeling), not
     # just the constraints breached at the current x*. A scenario is one coherent
     # relabeling: if it is plausible, all of its constraints should hold. This is

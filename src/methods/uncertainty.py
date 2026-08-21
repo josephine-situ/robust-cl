@@ -342,6 +342,14 @@ class UncertaintySet:
     synthetic, :mod:`src.utils.perturbations`). Expect rho* well below 1; read it
     off a sweep, do not assume it.
 
+    ``clip_labels`` intersects D with the outcome's ``label_bounds`` for the
+    *training* adversary, matching what :meth:`ScenarioBank.draw` already does to
+    every bank draw (:func:`_clip_to_bounds`). Off by default because every result
+    in ``results/`` predates it: with it off, robust_reg trains against the raw
+    ball while CP and the wrapper face the clipped one, so "shared D" holds only
+    up to the bounds. Measured on gastric at ``rho=1``, 46--49% of the shifted
+    percentile labels fall outside [0, 1] before clipping.
+
     ``coherent_exclude`` names constraints drawn **independently** even when
     ``coherent=True`` -- the coherence grouping, not a global flag. Empty by
     default so existing banks are bit-identical; ``config.yaml`` sets it to the
@@ -354,6 +362,7 @@ class UncertaintySet:
     geometry: str = "box_l1"
     rho: float = 1.0
     coherent_exclude: tuple = ()
+    clip_labels: bool = False
 
     def __post_init__(self):
         if self.geometry not in GEOMETRIES:
@@ -419,6 +428,7 @@ def uncertainty_set_from_config(config: dict, coherent: Optional[bool] = None) -
         geometry=str(unc.get("geometry", "box_l1")),
         rho=float(unc.get("rho", 1.0)),
         coherent_exclude=tuple(unc.get("coherent_exclude", ()) or ()),
+        clip_labels=bool(unc.get("clip_labels", False)),
     )
 
 

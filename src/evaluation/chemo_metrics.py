@@ -136,7 +136,9 @@ def solve_for_context(result, instance: ProblemInstance, context_row: np.ndarray
         result.x[c_idx].lb = val
         result.x[c_idx].ub = val
     result.opt.Params.DualReductions = 0
-    result.opt.Params.MIPGap = 1e-4
+    # Gap left as built: every method's model carries the run's single
+    # `optimization.mip_gap`, so prescriptions are made at the optimality the
+    # solves (and CP's cuts) were generated at.
     result.opt.update()
     result.opt.optimize()
     status = result.opt.Status

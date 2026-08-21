@@ -33,6 +33,7 @@ from gurobipy import GRB
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    DEFAULT_MIP_GAP,
     SolutionResult,
     resolve_constraint_config,
     add_domain_constraints,
@@ -74,7 +75,7 @@ class IncrementalMaster:
     """Keeps the Gurobi model in memory to add constraints incrementally."""
 
     def __init__(self, instance: ProblemInstance, obj_terms: list, rho: float = 0.0,
-                 mip_gap: float = 1e-4):
+                 mip_gap: float = DEFAULT_MIP_GAP):
         self.instance = instance
         self.d = instance.n_features
         self.rho = rho
@@ -88,6 +89,7 @@ class IncrementalMaster:
         # distances ~0.1, so cuts sit above the gap). Matches the final solve and
         # the prescribe-time solve, so cuts are generated at the same optimality
         # the prescriptions are made at.
+        self.mip_gap = mip_gap
         self.opt.Params.MIPGap = mip_gap
         self.opt.Params.MIPFocus = 1
         self.opt.Params.Threads = 0
@@ -488,7 +490,7 @@ def _write_cp_trace(history: "CPHistory", path: Optional[str]) -> None:
 
 def _build_master_with_nominal(instance, model_type, model_params, rho,
                                robustify_objective: bool = True,
-                               mip_gap: float = 1e-4):
+                               mip_gap: float = DEFAULT_MIP_GAP):
     """Train nominal models, build the master MIP, embed objective + initial cuts.
 
     Returns ``(master, model_config_map)`` where ``model_config_map`` maps each
@@ -706,11 +708,11 @@ def _finalize(instance, master, ctx_bounds, history, status, total_start,
     master over-constrained/degenerate, so we return the best feasible decision
     actually found during iteration rather than that unreliable final solve."""
     d = instance.n_features
-    print("Re-solving with default MIP gap...")
+    print(f"Re-solving at the run's MIP gap ({master.mip_gap:g})...")
     _restore_context_bounds(master, ctx_bounds)
     if anchors and len(anchors) == 1 and anchors[0] is not None:
         _fix_anchor_context(master, instance, anchors[0])
-    master.opt.Params.MIPGap = 1e-4
+    master.opt.Params.MIPGap = master.mip_gap
     x_final, obj_final = master.solve()
     _restore_context_bounds(master, ctx_bounds)
     if incumbent_x is not None:
@@ -1828,7 +1830,7 @@ def _run_cp_loop(instance: ProblemInstance,
                  cp_tolerance_basis: str = "scale",
                  cp_objective_monotone: bool = False,
                  cp_cut_whole_scenario: bool = True,
-                 cp_mip_gap: float = 1e-4,
+                 cp_mip_gap: float = DEFAULT_MIP_GAP,
                  cp_uncertainty=None,
                  cp_bank=None,
                  cp_trace_path: Optional[str] = None) -> tuple[SolutionResult, CPHistory]:
@@ -2015,7 +2017,7 @@ def solve_cp(instance: ProblemInstance,
              cp_tolerance_basis: str = "scale",
              cp_objective_monotone: bool = False,
              cp_cut_whole_scenario: bool = True,
-             cp_mip_gap: float = 1e-4,
+             cp_mip_gap: float = DEFAULT_MIP_GAP,
              cp_uncertainty=None,
              cp_bank=None,
              ) -> tuple:

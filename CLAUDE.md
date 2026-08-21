@@ -224,10 +224,12 @@ Other CP settings:
 Each found by a run, not by reading. Together: from an exact period-4 cycle to
 `status=optimal` in 19 iterations.
 
-1. **`cp.mip_gap` = `1e-4`** (was hard-coded 0.01). At 1% on a gastric objective of
-   ~10 the solver returns anything within ~0.1 while the distances separated are
-   ~0.007, so cuts below the solver's own tolerance left `x*` unmoved. **Synthetic
-   never hit this** (objective ~1.2, distances ~0.1) — same code, opposite regimes.
+1. **`optimization.mip_gap` = `1e-4`** (was hard-coded 0.01). At 1% on a gastric
+   objective of ~10 the solver returns anything within ~0.1 while the distances
+   separated are ~0.007, so cuts below the solver's own tolerance left `x*`
+   unmoved. **Synthetic never hit this** (objective ~1.2, distances ~0.1) — same
+   code, opposite regimes. Since 2026-08-20 this is **one gap for every method**
+   (see Conventions).
 2. **Nothing is removed from the master** (`prune_slack_cuts` off,
    `cut_eviction: "reject"`). Removing a cut lets a previous `x*` recur — that is
    what a cycle is. The eligible set then strictly shrinks, so CP terminates in
@@ -383,8 +385,9 @@ censored on both problems.**
 
 ## Config
 
-`config.yaml` drives everything: `data.type` switches problem; `uncertainty.*`
-defines the **shared D**; `uncertainty.alpha` is the **legacy-calibration target
+`config.yaml` drives everything: `data.type` switches problem;
+`optimization.mip_gap` is the **one solver gap** every method runs at;
+`uncertainty.*` defines the **shared D**; `uncertainty.alpha` is the **legacy-calibration target
 only**; `methods.cp.*` holds the CP knobs; `methods.chemo.methods_to_run` /
 `constraint_modes` select what the gastric runner executes, with
 `methods.chemo.quick` overriding for `--quick`. CV model selections come from
@@ -446,6 +449,18 @@ Both kinds:
 
 ## Conventions / gotchas
 
+- **One MIP gap for every method** (`optimization.mip_gap`, `1e-4`), read by
+  `resolve_mip_gap` (`src/methods/nominal.py`) and passed to nominal, robust_reg,
+  the wrapper and CP alike; it also covers CP's cut loop, CP's final solve and the
+  prescribe-time re-solve in both evaluators. The methods are compared on their
+  objective, so a per-method gap confounds that comparison: 1% of a gastric
+  objective of ~10 is ~0.1 months, the same order as the differences reported
+  (9.63 vs 10.55). Until **2026-08-20** nominal and robust_reg solved at **0.01**
+  while the wrapper and CP solved at `1e-4`, and `metrics.py` coarsened the
+  synthetic prescribe-time re-solve to **0.01** for every method — so **objective
+  columns in any pre-2026-08-20 result are not gap-comparable across methods**;
+  re-run before reading small objective gaps off them. `methods.cp.mip_gap` is
+  still honoured as a legacy fallback if the `optimization` key is absent.
 - **GT is fixed and separate from the embedded models.** The GT ensemble is refit on
   the full clean cohort; only constraint/fit rows are resampled in realizations.
 - **Robustness = outer m-out-of-n subsampling** (without replacement) of training

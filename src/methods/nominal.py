@@ -18,6 +18,28 @@ from src.models.embed import embed_model, embed_single_tree
 from src.utils.trust_region import add_trust_region
 
 
+# Relative MIP gap for EVERY method's solve, the CP cut loop, and the
+# prescribe-time re-solve. It is shared on purpose: the methods are compared on
+# their objective, so a method solved to 1% on a gastric objective of ~10 carries
+# ~0.1 months of solver slack -- the same order as the differences being reported.
+# 1e-4 is the value the cut loop needs (scenario distances are ~0.007), so it sets
+# the floor for everyone. Override once, via `optimization.mip_gap` in config.yaml.
+DEFAULT_MIP_GAP = 1e-4
+
+
+def resolve_mip_gap(config: dict) -> float:
+    """The one MIP gap for a run, from ``optimization.mip_gap``.
+
+    ``methods.cp.mip_gap`` is read as a legacy fallback so old configs still load;
+    it used to be CP-only, which is exactly the asymmetry this removes.
+    """
+    opt_cfg = (config or {}).get("optimization", {}) or {}
+    if "mip_gap" in opt_cfg:
+        return float(opt_cfg["mip_gap"])
+    cp_cfg = ((config or {}).get("methods", {}) or {}).get("cp", {}) or {}
+    return float(cp_cfg.get("mip_gap", DEFAULT_MIP_GAP))
+
+
 @dataclass
 class SolutionResult:
     """Result from solving a constraint learning problem."""
@@ -243,7 +265,8 @@ def solve_nominal(instance: ProblemInstance,
                   model_params: dict = None,
                   rho: float = 0.0,
                   embedding_mode: str = "hard",
-                  rf_alpha: float = 0.25) -> SolutionResult:
+                  rf_alpha: float = 0.25,
+                  mip_gap: float = DEFAULT_MIP_GAP) -> SolutionResult:
     """Solve the nominal constraint learning problem."""
     import time
 
@@ -257,7 +280,7 @@ def solve_nominal(instance: ProblemInstance,
 
     opt = gp.Model("nominal")
     opt.Params.OutputFlag = 0
-    opt.Params.MIPGap = 0.01
+    opt.Params.MIPGap = mip_gap
     opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)

@@ -26,7 +26,7 @@ def _synth_build(method, config, model_type, model_params, seed):
     """Return ``build(knob) -> solver_fn`` for a synthetic method. Single knob per
     method (CP dist_tol, robust_reg label_eps, wrapper alpha); nominal ignores it.
     CP is single-lever (cp_alpha=0) like gastric."""
-    from src.methods.nominal import solve_nominal
+    from src.methods.nominal import resolve_mip_gap, solve_nominal
     from src.methods.robust_regression import solve_robust_regression
     from src.methods.wrapper import solve_wrapper
     from src.methods.cp import solve_cp
@@ -34,14 +34,17 @@ def _synth_build(method, config, model_type, model_params, seed):
     unc = config["uncertainty"]
     rr = config["methods"].get("robust_reg", {})
     cp = config["methods"].get("cp", {})
+    mip_gap = resolve_mip_gap(config)   # shared by all four methods
     if method == "nominal":
         return lambda knob: partial(solve_nominal, model_type=model_type,
-                                    model_params=model_params, rho=0.0)
+                                    model_params=model_params, rho=0.0,
+                                    mip_gap=mip_gap)
     if method == "robust_reg":
         return lambda knob: partial(
             solve_robust_regression, model_type=model_type, model_params=model_params,
             label_eps=knob, budget_frac=rr.get("budget_frac", 0.5), K=rr.get("K", 5),
-            seed=seed, rho=0.0, uncertainty_set=uncertainty_set_from_config(config))
+            seed=seed, rho=0.0, uncertainty_set=uncertainty_set_from_config(config),
+            mip_gap=mip_gap)
     if method == "wrapper":
         return lambda knob: partial(
             solve_wrapper, model_type=model_type, model_params=model_params,
@@ -50,7 +53,8 @@ def _synth_build(method, config, model_type, model_params, seed):
             scenario_source=config["methods"]["wrapper"].get("scenario_source", "noise"),
             uncertainty_set=uncertainty_set_from_config(config),
             robustify_objective=config["methods"]["wrapper"].get(
-                "robustify_objective", False))
+                "robustify_objective", False),
+            mip_gap=mip_gap)
     if method == "cp":
         return lambda knob: partial(
             solve_cp, model_type=model_type, model_params=model_params, rho=0.0,
@@ -69,7 +73,7 @@ def _synth_build(method, config, model_type, model_params, seed):
             cp_d0_quantile=cp.get("d0_quantile", 0.9),
             cp_tolerance_basis=cp.get("tolerance_basis", "scale"),
             cp_objective_monotone=cp.get("objective_monotone", False),
-            cp_mip_gap=float(cp.get("mip_gap", 1e-4)),
+            cp_mip_gap=mip_gap,
             cp_cut_whole_scenario=cp.get("cut_whole_scenario", True),
             cp_uncertainty=uncertainty_set_from_config(config))
     raise ValueError(f"unknown synthetic method {method}")
