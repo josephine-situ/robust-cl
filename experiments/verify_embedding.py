@@ -7,15 +7,32 @@ boxes are closed at the threshold then x == threshold satisfies TWO leaves and
 the optimizer picks whichever is cheaper. Real data points essentially never sit
 on a threshold, so the bug is invisible there and systematic in the master.
 
+An MLP has the same shape of failure at a different place: `embed_mlp` encodes
+each ReLU with a big-M binary, and the analogue of "x sits on a split" is a
+hidden unit whose PRE-ACTIVATION is exactly zero, where that binary is free. The
+tie is benign in principle (both branches give h = 0), but only exactly at zero
+-- integrality slack turns it into `M * IntFeasTol` of h-slack on either side,
+and M is propagated from the input box, so it is the quantity worth measuring.
+Since CV selects `mlp` for BOTH synthetic and reactor (2026-08-21), that encoding
+is now load-bearing for every number those two instances produce.
+
 This script therefore evaluates at BOTH:
   - random training rows, and
-  - points constructed to lie exactly ON a split threshold,
+  - points constructed to lie exactly ON a decision boundary of the model --
+    a split threshold for a tree/ensemble, a zero pre-activation for an MLP,
 each time solving the embedded model twice (minimise and maximise f_var). Any
-gap between those two is leaf ambiguity; any offset from sklearn is an encoding
-error. A correct embedding gives min == max == sklearn.
+gap between those two is leaf/branch ambiguity; any offset from sklearn is an
+encoding error. A correct embedding gives min == max == sklearn.
+
+The model verified is the one the experiments actually embed: on synthetic and
+reactor that is the CV selection (`results/cv/{problem}_selected_configs.json`,
+reached through the same `run_sweep` instance builders the sweep uses), NOT
+`config.yaml`'s `model` block. Linear and SVM models have no boundary case and
+report "(n/a)".
 
     python experiments/verify_embedding.py                 # gastric constraint models
     python experiments/verify_embedding.py --problem synthetic
+    python experiments/verify_embedding.py --problem reactor
 """
 
 import argparse
@@ -28,6 +45,8 @@ import gurobipy as gp
 from gurobipy import GRB
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from sklearn.neural_network import MLPRegressor
 
 from src.models.embed import embed_model, _extract_tree_structure, _parse_xgb_json_tree
 from src.models.train import train_model
@@ -100,20 +119,116 @@ def threshold_points(ml_model, X, var_lb, var_ub, n_points, rng):
     return pts
 
 
+def _mlp_preactivations(est, Xs):
+    """Per-hidden-layer pre-activation matrices for a fitted MLPRegressor.
+
+    Mirrors `embed_mlp`: z_l = h_{l-1} W_l + b_l, h_l = max(z_l, 0), skipping the
+    linear output layer. Inputs are in the SCALED space the net sees.
+    """
+    a = np.asarray(Xs, dtype=float)
+    zs = []
+    for W, b in zip(est.coefs_[:-1], est.intercepts_[:-1]):
+        z = a @ W + b
+        zs.append(z)
+        a = np.maximum(z, 0.0)
+    return zs
+
+
+def mlp_kink_points(ml_model, X, var_lb, var_ub, n_points, rng):
+    """Points where some hidden unit's pre-activation is exactly zero.
+
+    Constructed by bisection along the segment between two training rows: every
+    pre-activation is continuous and piecewise-linear along that segment, so a
+    sign change between the endpoints brackets a kink at ANY layer -- which a
+    closed-form solve would only reach for layer 1. 80 halvings put t at machine
+    precision, so |z| lands near 1e-16 relative: the tie the big-M binary sees.
+    """
+    scaler, est = _unwrap(ml_model)
+    if not isinstance(est, MLPRegressor):
+        return []
+    if scaler is not None:
+        sc = scaler.named_steps["scaler"]
+        mu, sigma = sc.mean_, sc.scale_
+    else:
+        mu, sigma = np.zeros(X.shape[1]), np.ones(X.shape[1])
+    Xs = (np.asarray(X, dtype=float) - mu) / sigma
+
+    pts = []
+    for _ in range(40 * n_points):
+        if len(pts) >= n_points:
+            break
+        a, b = Xs[rng.randint(len(Xs))], Xs[rng.randint(len(Xs))]
+        za = _mlp_preactivations(est, a[None, :])
+        zb = _mlp_preactivations(est, b[None, :])
+        cand = [(l, k) for l in range(len(za)) for k in range(za[l].shape[1])
+                if (za[l][0, k] > 0) != (zb[l][0, k] > 0)]
+        if not cand:
+            continue
+        l, k = cand[rng.randint(len(cand))]
+        lo, hi, pos_lo = 0.0, 1.0, za[l][0, k] > 0
+        for _ in range(80):
+            mid = 0.5 * (lo + hi)
+            zm = _mlp_preactivations(est, (a + mid * (b - a))[None, :])[l][0, k]
+            if (zm > 0) == pos_lo:
+                lo = mid
+            else:
+                hi = mid
+        x = (a + 0.5 * (lo + hi) * (b - a)) * sigma + mu
+        if np.all(x >= var_lb) and np.all(x <= var_ub):
+            pts.append(x)
+    return pts
+
+
+def boundary_points(ml_model, X, var_lb, var_ub, n_points, rng):
+    """(case_label, points) -- the model family's own ambiguous set."""
+    _, est = _unwrap(ml_model)
+    if isinstance(est, MLPRegressor):
+        return "on-kink", mlp_kink_points(ml_model, X, var_lb, var_ub,
+                                          n_points, rng)
+    return "on-threshold", threshold_points(ml_model, X, var_lb, var_ub,
+                                            n_points, rng)
+
+
+def resolve_instance(config, args):
+    """(instance, fallback_model_type, fallback_params, provenance_note).
+
+    Synthetic and reactor go through `run_sweep`'s builders so the model verified
+    is the one every method embeds. `run_adversary_probe.build_instance` cannot be
+    used for them: it reads a `data.synthetic` key config.yaml does not have (so it
+    silently falls back to n_train=200) and never loads the CV selection at all.
+    """
+    if args.problem == "synthetic":
+        from experiments.run_sweep import _synth_instance, synth_model_spec
+        mt, mp, from_cv = synth_model_spec(config)
+        return (_synth_instance(config), mt, mp,
+                "synthetic_selected_configs.json" if from_cv else "config.yaml")
+    if args.problem == "reactor":
+        from experiments.run_sweep import _reactor_instance, reactor_model_spec
+        mt, mp, from_cv = reactor_model_spec(config)
+        return (_reactor_instance(config), mt, mp,
+                "reactor_selected_configs.json" if from_cv else "config.yaml")
+    return (build_instance(config, args), config["default_model"]["type"],
+            config["default_model"]["params"], "gastric_selected_configs.json")
+
+
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--problem", choices=["gastric", "synthetic"], default="gastric")
+    p.add_argument("--problem", choices=["gastric", "synthetic", "reactor"],
+                   default="gastric")
     p.add_argument("--config", default="config.yaml")
     p.add_argument("--n-rows", type=int, default=25)
-    p.add_argument("--n-thresholds", type=int, default=25)
-    p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json")
+    p.add_argument("--n-thresholds", type=int, default=25,
+                   help="Boundary points per outcome: split thresholds, or ReLU "
+                        "kinks for an MLP")
+    p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json",
+                   help="Gastric only; synthetic and reactor resolve their own "
+                        "results/cv/{problem}_selected_configs.json")
     p.add_argument("--gt-cv-configs",
                    default="results/cv/gastric_gt_ensemble_configs.json")
     args = p.parse_args()
 
     config = load_config(args.config)
-    mt, mp = config["model"]["type"], config["model"]["params"]
-    inst = build_instance(config, args)
+    inst, mt, mp, provenance = resolve_instance(config, args)
     rows = outcome_rows(inst, mt, mp)
     lb, ub = inst.variable_lb.astype(float), inst.variable_ub.astype(float)
     rng = np.random.RandomState(0)
@@ -121,6 +236,7 @@ def main():
     print("=" * 78)
     print("EMBEDDING VERIFICATION  |sklearn - embedded|, and the embedded min/max "
           "spread")
+    print(f"problem={args.problem}   embedded models from: {provenance}")
     print("=" * 78)
     print(f"{'outcome':<28}{'type':<8}{'case':<12}{'max err':>12}{'max spread':>13}")
 
@@ -128,11 +244,12 @@ def main():
     for (c_idx, name, md, m_type, m_params, is_con, rhs) in rows:
         # trained exactly as _train_nominal_with_configs does
         model = train_model(md.X_train, md.y_train, m_type, m_params)
+        b_label, b_pts = boundary_points(model, md.X_train, lb, ub,
+                                         args.n_thresholds, rng)
         cases = {
             "data rows": [md.X_train[i] for i in
                           rng.choice(len(md.X_train), args.n_rows, replace=False)],
-            "on-threshold": threshold_points(model, md.X_train, lb, ub,
-                                             args.n_thresholds, rng),
+            b_label: b_pts,
         }
         for case, pts in cases.items():
             errs, spreads = [], []
@@ -144,7 +261,7 @@ def main():
                 errs.append(max(abs(sk - lo), abs(sk - hi)))
                 spreads.append(hi - lo)
             if not errs:
-                print(f"{name:<28}{m_type:<8}{case:<12}{'(no points)':>12}")
+                print(f"{name:<28}{m_type:<8}{case:<12}{'(n/a)':>12}")
                 continue
             e, s = max(errs), max(spreads)
             worst_err, worst_spread = max(worst_err, e), max(worst_spread, s)
@@ -154,7 +271,7 @@ def main():
     print("-" * 78)
     print(f"{'OVERALL':<48}{worst_err:>12.2e}{worst_spread:>13.2e}")
     ok = worst_err <= 1e-6 and worst_spread <= 1e-6
-    print("PASS: embedding is exact at both data rows and split thresholds." if ok
+    print("PASS: embedding is exact at both data rows and model boundaries." if ok
           else "FAIL: embedding disagrees with sklearn or admits ambiguous leaves.")
     return 0 if ok else 1
 

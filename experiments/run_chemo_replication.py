@@ -49,9 +49,9 @@ def run_chemo_replication(config):
     n_train = instance.X_train.shape[0]
     print(f"Train: {n_train}, Test: {n_test} (paper target: 320, 96)")
 
-    wrapper_cfg = config["methods"].get("chemo_wrapper", config["methods"]["wrapper"])
-    model_type = config["model"]["type"]
-    model_params = config["model"]["params"]
+    wrapper_cfg = config["methods"].get("chemo_wrapper", {"alpha": 0.25})
+    model_type = config["default_model"]["type"]
+    model_params = config["default_model"]["params"]
 
     solver_fn = partial(
         solve_tree_violation_wrapper,

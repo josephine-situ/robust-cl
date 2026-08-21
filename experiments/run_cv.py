@@ -759,7 +759,7 @@ def _synthetic_cv_data(args):
     from src.data.generate import synthetic_nonlinear
 
     config = yaml.safe_load(open(args.config))
-    d = config["data"]
+    d = config["synthetic"]
     data_seed = int(config["uncertainty"].get("bootstrap_seed", 42))
 
     train = synthetic_nonlinear(

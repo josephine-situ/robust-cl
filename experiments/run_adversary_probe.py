@@ -246,7 +246,7 @@ def frank_wolfe_adversary(model_data, m_type, m_params, x_star, eps, gamma,
 # ---------------------------------------------------------------------------
 def build_instance(config, args):
     if args.problem == "synthetic":
-        syn = config.get("data", {}).get("synthetic", {})
+        syn = config.get("synthetic", {})
         return synthetic_nonlinear(
             n_train=syn.get("n_train", 200), n_test=syn.get("n_test", 100),
             noise_std=syn.get("noise_std", 0.1), seed=config.get("seed", 42),
@@ -563,8 +563,8 @@ def main():
     from src.methods.nominal import resolve_mip_gap
     mip_gap = resolve_mip_gap(config)
     seed = int(config.get("uncertainty", {}).get("bootstrap_seed", 42))
-    model_type = config["model"]["type"]
-    model_params = config["model"]["params"]
+    model_type = config["default_model"]["type"]
+    model_params = config["default_model"]["params"]
 
     B = args.n_scenarios or int(cp_cfg.get("n_scenarios", 200))
     n_anchors = args.n_anchors or int(cp_cfg.get("n_anchors", 15))

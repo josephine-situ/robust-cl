@@ -54,27 +54,27 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
     print("ROBUST CONSTRAINT LEARNING EXPERIMENT")
     print("=" * 60)
 
-    print(f"\n[1] Generating problem instance ({config['data']['type']})...")
-    if config["data"]["type"] == "gastric_cancer":
+    print(f"\n[1] Generating problem instance ({config['problem']['type']})...")
+    if config["problem"]["type"] == "gastric_cancer":
         instance = gastric_cancer(
             fixed_constraint_configs=cv_configs if cv_configs else None
         )
     else:
         instance = synthetic_nonlinear(
-            n_train=config["data"]["n_train"],
-            n_features=config["data"]["n_features"],
-            noise_std=config["data"]["noise_std"],
+            n_train=config["synthetic"]["n_train"],
+            n_features=config["synthetic"]["n_features"],
+            noise_std=config["synthetic"]["noise_std"],
             seed=(seed if seed is not None
                   else config["uncertainty"].get("bootstrap_seed", 42)),
         )
     print(f"    n_train (model 1)={len(instance.constraints[0].models_data[0].y_train)}, "
           f"d={instance.n_features}, "
-          f"noise_std={config['data'].get('noise_std', 'n/a')}")
+          f"noise_std={config['synthetic'].get('noise_std', 'n/a')}")
 
     # Resolve model type/params: CV-selected override > config default
-    model_type = config["model"]["type"]
-    model_params = config["model"]["params"]
-    if cv_configs and config["data"]["type"] != "gastric_cancer":
+    model_type = config["default_model"]["type"]
+    model_params = config["default_model"]["params"]
+    if cv_configs and config["problem"]["type"] != "gastric_cancer":
         # For synthetic, override global model from the single constraint entry
         synth_cfg = cv_configs.get("synthetic_constraint")
         if synth_cfg:

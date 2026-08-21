@@ -252,8 +252,8 @@ def _setup_gastric(config, args):
         if args.match_bank:
             cell["cp_n_scenarios"] = int(config["uncertainty"].get("n_bootstrap", 20))
         build, _ = _method_build_map(method, cell, ranges,
-                                     config["model"]["type"],
-                                     config["model"]["params"], None, None)
+                                     config["default_model"]["type"],
+                                     config["default_model"]["params"], None, None)
         return build
 
     return inst, folds, oracle, make_build, ALL_CONSTRAINTS, bool(inst.context_var_indices)

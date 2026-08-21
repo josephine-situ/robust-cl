@@ -74,6 +74,10 @@ def train_model(X: np.ndarray,
             # value that this function used to ignore -- the fitted model was then
             # not the model that was cross-validated (fixed 2026-08-21).
             epsilon=params.get("epsilon", 0.0),
+            # Accepted and stored but unused at dual=False (LinearSVR is
+            # deterministic there); passed so the selected config and the fitted
+            # estimator agree under experiments/verify_embedding-style audits.
+            random_state=random_state,
             max_iter=params.get("max_iter", 100_000),
             dual=params.get("dual", False),
             loss=params.get("loss", "squared_epsilon_insensitive"),

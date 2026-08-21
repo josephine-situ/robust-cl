@@ -68,8 +68,9 @@ def synth_model_spec(config, path=None, verbose=False):
             return mt, dict(mp), True
     if verbose:
         print(f"    [synth] no {path}; embedded model from config.yaml: "
-              f"{config['model']['type']} {config['model']['params']}", flush=True)
-    return config["model"]["type"], dict(config["model"]["params"]), False
+              f"{config['default_model']['type']} "
+              f"{config['default_model']['params']}", flush=True)
+    return config["default_model"]["type"], dict(config["default_model"]["params"]), False
 
 
 # Written by `run_cv.py --problem reactor`; the CV-selected embedded model.
@@ -86,8 +87,8 @@ def reactor_model_spec(config, path=None, verbose=False):
     """
     path = path or REACTOR_CV_CONFIGS
     rc = config.get("reactor", {})
-    default_t = rc.get("model", {}).get("type", config["model"]["type"])
-    default_p = dict(rc.get("model", {}).get("params", config["model"]["params"]))
+    default_t = rc.get("model", {}).get("type", config["default_model"]["type"])
+    default_p = dict(rc.get("model", {}).get("params", config["default_model"]["params"]))
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             cfg = json.load(f).get(REACTOR_OUTCOME)
@@ -132,7 +133,7 @@ def _synth_instance(config, seed=None, cv_path=None, verbose=False):
     per-draw refits through the same map.
     """
     from src.data.generate import synthetic_nonlinear
-    d = config["data"]
+    d = config["synthetic"]
     mt, mp, from_cv = synth_model_spec(config, cv_path, verbose=verbose)
     return synthetic_nonlinear(
         n_train=d["n_train"], n_features=d["n_features"], noise_std=d["noise_std"],
@@ -324,7 +325,7 @@ def run_noise_sweep(noise_values=None, refresh=False, n_real=1):
             print(f"# NOISE_STD = {sigma}   DRAW {r + 1}/{n_real}")
             print(f"{'#' * 60}")
 
-            config["data"]["noise_std"] = sigma
+            config["synthetic"]["noise_std"] = sigma
             df, _ = run_experiment(config, seed=base_seed + 1000 * r, knobs=knobs)
             df["noise_std"] = sigma
             df["draw"] = r

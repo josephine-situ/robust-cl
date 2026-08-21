@@ -1,49 +1,41 @@
-data:
-  # Synthetic test function (start here before real case studies)
-  type: "synthetic"  # Change to "gastric_cancer" to run the study
-  # 2500, raised from 200 on 2026-08-21. At n=200 the synthetic instance was not
-  # determined well enough to select a model on: the CV winner (mlp) had a refit
-  # spread of 0.62 on the training rows against a per-row label shift of 0.128 at
-  # rho=1 -- a 4.9x amplification, vs ~2x for the tree ensembles -- so 4 of 12
-  # refits disagreed with the nominal fit about the box corner and the wrapper
-  # prescribed x=(1,1). At n=2500 that spread falls to 0.092 (6.8x lower, and the
-  # SECOND LOWEST of the seven candidates), the nominal x* moves off the boundary
-  # to an interior point, and oof_sd falls 0.128 -> 0.113 against a true sigma of
-  # 0.100. The pathology was small-sample, not model choice, so no selection
-  # screen is needed: plain CV R^2 picks the model.
-  # rho keeps its meaning across the change by construction -- R_c = rho *
-  # scale(y_c) * sqrt(n) makes the PER-ROW shift rho * oof_sd at any n -- which is
-  # the transfer property the sqrt(n) convention exists for. The radius itself
-  # grows (1.81 -> 5.63 at rho=1); that is the same quantity, not a wider set.
-  # Nothing in results/synthetic or results/rho_sweep from before this carries
-  # over.
+# config.yaml -- robust constraint learning
+#
+# Layout: blocks are marked SHARED (read on every problem) or named for the one
+# problem that reads them. Rationale, measurements and history for these values
+# live in CLAUDE.md; this file states what is set, not why in full.
+
+# ===========================================================================
+# SHARED -- problem selection
+# ===========================================================================
+problem:
+  # Instance built by run_all.py / run_cv.py / run_sweep.py / run_rho_sweep.py.
+  # The reactor is selected with `--problem reactor`, not from here.
+  type: "synthetic"        # "synthetic" | "gastric_cancer"
+
+# ===========================================================================
+# PER-PROBLEM instance settings -- each block is read only by the problem it
+# names. gastric_cancer has no block: it loads from src/data/gastric_v11.py.
+# ===========================================================================
+synthetic:
+  # 2500, up from 200 on 2026-08-21. At 200 the CV winner amplified a 0.128/row
+  # label shift into a 0.62 refit spread and the wrapper prescribed the box
+  # corner x=(1,1). rho keeps its meaning across the change by construction
+  # (R_c = rho * scale * sqrt(n) fixes the per-row shift at any n), but nothing
+  # in results/synthetic or the synthetic rho_sweep cells from before carries over.
   n_train: 2500
   n_features: 2
-  noise_std: 0.1  # sigma for label noise
+  noise_std: 0.1           # true sigma of the label noise
 
-model:
-  type: "rf"  # "cart", "rf", "xgb"
-  params:
-    n_estimators: 50
-    max_depth: 5
-    random_state: 42
-
-# The C-MICL DMA-MR reactor instance (src/data/generate.py: reactor_micl).
-# Selected with `--problem reactor`; it does not read the `data` block above.
 reactor:
-  # 1,000 points, as C-MICL App. D.1. Each is a stiff ODE solve at rtol=atol=1e-10
-  # (~160 ms), so the design is cached under results/reactor/ keyed by (n, seed)
-  # and built once.
+  # C-MICL DMA-MR (Ovalle et al. 2025 Sec. 5.1; src/data/dma_mr.py). Every design
+  # point is a stiff ODE solve at rtol=atol=1e-10 (~160 ms), so the design is
+  # cached under results/reactor/ keyed by (n, seed).
   n_train: 1000
-  # Gaussian label noise. The paper says only that noise "was added" and never
-  # gives a level, so this is calibrated to their MODEL FIT and nothing else:
-  # 2.0 reproduces their reported ReLU-NN performance (our 5-fold CV R^2 0.958 vs
-  # their 0.954, read off Table 2 as 1 - MSE/1.2871). Never calibrated to a
-  # feasibility result.
+  # Calibrated to reproduce their model fit only (our 5-fold CV R^2 0.958 vs
+  # their 0.954); the paper states only that noise "was added".
   noise_std: 2.0
-  # Fallback embedded model, used only until
-  # results/cv/reactor_selected_configs.json exists (run_cv.py --problem reactor).
-  # d=5 and n=1000 here, so the synthetic 2-feature defaults do not transfer.
+  # Embedded-model fallback for the reactor; overrides default_model below.
+  # results/cv/reactor_selected_configs.json wins over both when present.
   model:
     type: "gbm"
     params:
@@ -52,501 +44,197 @@ reactor:
       max_depth: 4
       random_state: 1
 
+# ===========================================================================
+# SHARED -- embedded model fallback
+# ===========================================================================
+# Used by synthetic AND gastric, and by the reactor after reactor.model above.
+# results/cv/*_selected_configs.json wins over this whenever the file exists;
+# these values reproduce pre-CV runs.
+default_model:
+  type: "rf"               # "cart" | "rf" | "xgb" | "mlp" | "linear" | "svm" | "gbm"
+  params:
+    n_estimators: 50
+    max_depth: 5
+    random_state: 42
+
+# ===========================================================================
+# SHARED -- solver
+# ===========================================================================
 optimization:
-  # The downstream optimization problem
-  # min c'x s.t. f(x) <= b, x in X
-  constraint_rhs: 0.5  # b
-  variable_bounds: [0.0, 1.0]
-  # Relative MIP gap for EVERY method (nominal, robust_reg, wrapper, CP), for CP's
-  # cut loop, and for the prescribe-time re-solve. ONE value on purpose: the
-  # methods are compared on their objective, so solving one at 1% on a gastric
-  # objective of ~10 leaves ~0.1 months of solver slack -- the same order as the
-  # differences being reported (9.63 vs 10.55). It was 0.01 for nominal and
-  # robust_reg, 1e-4 for the wrapper and CP, until 2026-08-20.
-  # 1e-4 is set by what the cut loop needs: gastric scenario distances are ~0.007,
-  # so a 1% gap returns the same incumbent for different cut sets and x* stops
-  # moving (iterations 6 and 7 of the 2026-08-10 trace are identical to 4dp).
+  # ONE relative MIP gap for every method, for CP's cut loop and final solve, and
+  # for the prescribe-time re-solve. The methods are compared on their objective,
+  # so a per-method gap confounds that comparison: 1% of a gastric objective of
+  # ~10 is ~0.1 months, the order of the differences reported. 1e-4 is set by what
+  # the cut loop needs -- gastric scenario distances are ~0.007, so a 1% gap
+  # returns the same incumbent for different cut sets and x* stops moving.
+  # Pre-2026-08-20 results used 0.01 for nominal/robust_reg and are not
+  # gap-comparable across methods.
   mip_gap: 1.0e-4
 
+# ===========================================================================
+# SHARED -- the uncertainty set D (src/methods/uncertainty.py)
+# ===========================================================================
+# One set faced by cp, wrapper and robust_reg alike, so a difference between them
+# is a difference in METHOD. Each method keeps exactly ONE conservatism dial of
+# its own (cp tau / wrapper alpha / robust_reg label_eps); the D parameters below
+# are shared constants, never per-method knobs.
 uncertainty:
-  n_bootstrap: 20  # P — number of wrapper replicates / ScenarioBank prefix length
-  bootstrap_seed: 42
-  # Rows drawn (with replacement) per bootstrap replicate, as a proportion of
-  # n_train. 0.5 matches Maragno et al. (2025) Sec. 4.4.1 ("a bootstrap sample
-  # (proportion = 0.5) of the underlying data"); 1.0 is the classical n-out-of-n
-  # bootstrap and reproduces results from before this knob existed. Reaches ONLY
-  # the legacy `methods.wrapper.scenario_source: "bootstrap"` path — the default
-  # "noise" wrapper draws vertices of D via ScenarioBank and never bootstraps.
+  n_bootstrap: 20          # P: wrapper replicates / ScenarioBank prefix length
+  bootstrap_seed: 42       # fixes the data and the evaluation folds
+  # Rows per bootstrap replicate as a proportion of n_train (Maragno Sec. 4.4.1).
+  # Reaches ONLY the legacy methods.wrapper.scenario_source "bootstrap" path;
+  # 1.0 reproduces results from before this knob existed.
   bootstrap_frac: 0.5
-  # --- the SHARED uncertainty set D (src/methods/uncertainty.py) ---------------
-  # D_c = {dy : ||dy||_2 <= R_c}, R_c = rho * scale(y_c) * sqrt(n) -- the ball, see
-  # `geometry` below. Shape is shared by cp / wrapper / robust_reg; each keeps its
-  # own ONE conservatism parameter (tau / alpha / label_eps). D's size is
-  # deliberately NOT pinned to robust_reg's calibrated optimum: pinning would force
-  # stage-1 CV to run sequentially and would conflate D's definition with one
-  # method's tuning.
-  #
-  # eps_0 and budget_frac parameterize the "box_l1" ABLATION ONLY and are IGNORED
-  # under the default geometry. They are kept because every artifact currently in
-  # results/ was produced under box_l1. eps_0 = 1.0 means ONE UNEXPLAINED STANDARD
-  # DEVIATION -- a unit whose meaning, not merely whose units, transfers across
-  # problems. Sanity check: on synthetic (true noise 0.100) the out-of-fold
-  # residual sd is 0.128, so eps_0=1 nearly recovers the data-generating process
-  # without being told it. (rho = 1 carries the same meaning per row; it is not
-  # the same radius -- see `geometry`.)
-  eps_0: 1.0          # box_l1 ablation only
-  budget_frac: 0.5    # box_l1 ablation only: rows the adversary may move (m = frac * n)
-  coherent: true      # true = shared draw across outcomes (see coherent_exclude); false = independent
-  # Constraints that keep their OWN independent direction even under coherent:true.
-  # Coherence is a GROUPING, not a global flag, because the data does not support
-  # one answer for all six outcomes. Measured (out-of-fold residuals, same rows /
-  # folds / frozen configs the bank uses; n=145 under forward-chaining):
-  #   non-DLT toxicity pairs   +0.28 on percentile labels (+0.22 raw)
-  #   OS vs every toxicity     +0.06 (+0.02 raw); 3 of 5 pairs negative on raw
-  # Coherent asserts +1, incoherent asserts 0; neither fits both blocks. DLT is
-  # excluded from that AVERAGE because DLT_PROP = 1 - prod(1 - tox) makes it a
-  # deterministic function of the other four (verified exact to 2e-16 over exactly
-  # BLOOD_4 / CONSTITUTIONAL_34 / INFECTION_34 / GI_34), so its +0.44..+0.80 row is
-  # construction rather than evidence. The record-level mismeasurement story that
-  # licenses coherence -- a study under-reporting adverse events under-reports
-  # across all toxicity endpoints -- never covered survival.
-  # NOTE: excluded from the average, NOT from the GROUP. This list is the only
-  # exclusion, so dlt_constraint takes the SHARED direction: delta_dlt = R_dlt * u
-  # with the same u as the other four, i.e. exactly collinear pre-clip (measured
-  # corr +1.0000; clipping to [0,1] is the only decorrelator, leaving +0.94..+0.96
-  # at rho=1 with ~20% of rows clipped, +0.97..+0.99 at rho=0.25). Two consequences:
-  # the coherent group spends five outcomes' radius on four degrees of freedom, and
-  # the draw is not a CONSISTENT relabeling -- delta perturbs each outcome's
-  # percentile labels independently, so no delta in D leaves perturbed-DLT equal to
-  # 1 - prod(1 - perturbed tox). Keeping DLT in the group is still the right sign
-  # (its residuals do move with the others); it is the magnitude that is asserted.
-  # A consistent alternative -- perturb the four components only and re-derive DLT
-  # through the identity, then re-percentile -- is a change to ScenarioBank._draw
-  # and the label construction, not a config flip.
-  # Empty list reproduces pre-grouping banks bit-for-bit (synthetic has one
-  # outcome, so coherence is vacuous there either way).
-  coherent_exclude: ["os_constraint"]
-  # D's SHAPE. "ellipsoid" (the default) is the ball ||dy||_2 <= R_c, with
-  # R_c = rho * scale(y_c) * sqrt(n), and reads `rho` ALONE -- eps_0 and
-  # budget_frac are ignored under it. "box_l1" is the older set
-  # {|dy_i| <= eps_c, ||dy||_1 <= budget_frac * n * eps_c}, eps_c = eps_0 *
-  # scale(y_c); it is kept as an ablation and is what every artifact currently in
-  # results/ was produced under. Geometry applies to all three methods at once
-  # (bank draws, CP/probe separation, robust_reg's training adversary -- whose
-  # linear counterpart becomes an SOCP), because a geometry reaching only some
-  # would break the shared-D comparison.
-  #
-  # WHY IT IS THE DEFAULT: it makes D a ONE-PARAMETER family. budget_frac cannot
-  # constrain an L2 ball -- no L1 face, no support restriction -- so it could only
-  # ever scale the radius, leaving (eps_0, budget_frac) NON-IDENTIFIABLE with just
-  # their product observable. rho replaces both and nothing is lost.
-  #
-  # THE SWITCH FROM box_l1 IS NOT FREE, in two compounding ways. (1) The ellipsoid
-  # is a STRICTLY STRONGER adversary at equal budget (Cauchy-Schwarz:
-  # sum_{top m}|g_i| <= sqrt(m)||g||_2) -- measured 2.0x on synthetic, and
-  # gastric's broad influence support (nnz(g) = 313-320 of n = 320) makes the gap
-  # approach sqrt(n/m). (2) rho = 1 is sqrt(2) wider than eps_0 = 1 at
-  # budget_frac 0.5, since sqrt(n) replaces sqrt(n/2). So rho = 1 is roughly 2.8x
-  # the box's old effective adversary and is NOT an operating point -- read rho*
-  # off the sweep. Random sampling does not improve to compensate: the bank's
-  # best-of-B is unchanged while the true worst case rises, WIDENING the
-  # random-vs-directed gap.
-  # => Nothing in results/ carries over across this switch. Re-run before
-  #    comparing, and do not read a box_l1 number against an ellipsoid one.
-  geometry: "ellipsoid"   # "ellipsoid" | "box_l1"
-  # Radius of the ellipsoidal D, in units of scale(y_c) * sqrt(n). rho = 1 is "the
-  # typical L2 norm of iid noise at one unexplained sd per row" -- a meaning that
-  # transfers across problems (n=200 synthetic, n=320 gastric), not just its units.
-  # A SIZE CONVENTION, NOT A COVERAGE CLAIM: uncertainty.chi2_radius documents why
-  # a chi^2 quantile cannot supply one while scale is an out-of-fold residual sd.
-  #
-  # SWEPT, NOT FITTED -- and rho*(method) is what the EVALUATION run uses.
-  # experiments/run_rho_sweep.py reports the whole axis (D is literally shared at
-  # every point of it: that curve is where the shared-D comparison is read) plus
-  # rho*(method) at a fixed held-out feasibility target. Each method is then
-  # evaluated at its OWN rho*, so evaluation matches held-out feasibility, NOT D
-  # -- each method faces a ball of its own radius there, and a cross-method gap is
-  # read at matched robustness rather than matched uncertainty. The criterion is
-  # what keeps that honest: held-out feasibility on training folds. Never fit rho
-  # against the GT ensemble (tunes to the judge) or against synthetic's known
-  # noise_std (calibrates D to the DGP, which CP would then win by construction).
-  # This value is only the single point a one-off solve uses.
+
+  # D's shape. "ellipsoid" (default, since 2026-08-19) is the ball
+  # ||delta||_2 <= R_c with R_c = rho * scale(y_c) * sqrt(n), and reads `rho`
+  # ALONE. "box_l1" is the older {|delta_i| <= eps_c, ||delta||_1 <= budget_frac *
+  # n * eps_c} set, kept as an ablation and the geometry every artifact outside
+  # results/rho_sweep/ was produced under. The ellipsoid is a strictly stronger
+  # adversary at equal budget (2.0x measured on synthetic) and rho=1 is sqrt(2)
+  # wider than eps_0=1, so NOTHING carries over across the switch -- never read a
+  # box_l1 number against an ellipsoid one.
+  # NOTE: uncertainty_set_from_config's *code* fallback is still "box_l1"; only
+  # this file carries the ellipsoid default.
+  geometry: "ellipsoid"    # "ellipsoid" | "box_l1"
+  # Radius in units of scale(y_c) * sqrt(n): rho = 1 is "the L2 norm of iid noise
+  # at one unexplained sd per row", a meaning that transfers across n. A SIZE
+  # CONVENTION, NOT A COVERAGE CLAIM. Swept, never fitted -- run_rho_sweep.py
+  # reports rho*(method) and each method is evaluated at its own rho*. Never pin
+  # rho to robust_reg's optimum, to the GT ensemble, or to synthetic's known
+  # noise_std. This value is only the point a one-off solve uses.
   rho: 1.0
-  # Intersect D with each outcome's label_bounds, for EVERY method that faces it.
-  # ScenarioBank has always clipped its draws (uncertainty._clip_to_bounds), so
-  # with this off CP and the wrapper faced D n [0,1] on the gastric toxicities
-  # while robust_reg's training adversary faced the raw ball -- "shared D" held
-  # only up to the bounds, and it binds hardest exactly there. Measured on the
-  # five gastric toxicities at rho = 1: 45-49% of the shifted labels fall outside
-  # [0, 1], and clipping roughly HALVES the realizable shift (DLT ||delta||
-  # 4.56 -> 2.56). At rho = 0.75, 39-41% and 3.42 -> 2.22.
-  # Only bites where label_bounds is set: gastric's five toxicities (percentile
-  # ranks, [0, 1]). Gastric OS and the synthetic constraint carry no bounds, so
-  # they are untouched and their numbers are unchanged.
-  # Clipping only shrinks |delta_i|, so the applied shift stays inside D.
-  # COST: it costs the linear arm its closed form -- see robust_regression's
-  # _train_label_robust_model. Set false to reproduce results predating
-  # 2026-08-21.
+  eps_0: 1.0               # box_l1 ablation only; ignored under the ellipsoid
+  budget_frac: 0.5         # box_l1 ablation only: rows the adversary may move
+
+  # "oof_sd" = sd of out-of-fold residuals, i.e. the UNEXPLAINED label spread, so
+  # rho=1 is one unexplained sd per row. Preferred over marginal "sd", which is
+  # mostly signal (synthetic sd(y)=0.545 against true noise 0.100) and against
+  # which CP will not converge. Folds follow the problem's own scheme (temporal on
+  # gastric, so no leakage). It does conflate label noise with misspecification.
+  scale_stat: "oof_sd"     # "oof_sd" | "oof_quantile" | "sd" (marginal; ablation)
+
+  # Intersect D with each outcome's label_bounds, for every method that faces it.
+  # IN EFFECT ON GASTRIC ONLY -- it bites only where label_bounds is set, which is
+  # gastric's five toxicities ([0,1] percentile ranks). Gastric OS, synthetic and
+  # the reactor carry no bounds and do not move.
+  # ScenarioBank has always clipped its draws; before 2026-08-21 robust_reg's
+  # training adversary did not, so shared D held only up to the bounds. At rho=1,
+  # 45-49% of shifted toxicity labels leave [0,1] and clipping roughly halves the
+  # realizable shift (DLT ||delta|| 4.56 -> 2.56). Clipping only shrinks
+  # |delta_i|, so the shift stays in D. Costs the linear arm its closed form.
+  # Set false to reproduce gastric robust_reg results predating 2026-08-21.
   clip_labels: true
-  # "oof_sd" = sd of out-of-fold residuals: the UNEXPLAINED label spread. Preferred
-  # over marginal "sd", which is mostly signal wherever the model fits -- on
-  # synthetic sd(y)=0.545 vs a true noise of 0.100, so eps_0=1 under "sd" corrupts
-  # labels 4x harder than the data supports and CP could not converge against it.
-  # Model dependence is bounded and deliberate: run_cv.py freezes the model class
-  # BEFORE any robustness and all three methods embed that same frozen model, so D
-  # comes from a shared pre-committed choice, not from one method's tuning. It does
-  # conflate label noise with misspecification -- on gastric the models explain
-  # almost nothing (unexplained ratio 0.78-1.02), so D stays nearly as wide as
-  # sd(y) there, which is the honest answer when the fit is that poor.
-  # Folds follow the problem's own scheme (temporal on gastric -> no leakage).
-  scale_stat: "oof_sd"   # "oof_sd" | "oof_quantile" | "sd" (marginal; ablation)
-  # cp_k_neighbors_* and cp_n_candidates apply ONLY to the legacy localized
-  # bootstrap path (methods.cp.scenario_source: "bootstrap"). Kept so prior
-  # results stay reproducible; unused when scenario_source is "noise".
-  cp_k_neighbors_frac: 0.1  # fraction of n_train for CP localized pool
-  cp_k_neighbors_min: 100      # floor on pool size: k = max(min, round(frac * n_train))
-  cp_n_candidates: 20  # bootstrap candidates per CP separation call
-  alpha: 0.1     # coverage target for the LEGACY baseline calibration only: at most
-                 # this fraction of training contexts (patients) may be infeasible.
-                 # Read by calibrate_strength under `calibration.method: "alpha"`;
-                 # the default method is "cv", which ignores it. CP does NOT read
-                 # it -- its own cp_alpha is pinned at 0 at every call site, so a
-                 # cut breaking a protected anchor is rolled back, not budgeted.
 
-calibration:
-  # method: "cv" (held-out robustness-parameter CV; default) or "alpha" (legacy
-  # training-infeasible-fraction heuristic below). CV selects each method's knob by
-  # max held-out feasibility s.t. held-out objective within os_tolerance_frac of
-  # nominal, on temporal (gastric) / KFold (synthetic) folds -- see cv_calibration.
-  method: "cv"
-  # --- legacy alpha calibration (method: "alpha") ---
-  # Tune each baseline's single robustness knob to the strongest setting whose
-  # fraction of infeasible training contexts is <= uncertainty.alpha. CP and
-  # nominal are exempt (CP self-regulates; nominal has no knob).
-  # Weakest bounds: wrapper_alpha_max, tree_alpha_max, rho_min.
-  # Strongest bounds: alpha=0 (wrapper/tree), rho_max (robust_param).
-  enabled: true
-  n_grid: 5            # strength points scanned (strongest -> weakest)
-  wrapper_alpha_max: 0.5  # weakest wrapper joint-chance budget (strongest = 0.0)
-  tree_alpha_max: 0.5     # weakest tree-violation budget (strongest = 0.0)
-  rho_min: 0.001           # weakest robust_param rho (never nominal)
-  rho_max: 0.005           # strongest robust_param rho scanned
-  robust_reg_eps_max: 0.3  # strongest label-uncertainty radius scanned (robust_reg)
+  # Coherence is a GROUPING, not a global flag: the group shares one standardized
+  # direction, names in coherent_exclude draw independently. Vacuous on synthetic
+  # and the reactor (one outcome). Measured out-of-fold residual correlation on
+  # gastric: +0.28 across non-DLT toxicity pairs, but only +0.06 for OS against
+  # every toxicity -- which is why OS is excluded. OPEN: DLT is a deterministic
+  # function of the other four yet takes the shared direction, so the group spends
+  # five radii on four d.o.f. and no delta in D preserves the identity (CLAUDE.md
+  # objection 4). Right sign, overstated magnitude.
+  coherent: true           # false = every outcome draws independently
+  coherent_exclude: ["os_constraint"]
 
+  # Coverage target for the LEGACY alpha calibration only (at most this fraction
+  # of training contexts infeasible). Dormant: calibration runs on the "cv" path.
+  # CP does NOT read it -- its cp_alpha is pinned at 0 at every call site.
+  alpha: 0.1
+
+# ===========================================================================
+# SHARED -- CV calibration of each method's own knob (src/methods/cv_calibrate.py)
+# ===========================================================================
 cv_calibration:
-  # Held-out robustness-parameter CV (calibration.method: "cv"). Run AFTER the
-  # model-selection CVs (run_cv.py, which fix model *types*); this selects only the
-  # robustness knob per method. For each knob in knob_grids, fit on each fold-train,
-  # score (feasibility, objective) under a TRAIN-only proxy oracle on the fold-val,
-  # average over folds; pick theta* = max feasibility s.t. objective within
-  # os_tolerance_frac of nominal (worse direction). Writes results/cv/*_robustness_knobs.json.
-  fold_scheme: "auto"                 # auto -> temporal if Pub_Year present else kfold
-  fold_cutoffs: [2004, 2005, 2006, 2007]  # gastric temporal forward-chaining (val = cutoff+1)
-  # KFold splits for the single-decision problems (synthetic, reactor -- neither
-  # has time, so neither uses the temporal scheme). Inert on gastric.
-  #
-  # DELIBERATELY DIFFERENT FROM run_cv.py's 5. The two CVs score different things.
-  # Model selection (run_cv.py --cv-folds 5) scores R^2 over ROWS, so 5 folds give
-  # thousands of scored points and more folds buy nothing. This one scores ONE
-  # binary feasibility per fold, because the problem is single-decision -- so
-  # held-out feasibility is quantized to 1/n_kfold and the fold count IS the
-  # resolution of the whole rho curve. At 5 the only attainable values are
-  # 0, 0.2, ..., 1.0 and the 0.9 rho* target is met only by 1.0; at 10 the grid is
-  # 0, 0.1, ..., 1.0 and 0.9 = 9/10 is exact. Cost is linear in the fold count.
+  fold_scheme: "auto"                      # auto -> temporal if Pub_Year present, else kfold
+  fold_cutoffs: [2004, 2005, 2006, 2007]   # gastric forward-chaining (val = cutoff + 1)
+  # Deliberately NOT run_cv.py's 5. Synthetic and the reactor solve ONCE per fold
+  # and yield one binary outcome, so held-out feasibility is quantized to 1/n_kfold
+  # and this is the resolution of the whole rho curve; at 10 the 0.9 rho* target is
+  # exactly representable. Unused on gastric, which resolves to temporal folds.
   n_kfold: 10
-  os_tolerance_frac: 0.1              # objective budget: keep obj within 10% of nominal
-  # theta* is calibrated PER (method, coherence) cell, keyed "method@coherent" /
-  # "method@incoherent". A coherent draw moves every outcome together, so at a fixed
-  # radius it is the stronger adversary: the objective budget binds sooner and
-  # coherent theta* <= incoherent theta* in general. Reusing one theta* across both
-  # would confound "coherence" with "more conservatism". Costs 2x stage 1, but the
-  # scores checkpoint is resumable and never redoes a cell. Set to [true] for
-  # coherent-only. Vacuous on synthetic (one outcome), which stays single-cell.
-  coherence_cells: [true, false]
-  knob_grids:                         # native-unit robustness knob per method (strongest last)
-    # CP's knob is the distance tolerance tau. Under the default
-    # cp.tolerance_basis: "scale" it is measured in UNEXPLAINED STANDARD
-    # DEVIATIONS -- the same scale(y_c) that sets D's radius -- so "stop when the
-    # mean exceedance over (anchor x outcome) cells is below tau sd". That makes
-    # tau a physical quantity in the SAME units as uncertainty.rho, independent of
-    # the bank, the seed, and B.
-    #
-    # It also means the grid genuinely SPANS NOMINAL: a tau above the iteration-0
-    # distance stops before any cut. Verified on synthetic (scale 0.1281, max
-    # iter-0 violation 0.1259): tau=1.0 returns the nominal objective exactly in 1
-    # iteration. Under the legacy "d0" basis no tau in this grid reproduced
-    # nominal -- the stopping statistic is the MAX while d0 is a q0.9, so
-    # iteration 0 failed its own test (tau=1.0 there still cut, obj -1.2757).
-    #
-    # WHAT IT DOES NOT FIX: one grid still does not transfer across PROBLEMS. Both
-    # paths max over draws; they differ in what one draw scores as.
-    #   basic (synthetic): 1 anchor x 1 constraint = one cell, so a draw's score IS
-    #     that raw violation -- effectively conditioned on violating.
-    #   coherent (gastric): n_anchors x n_outcomes cells collapsed by a MEAN, i.e.
-    #     (violating cell fraction) x (mean exceedance among violators).
-    # The coherent statistic therefore carries a factor the basic one has no room
-    # for, and gastric's violating fraction (~0.1) is what makes its numbers small:
-    # ~1.0 synthetic vs ~0.02-0.03 gastric. Structural to 1-cell vs many-cell
-    # scoring, NOT an artifact.
-    #
-    # THE MEAN IS THE RIGHT STATISTIC AND IS ANCHOR-COUNT STABLE. Breadth matters:
-    # a scenario breaking 2 of 20 cells badly is less dangerous for a policy
-    # serving a population than one breaking all 20 moderately, and a max would
-    # rank those backwards. It is stable because the numerator scales with the
-    # denominator -- both factors above are sample statistics converging to a
-    # population quantity that does not depend on n_anchors. Measured on gastric
-    # (B=25, kmedoids train anchors), max iter-0 dist:
-    #     n_anchors= 4 -> 0.0307
-    #     n_anchors= 8 -> 0.0315   (1.03x; dilution would predict ~0.5x)
-    #     n_anchors=16 -> 0.0178
-    # No 1/n trend. The residual spread is anchor-SET variation (kmedoids at k=16
-    # picks different representatives), and it shrinks as the estimator converges.
-    #
-    # This is a difference in RANGE, not in MEANING. tau means one thing on both
-    # problems -- "stop when the population-mean exceedance is below tau
-    # unexplained sd" -- and the violating fraction is information (breadth), not
-    # a unit mismatch. Gastric simply sits lower on the shared axis, the same way
-    # rho* will differ across problems without making rho incomparable.
-    #
-    # DO NOT PIN THIS GRID FROM MEASURED DISTANCES. The iteration-0 distance range
-    # is a function of D's size, i.e. of uncertainty.rho -- so a grid fitted to one
-    # rho would have to be refitted after every rho, and reading tau off a run that
-    # tau helped produce is circular. Order of operations instead:
-    #   1. rho sweep at ONE fixed, reasonable tau (experiments/run_rho_sweep.py)
-    #   2. tau ablation at the chosen rho, on the decade grid below
-    # A plain decade grid needs no calibration and brackets both problems: each
-    # gets a nominal endpoint at its top (whatever tau exceeds its iteration-0
-    # max cuts nothing) and live points below.
-    #
-    # EXPECT status="max_iterations" at the small end. Small tau cuts until the
-    # bank is exhausted or the cap binds; CP still returns its incumbent, so a
-    # sweep will not crash, but those cells are NOT converged and must be read as
-    # "hit the cap", not as a converged answer at that tau. Raise
-    # methods.cp.max_iterations or report the status alongside the number.
-    cp:         [1.0, 0.1, 0.01, 0.001]  # tau in sd units (smaller = stronger)
-    robust_reg: [0.1, 0.25, 0.5, 0.75, 1.0]        # label_eps (larger = stronger)
-    wrapper:    [0.4, 0.3, 0.2, 0.1, 0.0]          # chance alpha (smaller = stronger)
-  pareto_center_factors: [0.5, 0.75, 1.0, 1.5, 2.0]  # knob = theta* * factor for the centered Pareto
+  os_tolerance_frac: 0.1                   # keep objective within 10% of nominal
+  coherence_cells: [true, false]           # theta* is stored per (method, coherence)
+  # Native-unit robustness knob per method, strongest last. The rho sweep's FIXED
+  # dials are read from methods.cp.dist_tol_rel and methods.wrapper.alpha, not
+  # from here; these grids drive the knob CV and the tau/alpha ablations.
+  knob_grids:
+    cp:         [1.0, 0.1, 0.01, 0.001]      # tau, in unexplained sd units (smaller = stronger)
+    robust_reg: [0.1, 0.25, 0.5, 0.75, 1.0]  # label_eps (larger = stronger)
+    wrapper:    [0.4, 0.3, 0.2, 0.1, 0.0]    # chance alpha (smaller = stronger)
+  pareto_center_factors: [0.5, 0.75, 1.0, 1.5, 2.0]  # knob = theta* * factor
 
-conservativeness_sweep:
-  # Knob ranges for the fixed-threshold Pareto sweep (--conservativeness-grid):
-  # at rhs fixed, sweep each method's own conservativeness knob to trace its
-  # OS-vs-worst-case-feasibility frontier. strength s in [0,1]: 0 = weakest
-  # (~nominal), 1 = strongest. This separates genuine robustness (frontier
-  # dominance) from mere conservatism (sliding along a shared frontier).
-  robust_param_rho_max: 0.03  # nominal + rho leaf-tightening (conservative nominal); rho = max*s
-                              # (kept modest: larger rho makes the embedded MIP infeasible)
-  # cp robustness dial: dist_tol interpolates max -> min as strength s goes 0 -> 1
-  # (dist_tol = max*(1-s) + min*s). Smaller dist_tol = keep cutting = stronger.
-  # The productive window is narrow (~0.005-0.05): looser than ~0.05 triggers no
-  # cut (CP == nominal), and dist_tol=0.0 over-cuts into coverage-cap rollback on
-  # the joint all_constraints problem (degenerate), so we floor at a small positive
-  # value rather than 0. The calibrated production CP uses dist_tol=0.01, which
-  # this range brackets. The coverage cap is held fixed at uncertainty.alpha.
-  cp_dist_tol_rel_max: 1.0    # s=0 (weakest). NOT nominal: tau=1 still cuts the bank's
-                              # worst ~decile, because the stopping test uses the max
-                              # while the tolerance comes from q0.9 (see knob_grids.cp).
-                              # The sweep's weak end is therefore not anchored to nominal.
-  cp_dist_tol_rel_min: 0.1    # s=1 (strongest: cut until 10% of the iter-0 distance)
-  cp_alpha_max: 0.3           # (unused as the CP sweep knob; retained for reference only)
-  robust_reg_eps_max: 1.0     # label-uncertainty radius; eps = max*s. Widened from 0.5
-                              # so robust_reg's frontier is traced to its limit (it
-                              # topped out ~0.27/0.48 worst-feas at 0.5); larger eps
-                              # over-regularizes, which is the point -- trace until OS drops.
-  wrapper_alpha_max: 0.5      # wrapper chance budget; alpha = max*(1-s)
-
+# ===========================================================================
+# METHODS
+# ===========================================================================
 methods:
-  embedding_mode: "hard"  # "hard" | "tree_violation"
-
+  # ---- SHARED across methods ----
+  embedding_mode: "hard"   # "hard" | "tree_violation"
   robust_param:
-    rho: 0.05  # parameter robustness on the splits (dual norm penalty)
+    rho: 0.05              # shrink decision-tree leaf regions from the split thresholds
 
+  # ---- robust_reg: robustify the fit ---------------------------------------
   robust_reg:
-    # Label-robust training counterpart (Bertsimas et al. 2019, Sec. 5), adapted to
-    # regression via a bounded additive label set D = {||dy||_1<=gamma, |dy_i|<=eps}.
-    # eps = label_eps * std(y) (per-outcome); gamma = budget_frac * n * eps.
-    label_eps: 0.1     # unitless label-uncertainty radius (calibrated when enabled)
-    budget_frac: 0.5   # fraction of rows the adversary may fully perturb (m = frac*n)
-    K: 5               # adversarial-training iterations (tree/xgb path only)
+    label_eps: 0.1         # its one dial; IS D's radius, so it tracks rho on the sweep
+    budget_frac: 0.5       # rows the adversary may fully perturb (m = frac * n)
+    K: 5                   # adversarial-training iterations (tree/ensemble path only)
 
+  # ---- wrapper: Maragno ensemble chance constraint -------------------------
   wrapper:
-    # P. Capped by MIP size: the wrapper embeds ALL P models, whereas CP embeds one
-    # cut per iteration and can separate over a bank ~10x larger. P is the first P
-    # draws of the SAME seeded sequence CP uses, so it is a nested prefix of CP's
-    # bank -- which is what makes the alpha=0 / tau->0 equivalence test meaningful.
-    n_estimators: 20
-    # Violation fraction across the P models: at most alpha*P may violate.
-    # 0.2 is in Maragno et al.'s own WFP grid (alpha in {0, 0.1, 0.2, 0.5}; the
-    # chemo case study never uses the wrapper, so it publishes no alpha), and it
-    # is where gastric held-out feasibility peaks: measured 0.879 coherent /
-    # 0.938 incoherent, against 0.818/0.863 at 0.1 and 0.678/0.673 at 0.0.
-    # Feasibility is NON-MONOTONE in alpha and falls off a cliff at 0 -- which is
-    # also the CP-collapse corner, since alpha=0 with tau->0 makes the wrapper and
-    # CP the same solver at B=P. 0.2 is clear of both.
-    alpha: 0.2
-    scenario_source: "noise"   # "noise" (shared D, prefix of CP's bank) | "bootstrap"
-    # false = one nominal objective model, matching CP's default. true rebuilds the
-    # worst-case epigraph over all P (legacy), which handed the wrapper conservatism
-    # CP does not carry and cost P extra OS embeddings.
+    n_estimators: 20       # P for the non-contextual problems; gastric uses uncertainty.n_bootstrap
+    alpha: 0.2             # its one dial, and the rho sweep's fixed value
+    # "noise" makes the P models a nested prefix of CP's ScenarioBank -- what
+    # makes the alpha=0 == tau->0 equivalence exact. "bootstrap" is legacy; the
+    # bootstrap cache the runners build is dead code under "noise".
+    scenario_source: "noise"
+    # Off: the ablation gave worse test feasibility AND worse OS, and costs P
+    # extra OS embeddings. Under false the objective embeds a freshly trained
+    # NOMINAL model (before 2026-08-15 it embedded perturbed bank draw 0).
     robustify_objective: false
 
-  chemo_wrapper:
-    alpha: 0.25  # max fraction of embedded RF trees allowed to violate
-
+  # ---- cp: Cutting Planes (the contribution) -------------------------------
   cp:
-    # One solve_cp driver; separation is auto-selected from the problem shape
-    # (basic for a single-LP/single-constraint case, coherent otherwise).
-    max_iterations: 20
-    # Per-iteration CSV trace (iteration, max_violation, objective). null = off.
-    # It is rewritten by EVERY CP solve, so across a robustness run (R realizations
-    # x RHS x constraint modes, and per-anchor masters under
-    # eval_mode: per_anchor_nearest) only the last loop survives, with no key
-    # saying which. The same per-iteration numbers are in the stdout log, keyed by
-    # the run. Off by default; set a path to inspect a single CP loop.
-    trace_path: null
-    # Contextual (gastric): anchors are representative cohorts at which we collect
-    # an optimal solution x* (one per context).
-    anchor_source: "train"   # "train" (offline, no test labels) | "test" (online)
-    n_anchors: 10            # representatives over context space (null -> all rows)
-    anchor_method: "kmedoids"  # "kmedoids" | "sample" | "all"
-    distance: "full"         # neighbor localization (default for all scenarios):
-                             # "full" (context+decision, around x*) |
-                             # "context" (context columns only) | "auto" (context-only
-                             # when contextual, full otherwise)
-    # coherent separation: stop once the worst sampled scenario's normalized
-    # average distance (mean relative exceedance over all x* x outcomes) is at
-    # or below this. Range 0-1; 0 = stop only when nothing violates.
-    dist_tol: 0.01
-    # RELATIVE distance tolerance tau (the transferable knob): tolerance = tau * d0,
-    # with d0 a quantile of the problem's own iteration-0 distances (d0_quantile).
-    # Used by BOTH separation paths and by the synthetic runner (run_all.py /
-    # run_sweep.py). Left unset the basic path cuts every violation > 1e-6, i.e. no
-    # robustness lever at all.
-    #
-    # 0.01 = one decade below nominal on both problems, in unexplained-sd units
-    # (tolerance_basis: "scale"). Chosen as a round middle of the decade grid, NOT
-    # fitted: it is the fixed tau the rho sweep runs at, and knob_grids.cp ablates
-    # around it afterwards. Live on both problems at the measured iteration-0
-    # ranges (synthetic ~0.98, gastric ~0.03), so neither degenerates to nominal.
-    # Expect the small end of the ablation (0.001) to hit max_iterations --
-    # cv_score_knob reports status and n_capped so those cells are visible.
-    # NOTE this is a different QUANTITY from the old 0.1: that was a fraction of
-    # d0, this is a multiple of the label scale. Do not read the change as a 10x
-    # weakening.
-    dist_tol_rel: 0.01
-    # Where separation scenarios come from. "noise" = a FIXED bank of draws from the
-    # shared uncertainty set D (uncertainty.eps_0 etc). Fixed draws make the worst
-    # violation over the bank monotone across iterations, which is what gives tau a
-    # stable meaning; redrawing each iteration (the "bootstrap" ablation) compared
-    # iteration-k's sample against iteration-0's d0 and merely oscillated.
-    scenario_source: "noise"   # "noise" | "bootstrap" (legacy localized resample)
-    # B. CP embeds only ONE extra scenario per iteration and evicts/prunes cuts, so
-    # its master stays small at a B the wrapper (which embeds all P) could not take.
-    n_scenarios: 200
-    # d0 = this quantile of the iteration-0 scenario distances, NOT their max: the
-    # max grows with B, so a max-based d0 would stop tau transferring across bank
-    # sizes -- and CP and the wrapper deliberately run at different B. A quantile is
-    # also less seed-noisy than a max over B draws.
-    #
-    # The quantile is over the DRAWS. On the coherent path the anchors and outcomes
-    # are already collapsed by a mean inside each entry (one distance per scenario);
-    # the basic path has no anchor dimension at all (single x*).
-    #
-    # KNOWN ASYMMETRY -- deliberate, kept as is. The TOLERANCE comes from this
-    # quantile but the STOPPING STATISTIC is the max over the bank, on both paths.
-    # So the rule is "drive the worst scenario down to the iteration-0 q0.9", not
-    # "reduce a like-for-like statistic by tau". Two consequences: tau=1 over-cuts
-    # rather than reducing to nominal (see knob_grids.cp), and the effect differs by
-    # problem because the two paths differ in what they feed the quantile --
-    #   basic (synthetic): RAW SIGNED violations, no normalization, negatives
-    #     included and then clamped to 0 in _resolve_d0;
-    #   coherent (gastric): normalized (per-outcome scale), anchor-averaged
-    #     distances gated at >1e-6, so non-violating scenarios enter as exactly 0.
-    # The coherent path also drops permanently-rejected draws from the population
-    # after iteration 0 (113/200 on gastric), and rejection correlates with
-    # severity -- so gastric's max is measured with its worst tail deleted and the
-    # same tau over-cuts LESS there than the d0 ratio suggests.
-    d0_quantile: 0.9
-    # What tau is a fraction OF.
-    #   "scale" (default): each outcome's label scale -- the same scale(y_c) that
-    #     sets D's radius. tau reads as "mean exceedance below tau unexplained
-    #     sd", is comparable to uncertainty.rho, and does not move with the bank,
-    #     the seed, or B. A large tau stops at iteration 0, so the grid spans
-    #     nominal -> worst case.
-    #   "d0": tolerance = tau * q{d0_quantile} of the iteration-0 distances. The
-    #     legacy basis; keep it to reproduce results predating this knob. Its
-    #     warts are documented above: seed/B-dependent, and no tau in [0.1, 1.0]
-    #     reproduces nominal.
-    # "scale" also retires the per-cell divisor max(1, |rhs|), which was a NO-OP on
-    # gastric (rhs = 0.6 => max(1, 0.6) = 1), so the "normalized" distances there
-    # were raw percentile units all along.
-    tolerance_basis: "scale"   # "scale" | "d0" (legacy)
-    # Ablation (rhs=0.6, frac=0.5) showed the robustness comes from the toxicity
-    # cuts; robustifying the OS objective and per-anchor masters both hurt (lower
-    # feasibility + OS, higher variance). Best config: objective off, global master.
-    robustify_objective: false  # false = nominal embedded OS, no epigraph cuts
-    eval_mode: "global"         # "global" | "per_anchor_nearest"
-    nearest_distance: "context" # anchor assignment at prescribe: "context" | "full"
-    # Single-lever CP: the coverage cap alpha is pinned at 0 (cuts that break a
-    # training anchor are rolled back / evicted, keeping the training set feasible),
-    # so dist_tol is CP's ONLY robustness knob -- symmetric with the one-knob baselines.
-    # RETENTION. Under a fixed bank nothing is removed from the master:
-    # slack-pruning is off (cp.py sets prune_slack_cuts = not keep_all) and
-    # cut_eviction is "reject", which drops the *new* cut rather than removing an
-    # existing one. Both problems then share one policy, the eligible scenario set
-    # strictly shrinks, and CP terminates in at most B iterations.
-    #
-    # Why: the 2026-08-10 gastric run used "evict_slack" + pruning and produced an
-    # EXACT period-4 cycle through iteration 19, which left tau inert across its
-    # whole grid (identical CV feasibility/objective to 16 digits for tau 0.1..1.0).
-    # Removing cuts is what lets a previous x* recur. Synthetic never cycled -- it
-    # has no eviction path at all -- so this also makes the two settings consistent.
-    cut_eviction: "reject"      # "reject" | "evict_slack" (cycles; kept for reproduction)
-    # No-deterioration objective cut: forbid the master returning to a better
-    # objective than already attained. Redundant while nothing is removed, so it is
-    # OFF for the keep-everything experiment; turning it on is how we would re-enable
-    # pruning/eviction safely. Applies to BOTH paths (one global cut on synthetic's
-    # single context, per-anchor transient bounds on gastric's ten).
-    objective_monotone: false
-    # MIP gap: moved to `optimization.mip_gap`, which every method now reads, so
-    # the cut loop, the final solve, the prescribe-time solve and the three rival
-    # methods all run at one optimality tolerance. A `mip_gap` left here is still
-    # honoured as a legacy fallback when `optimization.mip_gap` is absent.
-    # Cut the WHOLE scenario (every constraint under the accepted relabeling), not
-    # just the constraints breached at the current x*. A scenario is one coherent
-    # relabeling: if it is plausible, all of its constraints should hold. This is
-    # also exactly what the wrapper enforces per replicate (one shared indicator
-    # gated on ALL constraints), so CP at tau->0 and the wrapper at alpha=0 are the
-    # same object on multi-constraint problems -- not only on synthetic, where one
-    # constraint makes the distinction vacuous. And it makes per-scenario exclusion
-    # sound: a fully-cut scenario can never be violated again, whereas a
-    # partially-cut one could breach a different constraint at a moved x* and never
-    # be re-separated, leaving the stopping rule a statement about the scannable
-    # remainder rather than the whole bank.
-    # Costs ~5 embedded models per accepted scenario instead of ~1.4 on gastric.
-    cut_whole_scenario: true
+    max_iterations: 20     # expect status="max_iterations" at the small-tau end; report those cells as capped
+    n_scenarios: 200       # B, the separation pool; CP embeds one cut per iteration, not all B
+    scenario_source: "noise"  # fixed bank; "bootstrap" is the legacy localized-resample ablation
+    trace_path: null       # every CP solve rewrites the same file, so only the last loop survives
 
+    # tau, the stopping tolerance. Under basis "scale" each exceedance is divided
+    # by its outcome's oof_sd, so tau is in the SAME UNITS as rho and the grid
+    # spans nominal. dist_tol_rel is the rho sweep's fixed dial; dist_tol is the
+    # ABSOLUTE fallback used when a solver is built with knob=None.
+    # Legacy "d0" makes tau a ratio to the problem's own d0 while the stopping
+    # statistic is the max, so no tau in [0.1, 1.0] reproduces nominal there.
+    tolerance_basis: "scale"   # "scale" | "d0" (legacy)
+    dist_tol_rel: 0.01
+    dist_tol: 0.01
+    d0_quantile: 0.9       # a high quantile, not the max -- the max grows with B
+
+    # Anchors: where x* is collected on contextual problems.
+    anchor_source: "train"       # "train" (offline, no test labels) | "test" (online)
+    n_anchors: 10                # null -> all rows
+    anchor_method: "kmedoids"    # "kmedoids" | "sample" | "all"
+    eval_mode: "global"          # "global" (one shared master) | "per_anchor_nearest"
+    nearest_distance: "context"  # anchor assignment at prescribe: "context" | "full"
+
+    # Nothing is removed from the master: removing a cut lets a previous x*
+    # recur, which is what a cycle is. "reject" also makes the eligible set
+    # strictly shrink, so CP terminates in at most B iterations.
+    cut_eviction: "reject"     # "reject" | "evict_slack" (cycles; kept for reproduction)
+    cut_whole_scenario: true   # cut all of an accepted scenario's constraints
+    objective_monotone: false  # redundant while nothing is removed; the lever for re-enabling pruning
+    robustify_objective: false # false = nominal embedded OS, no epigraph cuts
+
+  # ---- GASTRIC ONLY: what run_chemo_robust.py executes ----------------------
   chemo:
-    methods_to_run:
-      # - robust_param # Often infeasible, need very small rho
-      - cp
-      - nominal
-      # - tree_violation # like paper - only different if RF used. Often infeasible.
-      - robust_reg
-      - wrapper
-    # all_constraints ONLY. Per-mode samestore means the all_constraints numbers do
-    # not depend on whether dlt_only also ran, so dropping it halves the runtime and
-    # changes nothing. Re-add "dlt_only" here to restore the two-panel figures.
-    constraint_modes:
-      - all_constraints
-    quick:
+    methods_to_run: [cp, nominal, robust_reg, wrapper]
+    constraint_modes: [all_constraints]
+    quick:                 # --quick overrides, for the smoke test
       max_test_rows: 5
       methods_to_run: [nominal, wrapper, robust_reg, cp]
       constraint_modes: [all_constraints]
       n_bootstrap: 5
       cp_max_iterations: 5
-      cp_n_candidates: 5
       cp_n_scenarios: 10
-      cp_k_neighbors_frac: 0.05
       cp_n_anchors: 4
       alpha: 0.1

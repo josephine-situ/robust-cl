@@ -189,7 +189,7 @@ def synth_settings(config, seed=None):
         "robust_reg_K": rr_cfg.get("K", 5),
         "cp_max_iterations": cp_cfg.get("max_iterations", 20),
         "cp_k_neighbors_frac": unc.get("cp_k_neighbors_frac", 0.1),
-        "cp_k_neighbors_min": unc.get("cp_k_neighbors_min", 1),
+        "cp_k_neighbors_min": unc.get("cp_k_neighbors_min", 100),
         "cp_n_candidates": unc.get("cp_n_candidates", 20),
         "cp_anchor_source": cp_cfg.get("anchor_source", "train"),
         "cp_n_anchors": cp_cfg.get("n_anchors", 10),

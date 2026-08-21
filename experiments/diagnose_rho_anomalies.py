@@ -57,7 +57,7 @@ def diagnose_robust_reg(config, rhos, n_grid=400, model_type=None):
     from src.methods.uncertainty import label_scale
     from src.methods.uncertainty import instance_folds
 
-    d = config["data"]
+    d = config["synthetic"]
     seed = config["uncertainty"].get("bootstrap_seed", 42)
     inst = synthetic_nonlinear(n_train=d["n_train"], n_features=d["n_features"],
                                noise_std=d["noise_std"], seed=seed)
@@ -68,8 +68,8 @@ def diagnose_robust_reg(config, rhos, n_grid=400, model_type=None):
     # "linear" takes _label_robust_linear (the closed-form SOCP), everything
     # else takes the alternating retrain loop. If the adversary has no
     # conservative direction, it has none on either arm.
-    mt = model_type or config["model"]["type"]
-    mp = {} if model_type else config["model"]["params"]
+    mt = model_type or config["default_model"]["type"]
+    mp = {} if model_type else config["default_model"]["params"]
     rr = config["methods"].get("robust_reg", {})
     K = int(rr.get("K", 5))
     bf = float(rr.get("budget_frac", 0.5))

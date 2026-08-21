@@ -74,7 +74,7 @@ def _resolve_run_settings(config, args):
             "cp_n_candidates": quick_cfg.get("cp_n_candidates", 5),
             "cp_k_neighbors_frac": quick_cfg.get("cp_k_neighbors_frac", 0.05),
             "cp_k_neighbors_min": quick_cfg.get(
-                "cp_k_neighbors_min", unc.get("cp_k_neighbors_min", 1)
+                "cp_k_neighbors_min", unc.get("cp_k_neighbors_min", 100)
             ),
             "alpha": quick_cfg.get("alpha", unc.get("alpha", 0.0)),
             "cp_n_anchors": quick_cfg.get("cp_n_anchors", cp_cfg.get("n_anchors", 4)),
@@ -92,7 +92,7 @@ def _resolve_run_settings(config, args):
             "cp_max_iterations": cp_cfg.get("max_iterations", 20),
             "cp_n_candidates": unc.get("cp_n_candidates", 20),
             "cp_k_neighbors_frac": unc.get("cp_k_neighbors_frac", 0.1),
-            "cp_k_neighbors_min": unc.get("cp_k_neighbors_min", 1),
+            "cp_k_neighbors_min": unc.get("cp_k_neighbors_min", 100),
             "alpha": unc.get("alpha", 0.0),
             "cp_n_anchors": cp_cfg.get("n_anchors", 15),
             "output_path": "results/gastric/chemo_robust_table6.csv",
@@ -131,7 +131,7 @@ def _resolve_run_settings(config, args):
     # robust_reg, so a difference between them is a difference in METHOD.
     from src.methods.uncertainty import uncertainty_set_from_config
     settings["uncertainty_set"] = uncertainty_set_from_config(config)
-    settings["calibration_method"] = config.get("calibration", {}).get("method", "alpha")
+    settings["calibration_method"] = config.get("calibration", {}).get("method", "cv")
     settings["pareto_center_factors"] = config.get("cv_calibration", {}).get(
         "pareto_center_factors", [0.5, 0.75, 1.0, 1.5, 2.0])
 
@@ -166,21 +166,21 @@ def _resolve_run_settings(config, args):
     settings["robust_reg_K"] = rr_cfg.get("K", 5)
 
     calib_cfg = config.get("calibration", {})
-    settings["calibrate_to_alpha"] = calib_cfg.get("enabled", False)
+    settings["calibrate_to_alpha"] = calib_cfg.get("enabled", True)
     settings["calib_n_grid"] = calib_cfg.get("n_grid", 5)
     settings["calib_wrapper_alpha_max"] = calib_cfg.get("wrapper_alpha_max", 0.5)
     settings["calib_tree_alpha_max"] = calib_cfg.get("tree_alpha_max", 0.5)
-    settings["calib_rho_min"] = calib_cfg.get("rho_min", 0.01)
-    settings["calib_rho_max"] = calib_cfg.get("rho_max", 0.05)
+    settings["calib_rho_min"] = calib_cfg.get("rho_min", 0.001)
+    settings["calib_rho_max"] = calib_cfg.get("rho_max", 0.005)
     settings["calib_robust_reg_eps_max"] = calib_cfg.get("robust_reg_eps_max", 0.3)
 
     cs_cfg = config.get("conservativeness_sweep", {})
-    settings["cs_robust_param_rho_max"] = cs_cfg.get("robust_param_rho_max", 0.1)
+    settings["cs_robust_param_rho_max"] = cs_cfg.get("robust_param_rho_max", 0.03)
     settings["cs_cp_alpha_max"] = cs_cfg.get("cp_alpha_max", 0.3)
     # CP knob is now RELATIVE (tau = fraction of the problem's iter-0 distance d0).
     settings["cs_cp_dist_tol_rel_max"] = cs_cfg.get("cp_dist_tol_rel_max", 1.0)
     settings["cs_cp_dist_tol_rel_min"] = cs_cfg.get("cp_dist_tol_rel_min", 0.1)
-    settings["cs_robust_reg_eps_max"] = cs_cfg.get("robust_reg_eps_max", 0.5)
+    settings["cs_robust_reg_eps_max"] = cs_cfg.get("robust_reg_eps_max", 1.0)
     settings["cs_wrapper_alpha_max"] = cs_cfg.get("wrapper_alpha_max", 0.5)
     return settings
 
@@ -192,8 +192,8 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
     the config names; CP takes ``None``, i.e. the ABSOLUTE ``methods.cp.dist_tol``
     rather than a tau.
     """
-    model_type = config["model"]["type"]
-    model_params = config["model"]["params"]
+    model_type = config["default_model"]["type"]
+    model_params = config["default_model"]["params"]
     fixed_knob = {
         "nominal": 0.0,
         "tree_violation": settings["rf_alpha"],  # max fraction of RF trees violating
@@ -395,8 +395,8 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
     n_test = instance.X_test.shape[0]
     n_train = instance.X_train.shape[0]
 
-    model_type = config["model"]["type"]
-    model_params = config["model"]["params"]
+    model_type = config["default_model"]["type"]
+    model_params = config["default_model"]["params"]
     calibrate = settings["calibrate_to_alpha"]
 
     print("=" * 60)
@@ -802,8 +802,8 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
     instance = gastric_cancer(
         fixed_constraint_configs=cv_configs, fixed_gt_ensemble_configs=gt_configs,
     )
-    model_type = config["model"]["type"]
-    model_params = config["model"]["params"]
+    model_type = config["default_model"]["type"]
+    model_params = config["default_model"]["params"]
 
     folds = make_folds(
         instance, cvc.get("fold_scheme", "auto"),

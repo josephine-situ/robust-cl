@@ -36,6 +36,8 @@ uv run python experiments/run_cv.py --problem synthetic --ensemble  # + the synt
 uv run python experiments/run_cv.py --problem reactor --ensemble    # DMA-MR model + proxy judge
 uv run python experiments/summarize_table6.py           # Table 6 CSV -> .csv/.tex
 uv run python experiments/verify_embedding.py           # MIP vs sklearn/xgb agreement
+uv run python experiments/verify_embedding.py --problem synthetic   # CV-selected mlp
+uv run python experiments/verify_embedding.py --problem reactor     # CV-selected mlp
 uv run python experiments/run_adversary_probe.py        # is the random bank a weak adversary?
 sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu
 ```
@@ -256,7 +258,9 @@ Other CP settings:
 - **Fixed bank** (`scenario_source: "noise"`). The legacy `"bootstrap"` path redrew
   each iteration while `d0` stayed frozen at iteration 0, comparing different
   samples; kept as an ablation. `uncertainty.cp_k_neighbors_*`, `cp_n_candidates`
-  and `cp.distance` apply to that legacy path **only**.
+  and `cp.distance` apply to that legacy path **only**, and since 2026-08-21 live
+  in the code defaults rather than `config.yaml` — same values, so the ablation
+  still reproduces.
 - **`cut_whole_scenario: true`** cuts all of an accepted scenario's constraints —
   what makes permanent exclusion sound and matches the wrapper's per-replicate
   indicator.
@@ -359,8 +363,24 @@ by `run_sweep.synth_model_spec` and pushed onto the instance as
 `ScenarioBank` refit. Current pick: **`mlp`, one hidden layer of 50, lbfgs,
 alpha 0.01** (CV R^2 0.9639, test R^2 0.9990 on an independent 1000-row draw). It
 beats `gbm` 0.9603 and the old hard-coded `rf` 0.9247. Absent that JSON, every
-caller still falls back to `config.yaml`'s `model` block, which reproduces pre-CV
-runs.
+caller still falls back to `config.yaml`'s `default_model` block (renamed from
+`model` on 2026-08-21), which reproduces pre-CV runs.
+
+**The dropped-hyperparameter bug never touched the selection.** `train_model`
+ignored `solver`/`alpha` for `mlp`, `epsilon` for `svm` and `subsample` for `gbm`
+until 2026-08-21, but `train_best_model_cv` compares models through
+`GridSearchCV`, which sets those on the pipeline directly, and `test_r2` comes off
+the same `best_estimator_` — so both CV stages were always fitting what they
+reported. Re-running `run_cv.py --problem synthetic --ensemble` and `--problem
+reactor --ensemble` after the fix reproduces **every** `results/cv/` artifact
+bit-identically (winners, CV R^2, test R^2, GT ensemble configs). What the bug
+broke was everything *downstream* of the JSON — the embedded nominal fit and every
+`ScenarioBank` refit went through `train_model` and got adam/`alpha=1e-4` instead.
+So the JSONs are sound and the **results** computed against them are not: any
+synthetic or reactor number produced before the fix embedded a different model
+than the one named in `*_selected_configs.json`. The same applies to the proxy CV
+oracles, whose members are fitted through `train_model` (`svm` `epsilon`, `gbm`
+`subsample`) even though their config JSONs are unchanged.
 
 Two things had to be true first, and neither was at `n_train = 200`:
 
@@ -375,9 +395,11 @@ Two things had to be true first, and neither was at `n_train = 200`:
   needed** — plain CV R^2 picks the model. Verified downstream: the wrapper returns
   `feas=1.000`, `obj=-1.2504` at `rho=0.2`, and bank training fell 43.1s -> 1.7s on
   12.5x the data.
-- **The embedding is exact for MLP**: max `|embedded - sklearn|` is `7.4e-14` over
-  the box corners and 15 training rows. The corner solution was never an encoding
-  error.
+- **The embedding is exact for MLP**: max `|embedded - sklearn|` is `6.7e-16` over
+  training rows and ReLU kinks (2026-08-21, `verify_embedding.py --problem
+  synthetic`, against the lbfgs/alpha=0.01 net that is now actually fitted; the
+  earlier `7.4e-14` was the adam net the dropped-hyperparameter bug produced). The
+  corner solution was never an encoding error.
 
 `rho` keeps its meaning across the `n` change **by construction** — `R_c = rho *
 scale(y_c) * sqrt(n)` fixes the per-row shift at `rho * oof_sd` for any `n`, which
@@ -458,6 +480,31 @@ libraries traverse there. `IntFeasTol` is pinned to `1e-9`: big-M turns integral
 slack into `M * IntFeasTol` of x-slack and `M ~ 46`, so Gurobi's `1e-5` default
 lets a free-`x` adversary extract `1.6e-2`. Verified to `<= 3e-7` over all rows and
 perturbed refits — run `verify_embedding.py` after touching any of this.
+
+**MLP is now load-bearing on two of the three instances**, so `verify_embedding.py`
+covers it too (2026-08-21). Its boundary case is per model family: a split
+threshold for a tree, and for an MLP a hidden unit at **zero pre-activation**,
+where the big-M ReLU binary is free — found by bisecting between two training rows
+on a pre-activation sign change, so it reaches kinks at **any** layer, not just the
+first. The tie itself is benign (both branches give `h = 0`); what it measures is
+the `M * IntFeasTol` slack around it. Measured, at the CV-selected nets:
+
+| problem | model | max err | max spread |
+|---|---|---|---|
+| synthetic | `mlp` (50,) | 6.7e-16 | 8.9e-16 |
+| reactor | `mlp` (10,5,2) | 4.6e-12 | 2.6e-12 |
+
+Reactor is four orders looser than synthetic purely because of scale (`F ~ 50`,
+`T ~ 1e3`), and both are far inside the `1e-6` bar.
+
+`--problem synthetic` / `--problem reactor` build the instance through
+`run_sweep._synth_instance` / `_reactor_instance`, so the model verified is the
+CV-selected one every method embeds. **Do not route them through
+`run_adversary_probe.build_instance`**: it never loads the CV selection, so it
+embeds `default_model` (`rf`), not the `mlp` every method embeds — before
+2026-08-21 `verify_embedding.py --problem synthetic` was checking that `rf`, on a
+200-row instance besides. The row count is fixed (the `data:` -> `synthetic:`
+rename made it read the real block, so 2500); the CV-selection half stands.
 
 ### Evaluation (`src/evaluation/`)
 
@@ -541,20 +588,33 @@ re-run; the other rows are unaffected.
   draw permanently rejected. `run_chemo_robust.py` still *passes* `settings["alpha"]`
   into `cp_alpha`, but the body hard-codes `0.0` — the argument is **dead**.
 - **Legacy paths.** `calibrate_strength` (strongest knob with training infeasible
-  fraction <= `uncertainty.alpha`) runs only under `calibration.method: "alpha"`;
+  fraction <= `uncertainty.alpha`) runs only under `calibration.method: "alpha"`,
+  a key that left `config.yaml` on 2026-08-21 and now needs adding back (live
+  default `"cv"`);
   `cv_calibrate.py` knob CV is per (method, coherence) cell, keyed
   `method@coherent` / `method@incoherent`.
 
 ## Config
 
-`config.yaml` drives everything: `data.type` switches problem;
-`optimization.mip_gap` is the **one solver gap** every method runs at;
-`uncertainty.*` defines the **shared D**; `uncertainty.alpha` is the **legacy-calibration target
-only**; `methods.cp.*` holds the CP knobs; `methods.chemo.methods_to_run` /
-`constraint_modes` select what the gastric runner executes, with
-`methods.chemo.quick` overriding for `--quick`. CV model selections come from
-`results/cv/*_selected_configs.json` and `*_gt_ensemble_configs.json` via
-`--cv-configs`.
+**Every block is named for its scope** (restructured 2026-08-21).
+`problem.type` switches problem (the reactor is `--problem reactor`);
+`synthetic.*` and `reactor.*` carry their own instance settings; `default_model`
+is the shared embedded-model fallback, beaten by `reactor.model` and then by
+`results/cv/*_selected_configs.json`; `optimization.mip_gap` is the **one solver
+gap** every method runs at; `uncertainty.*` defines the **shared D**, with `alpha`
+the **legacy-calibration target only** and `clip_labels` shared in scope but in
+effect on **gastric alone**; `cv_calibration.*` holds the knob-CV folds and grids;
+`methods.{cp,wrapper,robust_reg}` one dial each; `methods.chemo.*` is **gastric
+only** (`methods_to_run` / `constraint_modes`, `quick` for `--quick`). CV model
+selections come from `results/cv/*_selected_configs.json` and
+`*_gt_ensemble_configs.json` via `--cv-configs`.
+
+Renamed in that pass: `data.type` -> `problem.type`, `data.*` -> `synthetic.*`,
+`model` -> `default_model`. Removed, each onto a code default carrying the same
+value so nothing moved: `calibration`, `conservativeness_sweep`,
+`methods.chemo_wrapper`, `methods.cp.distance`, the `uncertainty.cp_*`
+localized-bootstrap knobs, and the never-read `optimization.constraint_rhs` /
+`variable_bounds` (the real RHS is `0.5 * n_features` in `src/data/generate.py`).
 
 **Which coherence cell is the stronger adversary is not settled.** Coherent is
 stronger *as implemented* — finite B covers the diagonal better than the product
