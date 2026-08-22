@@ -7,14 +7,23 @@ separation strategy from the problem shape:
 - **basic** -- non-contextual synthetic only: a single global LP with a single
   learned constraint; plain worst-case localized-bootstrap separation at ``x*``.
 - **coherent** -- contextual problems (gastric), multiple constraints, multiple
-  optimal solutions ``x*``, or a learned objective: one *shared* bootstrap
-  relabeling drives every constraint (and the objective) jointly and the single
-  worst scenario -- ranked by **normalized average distance** (mean relative
-  exceedance over all ``(x*, outcome)`` cells, range 0–1) -- is cut. We stop
-  when that distance falls within ``cp_dist_tol`` or no scenario can be added
-  without pushing more than ``cp_alpha`` of the ``x*`` infeasible. With multiple
-  ``x*`` the coverage cap ``cp_alpha`` bounds the fraction allowed to go
+  optimal solutions ``x*``, or a learned objective: cut the worst relabeling and
+  stop when nothing worse than ``cp_dist_tol`` remains, or when no cut can be
+  added without pushing more than ``cp_alpha`` of the ``x*`` infeasible. With
+  multiple ``x*`` the coverage cap ``cp_alpha`` bounds the fraction allowed to go
   infeasible (feasibility only); with a single ``x*`` there is no cap.
+
+  It splits in two, **auto-selected from the bank's own geometry** so the
+  adversary matches the set it is drawn from:
+
+  - **coherent** (``uncertainty.coherent: true``) -- one relabeling drives every
+    constraint (and the objective) jointly and the single worst scenario is cut,
+    ranked by **normalized average distance** (mean relative exceedance over all
+    ``(x*, outcome)`` cells).
+  - **incoherent** (``uncertainty.coherent: false``, production) -- D is the
+    product set ``D_1 x ... x D_C``, so the draws are ranked **per constraint**
+    and one model is admitted for each constraint per iteration; ``tau`` is met
+    per constraint (mean over anchors) rather than on their average.
 
 The objective uses an **epigraph** reformulation ``min c'x + t``, ``t >= sum of
 learned objective terms``, so a learned objective is robustified by the same
@@ -850,6 +859,11 @@ def _report_cp_diagnostics(strategy, status: str) -> None:
         )
 
 
+# Key for the epigraph objective in the per-unit distance table. Constraint units
+# are plain ``c_idx`` ints, so a string can never collide with one.
+_OBJ_UNIT = "obj"
+
+
 def _build_scale_map(inst: ProblemInstance, bank) -> dict:
     """``{c_idx -> scale(y_c)}`` for the constraint outcomes, from the bank.
 
@@ -1245,19 +1259,31 @@ class _CoherentSeparation:
     worsens the objective there, its cut is added and ``t_obj`` rises, so the
     objective is robustified by the same worst-case mechanism as the constraints.
 
-    **Worst-case selection (all cases).** Every sampled scenario is scored by its
-    **normalized average distance**: each constraint exceedance ``sum w_i f_i^s(x*)
-    - rhs`` is divided by ``max(1, |rhs|)`` and each objective exceedance
-    ``sum obj_weight_i f_i^s(x*) - t_val`` by ``max(1, |t_val|)``, then the
-    normalized exceedances are averaged over all ``(x*, outcome)`` cells.
-    Averaging (rather than summing) keeps the metric on a 0–1 scale regardless of
-    the number of constraints or patients, so ``dist_tol`` has a consistent
-    meaning. The scenario with the largest average distance is the adversary.
+    **Scoring.** Every sampled scenario is scored per **unit** -- one unit per
+    learned constraint, plus the epigraph objective when it is robustified. A
+    unit's distance is its normalized exceedance (``sum w_i f_i^s(x*) - rhs``
+    divided by the outcome's own label scale under ``tolerance_basis="scale"``,
+    or by ``max(1, |rhs|)`` under the legacy ``"d0"``) averaged over the anchors,
+    so it reads as (violating fraction) x (mean exceedance among violators).
 
-    **Termination.** We stop when either (1) the worst scenario's normalized average
-    distance is ``<= dist_tol`` (robust enough -- some residual violation is
-    allowed), or (2) no sampled scenario can be cut without pushing more than
-    ``alpha`` of the optimal solves infeasible (``coverage_cap``).
+    **Worst-case selection**, by ``separation`` -- which the driver reads off the
+    bank's geometry, not off a per-run preference:
+
+    - ``"coherent"``: a scenario's score is the MEAN of its unit distances --
+      equivalently the mean over all ``(x*, outcome)`` cells -- and the single
+      largest-scoring draw is the adversary. Its cut carries one relabeling of the
+      whole trial across every constraint.
+    - ``"incoherent"``: each unit ranks the eligible bank on its OWN outcome and
+      one model is admitted for each constraint above tolerance, so C constraints
+      give up to C cuts from up to C different draws. Motivated by the product
+      structure of D under ``uncertainty.coherent: false``, where which
+      relabelings a draw pairs is a sampler artefact. See ``__init__`` for what
+      this gives up (the wrapper equivalence, chiefly).
+
+    **Termination.** We stop when either (1) no unit is above ``dist_tol`` --
+    coherent: the worst scenario's mean distance; incoherent: EVERY constraint's
+    own distance -- or (2) no cut can be added without pushing more than ``alpha``
+    of the optimal solves infeasible (``coverage_cap``).
 
     **Coverage cap (multiple ``x*`` only).** ``alpha`` bounds the fraction of
     optimal solves (patients) allowed to become infeasible. We add the *most
@@ -1280,7 +1306,8 @@ class _CoherentSeparation:
     def __init__(self, k_neighbors_frac, n_scenarios, alpha, single_point, dist_tol,
                  k_neighbors_min=1, cut_eviction="reject", base_scenario_ids=None,
                  dist_tol_rel=None, prune_slack_cuts=True, objective_monotone=False,
-                 cut_whole_scenario=True):
+                 cut_whole_scenario=True, separation="coherent",
+                 cut_rollback="forward"):
         self.k_neighbors_frac = k_neighbors_frac
         self.n_scenarios = n_scenarios
         self.alpha = alpha               # coverage cap: max fraction of x* infeasible
@@ -1316,7 +1343,61 @@ class _CoherentSeparation:
         self.objective_monotone = objective_monotone
         # Enforce every constraint of an accepted scenario, not just the breached
         # subset -- see step(). This is what makes per-scenario exclusion sound.
+        # IGNORED on the incoherent path, where a cut is one (constraint, draw)
+        # pair by construction and there is no scenario left to complete.
         self.cut_whole_scenario = cut_whole_scenario
+        # Which separation path this is. Resolved by the driver from the BANK's own
+        # geometry, not chosen per run -- the adversary should match the set it is
+        # drawn from:
+        #
+        # "coherent" (uncertainty.coherent=true): D's draws lie on a shared
+        #   direction, so a draw IS one relabeling of the whole trial. ONE draw is
+        #   cut per iteration -- the one whose distance, averaged over (anchor x
+        #   outcome) cells, is largest -- and every constraint's model in that cut
+        #   comes from that same relabeling.
+        #
+        # "incoherent" (uncertainty.coherent=false, the production cell): D is the
+        #   PRODUCT set D_1 x ... x D_C. Which per-outcome relabelings a single
+        #   draw happens to pair is then an artefact of the sampler, not a feature
+        #   of D, so the draws are considered PER CONSTRAINT: each constraint ranks
+        #   the bank on its own outcome and gets its own cut, and one iteration
+        #   adds a model for each constraint. Separation therefore searches B
+        #   points per constraint rather than B joint points -- the direct answer
+        #   to Known objection (2) in CLAUDE.md.
+        #
+        # What the incoherent path gives up, deliberately:
+        #  - A cut set is no longer one plausible relabeling of the trial. It is
+        #    the worst per outcome, a point of the product set that need not be
+        #    any single sampled draw. (The mirror of the objection it answers.)
+        #  - CP at tau->0 is no longer the wrapper at alpha=0. The wrapper gates
+        #    one indicator on ALL constraints of a replicate holding jointly; that
+        #    is exactly cut_whole_scenario on the coherent path, which is where the
+        #    equivalence check belongs -- and it needs a coherent bank anyway.
+        #  - Exclusion is keyed (unit, draw) rather than draw: a draw cut for one
+        #    constraint stays eligible for the others.
+        self.separation = separation
+        # Incoherent path only: what to do when a constraint's cut breaks a
+        # protected anchor. Either way, a rollback removes ONLY the models embedded
+        # by that one attempt -- never the constraint's other cuts, and never the
+        # constraint's slot in this iteration.
+        #
+        # "forward": walk the constraints most-violating first. For each, try its
+        #   most-violating model, re-solve, and if a protected anchor breaks, roll
+        #   that model back and try the constraint's NEXT most-violating model,
+        #   until one is admitted or its candidates run out. Then move to the next
+        #   constraint. The iteration therefore ends with a model added for EACH
+        #   constraint that had an admissible one. Rejection is exact: the cut was
+        #   tested against a master that only grows, so it breaks that anchor under
+        #   every superset too.
+        #
+        # "peel": add each constraint's top model, test once, then remove from the
+        #   LEAST-violating end until the protected set is feasible. Cheaper when
+        #   the whole set fits (one anchor sweep instead of C), but it does NOT
+        #   fall back to a constraint's next candidate, and the attribution is a
+        #   HEURISTIC: the peeled model is not shown to be the culprit, so marking
+        #   it rejected (which termination needs) can retire one that would have
+        #   fitted alone. That is why "forward" is the default.
+        self.cut_rollback = cut_rollback
         self.base_scenario_ids = set(base_scenario_ids or ())  # nominal cuts, never evicted
         self.obj_bound = {}          # a_idx -> best (max) objective seen so far
         self.prev_max_exceed = 0.0   # scale for the dynamic pruning threshold (raw)
@@ -1326,6 +1407,13 @@ class _CoherentSeparation:
         # pruning retire cuts, and a retired scenario must stay re-separable.
         # (With nothing removed, the two definitions coincide.)
         self.cut_draws: dict = {}
+        # Incoherent path's analogue: scenario id -> (unit, bank draw), where a
+        # unit is a constraint index or _OBJ_UNIT. Same ACTIVE-cut semantics.
+        self.cut_units: dict = {}
+        # (unit, draw) pairs whose cut broke a protected anchor. The per-constraint
+        # analogue of rejected_draws -- keyed per unit, so rejecting a draw for one
+        # constraint leaves that draw eligible for the others.
+        self.rejected_units: set = set()
         # Diagnostics -- counted, reported, never acted on automatically.
         self.prev_min_obj = None
         self.n_obj_regressions = 0
@@ -1365,6 +1453,157 @@ class _CoherentSeparation:
             print(f"      [cp] evicted stale scenario {victim} "
                   f"(slack={min_slack.get(victim, float('inf')):.3f}) to admit new cut",
                   flush=True)
+
+    def _unit_label(self, inst, unit) -> str:
+        """Human-readable name for a distance unit (constraint name, or the
+        epigraph objective)."""
+        if unit == _OBJ_UNIT:
+            return "objective"
+        try:
+            return inst.constraints[unit].name
+        except Exception:
+            return f"c{unit}"
+
+    def _cut_per_constraint(self, env, iteration, cand_per_unit, order,
+                            last_obj, history_viol) -> _StepResult:
+        """Incoherent separation: add a model for EACH constraint above tau.
+
+        The draws are considered per constraint. Each unit -- one per learned
+        constraint, plus the epigraph objective when it is robustified -- ranks the
+        whole eligible bank on its OWN outcome, and the iteration walks the units
+        most-violating first, admitting one model for each. Units already within
+        tau are skipped: there is nothing to separate there, and the loop stops
+        only once every unit is within tau (checked by the caller against the max
+        over units).
+
+        ``cut_rollback`` decides what happens when an admitted model breaks a
+        protected anchor. Either way the rollback removes ONLY what that attempt
+        embedded -- ``master.remove_scenario`` drops exactly the vars and
+        constraints that ``add_scenario`` created for it, so the constraint's
+        earlier cuts, the nominal base and every other unit's cut stay in place,
+        and the constraint keeps its slot in this iteration.
+
+        - ``"forward"`` (default): for each constraint in turn, try its
+          most-violating model and re-solve; if a protected anchor breaks, roll
+          that model back, permanently reject that (unit, draw), and try the
+          constraint's NEXT most-violating model. Repeat until one is admitted or
+          the constraint's candidates run out, then move to the next constraint.
+          So the iteration ends with a model added for each constraint that has an
+          admissible one, rather than dropping a constraint on its first failure.
+        - ``"peel"``: add every unit's top model, test once, then remove from the
+          LEAST-violating end until the protected set is feasible. One anchor sweep
+          when the whole set fits, but no fallback to a constraint's next
+          candidate, and the peeled model is rejected on a heuristic attribution.
+
+        Rejection is exact under ``"forward"`` for the reason it is on the coherent
+        path: the model was tested against a master that only grows, so a cut that
+        breaks a protected anchor once breaks it under every superset.
+        """
+        inst, master = env.instance, env.master
+        # Constraints ordered most-violating first, by their own best candidate.
+        pending = sorted(
+            (cands for cands in cand_per_unit.values() if cands[0]["dist"] > self._tol),
+            key=lambda cands: -cands[0]["dist"],
+        )
+        if not pending:
+            # Unreachable via step() (which returns "optimal" first), but keep the
+            # method total rather than silently adding nothing.
+            return _StepResult(stop=True, status="optimal", obj=last_obj,
+                               violation=history_viol)
+
+        # Permanent rejection needs a stable draw identity; the legacy bootstrap
+        # path redraws every iteration, so its keys are positional and meaningless
+        # across iterations (see the draw_key comment in step()).
+        record_rejections = env.bank is not None
+        kept, rejected = [], []
+
+        def _reject(rec):
+            rejected.append(rec)
+            if record_rejections:
+                self.rejected_units.add((rec["unit"], rec["draw"]))
+                self.n_rejections += 1
+
+        def _try(rec):
+            """Embed one candidate and keep it only if the protected set survives.
+            On failure removes exactly what this call embedded."""
+            master.add_scenario(rec["c_idx"], rec["models"], rec["rhs"], rho=env.rho)
+            sid = master.n_models - 1
+            _, fits = _protected_still_feasible(
+                master, inst, env.anchors, self.protected_anchors, order
+            )
+            if fits:
+                return sid
+            master.remove_scenario(sid)
+            master.opt.update()
+            return None
+
+        if self.cut_rollback == "peel":
+            added = []
+            for cands in pending:                 # each constraint's top model
+                rec = cands[0]
+                master.add_scenario(rec["c_idx"], rec["models"], rec["rhs"],
+                                    rho=env.rho)
+                added.append((master.n_models - 1, rec))
+            while added:
+                _, fits = _protected_still_feasible(
+                    master, inst, env.anchors, self.protected_anchors, order
+                )
+                if fits:
+                    break
+                sid, rec = added.pop()          # least violating sits last
+                master.remove_scenario(sid)     # only this attempt's models
+                master.opt.update()
+                _reject(rec)
+            kept = added
+        else:                                    # "forward"
+            for cands in pending:
+                # Walk this ONE constraint's ranking until a model is admitted.
+                for rec in cands:
+                    if rec["dist"] <= self._tol:
+                        break                    # rest of its ranking is within tau
+                    if (rec["unit"], rec["draw"]) in self.rejected_units:
+                        continue
+                    sid = _try(rec)
+                    if sid is not None:
+                        kept.append((sid, rec))
+                        break
+                    _reject(rec)
+
+        for rec in rejected:
+            print(
+                f"Iter {iteration}: Rolled back {self._unit_label(inst, rec['unit'])} "
+                f"model (draw {rec['draw']}, dist={rec['dist']:.4f}); "
+                f"breaks a protected anchor",
+                flush=True,
+            )
+
+        if not kept:
+            self.last_added_ids = []
+            print(
+                f"Iter {iteration}: coverage cap hit (no constraint has an "
+                f"admissible model left); stopping.",
+                flush=True,
+            )
+            return _StepResult(stop=True, status="coverage_cap", obj=last_obj,
+                               violation=history_viol)
+
+        self.last_added_ids = [sid for sid, _ in kept]
+        for sid, rec in kept:
+            self.cut_units[sid] = (rec["unit"], rec["draw"])
+        n_active = sum(1 for c in master.scenario_constrs if c is not None)
+        detail = ", ".join(
+            f"{self._unit_label(inst, rec['unit'])}<-draw {rec['draw']} "
+            f"(dist={rec['dist']:.4f})"
+            for _, rec in kept
+        )
+        print(
+            f"Iter {iteration}: Added {len(kept)}/{len(pending)} constraint model(s) "
+            f"{self.last_added_ids}: {detail}; "
+            f"{len(rejected)} rolled back; working-set={n_active} active cuts",
+            flush=True,
+        )
+        return _StepResult(stop=False, status="running", obj=last_obj,
+                           violation=history_viol)
 
     def step(self, env: _SepEnv, iteration: int) -> _StepResult:
         iter_start = time.time()
@@ -1491,6 +1730,16 @@ class _CoherentSeparation:
         # is never gated by the coverage cap alpha (it is the objective, not a
         # feasibility requirement).
         has_obj = master.t_obj is not None
+        per_constraint = self.separation == "incoherent"
+        # The units the distance is resolved over: one per learned constraint, plus
+        # the epigraph objective when it is robustified. On the INCOHERENT path
+        # each of these ranks the bank itself and carries its own tolerance test, so
+        # tau is met unit-wise rather than on their mean.
+        constraint_units = [
+            c_idx for c_idx, c in enumerate(inst.constraints)
+            if _is_constraint_constraint(c)
+        ]
+        n_outcomes_total = len(constraint_units) + (1 if has_obj else 0)
         obj_specs = []
         obj_c_idx = None
         if has_obj:
@@ -1516,15 +1765,32 @@ class _CoherentSeparation:
         # wrong, since eviction and pruning retire cuts and an evicted scenario
         # must remain re-separable.
         if env.bank is not None:
-            active = {
-                b for sid, b in self.cut_draws.items()
-                if sid < len(master.scenario_constrs)
-                and master.scenario_constrs[sid] is not None
-            }
-            # Skip permanently-rejected draws here too, not just at acceptance:
-            # scoring them means retraining nothing but re-predicting at every
-            # (anchor x outcome) cell for a scenario we already know we cannot use.
-            skip = active | self.rejected_draws
+            if per_constraint:
+                # Exclusion is per (unit, draw): a draw already cut for constraint 1
+                # is still the legitimate worst case for constraint 3. Only a draw
+                # excluded for EVERY unit can be skipped outright.
+                active_units = {
+                    ud for sid, ud in self.cut_units.items()
+                    if sid < len(master.scenario_constrs)
+                    and master.scenario_constrs[sid] is not None
+                }
+                excluded_units = active_units | self.rejected_units
+                all_units = list(constraint_units) + ([_OBJ_UNIT] if has_obj else [])
+                skip = {
+                    b for b in range(len(env.bank))
+                    if all((u, b) in excluded_units for u in all_units)
+                }
+            else:
+                excluded_units = set()
+                active = {
+                    b for sid, b in self.cut_draws.items()
+                    if sid < len(master.scenario_constrs)
+                    and master.scenario_constrs[sid] is not None
+                }
+                # Skip permanently-rejected draws here too, not just at acceptance:
+                # scoring them means retraining nothing but re-predicting at every
+                # (anchor x outcome) cell for a scenario we already know we cannot use.
+                skip = active | self.rejected_draws
             scenarios = [b for b in range(len(env.bank)) if b not in skip]
             pool_frac = float("nan")
         else:
@@ -1539,6 +1805,9 @@ class _CoherentSeparation:
             scenarios = [
                 rng.choice(pool, size=n_train, replace=True) for _ in range(self.n_scenarios)
             ]
+            # Legacy path: draws are redrawn every iteration, so there is nothing
+            # to exclude and per-constraint selection ranges over all of them.
+            excluded_units = set()
 
         # Evaluate every sampled scenario; keep *all* that produce a cut so we can
         # fall back to a less aggressive adversary if the worst one over-tightens.
@@ -1549,6 +1818,20 @@ class _CoherentSeparation:
         candidates = []   # (total_dist, raw_max_exceed, cuts, scenario_key)
         all_dists = []    # EVERY scanned scenario, including the non-violating ones,
                           # so d0's quantile describes the bank and not just its tail
+        # Incoherent path: unit -> EVERY eligible violating draw for that unit, as
+        # {unit, dist, draw, c_idx, models, rhs}, sorted worst-first below. A list,
+        # not an argmax, because forward rollback falls back to a constraint's next
+        # most-violating model when its best one breaks a protected anchor -- the
+        # iteration is meant to end with a model added for each constraint.
+        cand_per_unit = {}
+        # Largest distance among draws this unit may no longer cut because they were
+        # REJECTED (broke a protected anchor), as opposed to already cut. A cut draw
+        # is satisfied by construction and its distance is 0; a rejected one is
+        # still violated and simply unusable. Without this the run would report
+        # "optimal" once a constraint's whole ranking had been rejected -- nothing
+        # eligible is above tau, but the constraint is not robust, it is capped.
+        blocked_per_unit = {}
+        global_max_exceed = 0.0
         scale_map = _build_scale_map(inst, env.bank)
         # The objective outcome is excluded from scale_map by construction (it has
         # obj_weight != 0), so fetch its scale separately -- otherwise under
@@ -1560,7 +1843,12 @@ class _CoherentSeparation:
             _s = [getattr(env.bank, "scales", {}).get(id(md)) for _, md in obj_specs]
             _s = [v for v in _s if v and np.isfinite(v) and v > 0]
             obj_scale = max(_s) if _s else None
-        for scenario in scenarios:
+        for s_idx, scenario in enumerate(scenarios):
+            # Under a bank the draw index IS the key; the legacy bootstrap path
+            # hands us an index ARRAY, which is unhashable and (being redrawn every
+            # iteration) has no cross-iteration identity, so it is keyed positionally
+            # and never recorded as a permanent rejection.
+            draw_key = scenario if env.bank is not None else s_idx
             if env.bank is not None:
                 model_map = env.bank.models_for(scenario)
             else:
@@ -1575,33 +1863,59 @@ class _CoherentSeparation:
                 inst, model_map, obj_specs
             )
 
-            sum_norm_exceed = 0.0   # sum of normalized exceedances (for averaging)
+            # PER-UNIT distance: for each outcome, this draw's normalized exceedance
+            # averaged over the ANCHORS. Both separation paths read the same table
+            # and differ only in how it is collapsed -- COHERENT means over the units
+            # and takes the argmax draw of that mean; INCOHERENT ranks the draws
+            # within each unit separately. Non-violating anchors
+            # contribute 0, so a unit's distance is (violating fraction) x (mean
+            # exceedance among violators), exactly as before.
+            unit_sum = {}
             raw_max_exceed = 0.0    # largest raw exceedance (pruning-threshold scale)
             n_outcomes = len(per_constraint_models) + (1 if has_obj else 0)
-            violated_constraints = set()
-            obj_violated = False
             for (x_star, t_val) in points:
                 xs2d = np.atleast_2d(x_star)
                 for c_idx, (models, rhs) in per_constraint_models.items():
                     exceed = sum(w * th.predict(xs2d)[0] for w, th in models) - rhs
                     if exceed > 1e-6:
-                        sum_norm_exceed += exceed / _cell_divisor(
+                        unit_sum[c_idx] = unit_sum.get(c_idx, 0.0) + exceed / _cell_divisor(
                             scale_map, c_idx, rhs, env.tolerance_basis)
                         raw_max_exceed = max(raw_max_exceed, exceed)
-                        violated_constraints.add(c_idx)
                 if has_obj:
                     obj_pred = sum(ow * th.predict(xs2d)[0] for ow, th in obj_models)
                     exceed = obj_pred - t_val
                     if exceed > 1e-6:
-                        sum_norm_exceed += exceed / (
+                        unit_sum[_OBJ_UNIT] = unit_sum.get(_OBJ_UNIT, 0.0) + exceed / (
                             obj_scale if (env.tolerance_basis == "scale" and obj_scale)
                             else max(1.0, abs(t_val)))
                         raw_max_exceed = max(raw_max_exceed, exceed)
-                        obj_violated = True
 
-            # Average over all (x*, outcome) pairs so dist_tol is on a 0-1 scale.
-            n_cells = max(1, n_points * n_outcomes)
-            total_dist = sum_norm_exceed / n_cells
+            unit_dist = {u: v / max(1, n_points) for u, v in unit_sum.items()}
+            violated_constraints = {u for u in unit_dist if u != _OBJ_UNIT}
+            obj_violated = _OBJ_UNIT in unit_dist
+            global_max_exceed = max(global_max_exceed, raw_max_exceed)
+            # The legacy scenario score is the MEAN of the per-unit distances --
+            # identical arithmetic to the old sum-over-cells / (n_points*n_outcomes).
+            total_dist = sum(unit_dist.values()) / max(1, n_outcomes)
+
+            if per_constraint:
+                for u, d in unit_dist.items():
+                    if (u, draw_key) in excluded_units:
+                        if (u, draw_key) in self.rejected_units:
+                            blocked_per_unit[u] = max(blocked_per_unit.get(u, 0.0), d)
+                        continue
+                    if u == _OBJ_UNIT:
+                        rec = dict(unit=u, dist=d, draw=draw_key, c_idx=obj_c_idx,
+                                   models=obj_models, rhs=master.t_obj)
+                    else:
+                        _mdls, _rhs = per_constraint_models[u]
+                        rec = dict(unit=u, dist=d, draw=draw_key, c_idx=u,
+                                   models=_mdls, rhs=_rhs)
+                    cand_per_unit.setdefault(u, []).append(rec)
+                # When d0 is the basis it must describe the SAME statistic the
+                # stopping rule compares -- here the max over units, not their mean.
+                all_dists.append(max(unit_dist.values()) if unit_dist else 0.0)
+                continue
 
             # Cut the WHOLE scenario, not just the constraints that happen to be
             # violated at the current x*. A scenario is one coherent relabeling of
@@ -1640,11 +1954,21 @@ class _CoherentSeparation:
             if cuts:
                 candidates.append((total_dist, raw_max_exceed, cuts, scenario))
 
-        # Rank adversaries worst-first by normalized average distance.
-        candidates.sort(key=lambda c: c[0], reverse=True)
-        best_dist = candidates[0][0] if candidates else 0.0
-        # Scale next iteration's pruning threshold by the worst raw cut.
-        self.prev_max_exceed = candidates[0][1] if candidates else 0.0
+        if per_constraint:
+            # Worst-first within each constraint, so forward rollback can walk down
+            # a constraint's own ranking.
+            for _u in cand_per_unit:
+                cand_per_unit[_u].sort(key=lambda r: -r["dist"])
+            # The stopping statistic is the WORST unit: tau is met only when EVERY
+            # constraint meets it, not when their mean does.
+            best_dist = max((c[0]["dist"] for c in cand_per_unit.values()), default=0.0)
+            self.prev_max_exceed = global_max_exceed
+        else:
+            # Rank adversaries worst-first by normalized average distance.
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            best_dist = candidates[0][0] if candidates else 0.0
+            # Scale next iteration's pruning threshold by the worst raw cut.
+            self.prev_max_exceed = candidates[0][1] if candidates else 0.0
 
         # Resolve the effective tolerance once, from THIS problem's own iteration-0
         # distances, so a single tau grid transfers across datasets AND bank sizes.
@@ -1697,9 +2021,15 @@ class _CoherentSeparation:
                 self._tol = self.dist_tol
 
         pool_note = "" if np.isnan(pool_frac) else f"PoolFrac={pool_frac:.3f} "
+        if per_constraint:
+            n_over = sum(1 for c in cand_per_unit.values() if c[0]["dist"] > self._tol)
+            dist_note = (f"WorstUnitDist={best_dist:.4f} "
+                         f"units_over_tau={n_over}/{n_outcomes_total} ")
+        else:
+            dist_note = f"WorstScenarioNormDist={best_dist:.4f} "
         print(
             f"Iter {iteration}: {'Obj' if self.single_point else 'AvgObj'}={last_obj:.4f} "
-            f"WorstScenarioNormDist={best_dist:.4f} "
+            f"{dist_note}"
             f"p_infeas={p_infeas*100:.1f}% {pool_note}"
             f"scanned={len(scenarios)} Time={time.time()-iter_start:.2f}s",
             flush=True,
@@ -1710,6 +2040,20 @@ class _CoherentSeparation:
         # Terminate (1): even the worst sampled relabeling leaves the normalized
         # total distance within the allowance -- robust enough.
         if best_dist <= self._tol:
+            blocked_max = max(blocked_per_unit.values(), default=0.0) if per_constraint else 0.0
+            if blocked_max > self._tol:
+                # Nothing ELIGIBLE is above tau, but only because the draws that are
+                # were rejected for breaking a protected anchor. That is the
+                # coverage cap, not convergence, and the sweep reports the two
+                # differently (capped cells are excluded from rho*).
+                print(
+                    f"Iter {iteration}: no eligible adversary above tau, but a "
+                    f"REJECTED draw still scores {blocked_max:.4f} > {self._tol:.4f}; "
+                    f"this is the coverage cap, not convergence.",
+                    flush=True,
+                )
+                return _StepResult(stop=True, status="coverage_cap", obj=last_obj,
+                                   violation=history_viol)
             return _StepResult(stop=True, status="optimal", obj=last_obj, violation=history_viol)
 
         # Single-lever CP: the protected set is FIXED at the anchors the nominal
@@ -1725,6 +2069,18 @@ class _CoherentSeparation:
             )
         # Anchors closest to the boundary first -> earliest possible exit.
         order = [a for a, _, _ in sorted(feasible, key=lambda t: t[2], reverse=True)]
+
+        if per_constraint:
+            if evicting:
+                print(
+                    "    [cp] WARNING: cut_eviction='evict_slack' is IGNORED on the "
+                    "incoherent separation path (models are rolled back per "
+                    "constraint instead); using 'reject' semantics.",
+                    flush=True,
+                )
+            return self._cut_per_constraint(
+                env, iteration, cand_per_unit, order, last_obj, history_viol,
+            )
 
         for cand_rank, (_dist, _mx, cuts, draw) in enumerate(candidates):
             # Rejections are permanent: the protected set is fixed and the master
@@ -1830,6 +2186,8 @@ def _run_cp_loop(instance: ProblemInstance,
                  cp_tolerance_basis: str = "scale",
                  cp_objective_monotone: bool = False,
                  cp_cut_whole_scenario: bool = True,
+                 cp_separation: str = "auto",
+                 cp_cut_rollback: str = "forward",
                  cp_mip_gap: float = DEFAULT_MIP_GAP,
                  cp_uncertainty=None,
                  cp_bank=None,
@@ -1902,6 +2260,31 @@ def _run_cp_loop(instance: ProblemInstance,
     # differ only where the PROBLEMS differ (one context vs ten, one constraint
     # vs five), not in bookkeeping.
     keep_all = bank is not None
+
+    # WHICH SEPARATION PATH. Auto-selected from the BANK's own geometry, not from a
+    # per-run preference: the adversary should match the set it is drawn from.
+    #
+    #   coherent bank  -> coherent separation: draws lie on a shared direction, so
+    #     one draw IS one relabeling of the trial and cutting it whole is right.
+    #   incoherent bank -> incoherent separation: D is the product set, so which
+    #     per-outcome relabelings a draw pairs is a sampler artefact and the draws
+    #     are ranked PER CONSTRAINT, one model admitted for each.
+    #
+    # This is what makes `--coherent` a single coherent ablation -- it flips the
+    # draws AND the adversary together -- and it is where the alpha=0 == tau->0
+    # wrapper equivalence lives (it needs both halves). "coherent"/"incoherent"
+    # force the path against the bank; the mismatch is legal but is reported, since
+    # nothing else in the run announces it.
+    if cp_separation in ("coherent", "incoherent"):
+        sep_path = cp_separation
+    elif bank is not None:
+        sep_path = "coherent" if getattr(bank, "coherent", False) else "incoherent"
+    else:
+        # Legacy localized-bootstrap resample: no bank, so no geometry to read.
+        # Its draws were never a product set, so the coherent path is the honest
+        # default and the one that reproduces prior ablation runs.
+        sep_path = "coherent"
+
     if use_basic:
         strategy = _BasicSeparation(
             cp_k_neighbors_frac, cp_n_candidates, cp_k_neighbors_min,
@@ -1921,11 +2304,25 @@ def _run_cp_loop(instance: ProblemInstance,
             prune_slack_cuts=not keep_all,
             objective_monotone=cp_objective_monotone,
             cut_whole_scenario=cp_cut_whole_scenario,
+            separation=sep_path,
+            cut_rollback=cp_cut_rollback,
         )
-        mode = "coherent (single x*)" if single_point else "coherent (multi x*)"
+        mode = f"{sep_path} ({'single' if single_point else 'multi'} x*)"
 
     n_solves = 1 if single_point else len(anchors)
     extra = f", alpha={cp_alpha}" if (not use_basic and not single_point) else ""
+    if not use_basic:
+        # Vacuous with a single unit: one constraint and no epigraph objective
+        # means the per-constraint ranking IS the shared-scenario ranking.
+        n_units = n_constraints + (1 if has_obj_models else 0)
+        if sep_path == "incoherent":
+            extra += f", rollback={cp_cut_rollback}"
+            if n_units <= 1:
+                extra += " (vacuous: 1 unit)"
+        if bank is not None and cp_separation in ("coherent", "incoherent"):
+            bank_coh = "coherent" if getattr(bank, "coherent", False) else "incoherent"
+            if bank_coh != sep_path:
+                extra += f" [FORCED: bank is {bank_coh}]"
     obj_flag = "robustify_objective" if cp_robustify_objective else "nominal_objective"
     if bank is not None:
         src_note = (f"scenarios=noise bank (B={len(bank)}, "
@@ -2017,6 +2414,8 @@ def solve_cp(instance: ProblemInstance,
              cp_tolerance_basis: str = "scale",
              cp_objective_monotone: bool = False,
              cp_cut_whole_scenario: bool = True,
+             cp_separation: str = "auto",
+             cp_cut_rollback: str = "forward",
              cp_mip_gap: float = DEFAULT_MIP_GAP,
              cp_uncertainty=None,
              cp_bank=None,
@@ -2048,6 +2447,27 @@ def solve_cp(instance: ProblemInstance,
     not an embedded ensemble -- CP's master stays small at bank sizes the wrapper
     could not embed.
 
+    ``cp_separation`` picks between the two multi-constraint paths. ``"auto"``
+    (default) reads the BANK's geometry, so the adversary matches the set it is
+    drawn from; ``"coherent"`` / ``"incoherent"`` force it and report the mismatch.
+    Both are vacuous with a single unit.
+
+    - **coherent** (``uncertainty.coherent: true``): one draw per iteration, the
+      argmax of the distance averaged over units. Its cut is one relabeling of the
+      whole trial, which is what makes CP at ``tau->0`` equal the wrapper at
+      ``alpha=0``.
+    - **incoherent** (``uncertainty.coherent: false``, the production cell): D is
+      the product set, so the draws are ranked PER CONSTRAINT and one model is
+      admitted for each constraint per iteration. ``tau`` is met per constraint
+      (mean over anchors) and the loop stops only when every constraint is within
+      it. Drops the wrapper equivalence -- run that check on the coherent path.
+
+    ``cp_cut_rollback`` (incoherent path only): ``"forward"`` (default) walks the
+    constraints most-violating first and, when a model breaks a protected anchor,
+    rolls back only that model and tries the constraint's next-worst; ``"peel"``
+    stages every constraint's top model and removes from the least-violating end
+    until they fit, with no fallback.
+
     ``cp_eval_mode``:
     - ``"global"`` (default): one shared master; cuts from all anchors.
     - ``"per_anchor_nearest"``: train one CP master per anchor; at prescribe time
@@ -2078,6 +2498,8 @@ def solve_cp(instance: ProblemInstance,
         cp_tolerance_basis=cp_tolerance_basis,
         cp_objective_monotone=cp_objective_monotone,
         cp_cut_whole_scenario=cp_cut_whole_scenario,
+        cp_separation=cp_separation,
+        cp_cut_rollback=cp_cut_rollback,
         cp_mip_gap=cp_mip_gap,
         cp_uncertainty=cp_uncertainty,
         cp_bank=cp_bank,
