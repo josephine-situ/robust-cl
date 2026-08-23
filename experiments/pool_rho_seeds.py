@@ -71,7 +71,10 @@ def pool_curve(problem, cell):
     # Ablation rows sit in the same file under a different phase and are swept over
     # tau/alpha, not rho -- pooling them with the rho rows would average different
     # experiments.
-    df = df[df.get("phase", "rho_sweep") == "rho_sweep"]
+    # "param_sweep" is the current name; "rho_sweep" is what curves written before
+    # the sweep became per-method parameter carry. Both are the main-curve rows, so
+    # a saved curve from either era re-derives.
+    df = df[df.get("phase", "param_sweep").isin(("param_sweep", "rho_sweep"))]
     g = df.groupby(["method", "rho"])
     out = g.agg(
         n_seeds=("seed", "nunique"),

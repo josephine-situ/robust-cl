@@ -128,14 +128,35 @@ uncertainty:
 
   # Coherence is a GROUPING, not a global flag: the group shares one standardized
   # direction, names in coherent_exclude draw independently. Vacuous on synthetic
-  # and the reactor (one outcome). Measured out-of-fold residual correlation on
-  # gastric: +0.28 across non-DLT toxicity pairs, but only +0.06 for OS against
-  # every toxicity -- which is why OS is excluded. OPEN: DLT is a deterministic
-  # function of the other four yet takes the shared direction, so the group spends
-  # five radii on four d.o.f. and no delta in D preserves the identity (CLAUDE.md
-  # objection 4). Right sign, overstated magnitude.
-  coherent: true           # false = every outcome draws independently
+  # and the reactor (one outcome).
+  #
+  # INCOHERENT since 2026-08-21, and it is now the production setting: coherent
+  # asserts a +1 in-group correlation, and the measured out-of-fold residual
+  # correlation on gastric is +0.28 across non-DLT toxicity pairs (+0.22 raw) --
+  # right sign, badly overstated magnitude -- while OS against every toxicity is
+  # +0.06, indistinguishable from zero. The one block that genuinely WAS near +1,
+  # DLT against its components, is no longer a draw at all: derive_linked_labels
+  # below makes it follow the identity exactly. What is left for the shared
+  # direction to model is the +0.28 block, and 0 is the closer assertion of the
+  # two available. Coherent survives as the ablation
+  # (`run_rho_sweep.py --coherent`). Note this moves the alpha=0 == tau->0
+  # equivalence out of the production cell: the wrapper's incoherent arm gives
+  # each constraint its own z[c,p] and CP has no analogue (CLAUDE.md objection 3),
+  # so that check must be run with --coherent.
+  coherent: false          # false = every outcome draws independently
+  # Vacuous while coherent is false; kept so flipping the flag back restores the
+  # measured grouping rather than a global +1 that includes survival.
   coherent_exclude: ["os_constraint"]
+
+  # Make a label that is a deterministic function of other labels FOLLOW that
+  # function instead of drawing its own shift. Gastric declares the only one:
+  # DLT_PROP = 1 - prod(1 - tox) over the four modeled toxicities, exact to 2e-16.
+  # With this off, D spends five outcomes' radius on four degrees of freedom and
+  # no draw in D is a relabeling of an actual trial -- perturbed DLT does not equal
+  # the identity applied to the perturbed components. Reaches the ScenarioBank, so
+  # CP and the wrapper; robust_reg's per-outcome training adversary is unlinked.
+  # Dropped automatically under `dlt_only`, where the components are not modeled.
+  derive_linked_labels: true
 
   # Coverage target for the LEGACY alpha calibration only (at most this fraction
   # of training contexts infeasible). Dormant: calibration runs on the "cv" path.
@@ -221,9 +242,117 @@ methods:
     # recur, which is what a cycle is. "reject" also makes the eligible set
     # strictly shrink, so CP terminates in at most B iterations.
     cut_eviction: "reject"     # "reject" | "evict_slack" (cycles; kept for reproduction)
-    cut_whole_scenario: true   # cut all of an accepted scenario's constraints
+    cut_whole_scenario: true   # cut all of an accepted scenario's constraints (coherent path only)
+
+    # WHICH SEPARATION PATH. "auto" reads uncertainty.coherent off the bank, so
+    # the adversary matches the set it is drawn from -- there is no separate
+    # separation dial to keep in step with the draws.
+    #   coherent bank   -> ONE draw cut per iteration, the argmax of the distance
+    #     averaged over units; its cut is one relabeling of the whole trial, which
+    #     is what makes CP at tau->0 equal the wrapper at alpha=0.
+    #   incoherent bank -> the draws are ranked PER CONSTRAINT and one model is
+    #     admitted for EACH constraint per iteration, so 5 gastric constraints
+    #     give up to 5 cuts from up to 5 different draws. tau is then met per
+    #     constraint (mean over anchors) and CP stops only when EVERY constraint
+    #     meets it. Rationale: at coherent:false D is the product set, so which
+    #     relabelings a single draw pairs is a property of the sampler, not of D.
+    # Vacuous where there is one unit (synthetic, reactor: one constraint, no
+    # robustified objective) -- and those take the basic path anyway.
+    # NOTE tau is NOT comparable across the two paths: coherent averages over the
+    # units, incoherent does not, so an incoherent distance runs ~C x larger and
+    # the same tau separates more aggressively.
+    separation: "auto"         # "auto" | "coherent" | "incoherent" (forces, and reports the mismatch)
+    # Incoherent path only: what happens when a constraint's model breaks a
+    # protected anchor. Either way ONLY that attempt's embedded models are removed.
+    #   "forward" -- constraints most-violating first; roll the failed model back
+    #     and try that constraint's NEXT most-violating model, until one is
+    #     admitted. Ends with a model added for each constraint that has one.
+    #   "peel"    -- stage every constraint's top model, test once, then drop from
+    #     the LEAST-violating end until feasible. No fallback to a next candidate,
+    #     and the peeled model is rejected on a heuristic attribution.
+    cut_rollback: "forward"    # "forward" | "peel"
     objective_monotone: false  # redundant while nothing is removed; the lever for re-enabling pruning
     robustify_objective: false # false = nominal embedded OS, no epigraph cuts
+
+  # ---- cmicl: conformal MICL (Ovalle et al. 2025) --------------------------
+  # The one method that does NOT face the shared D. Its tightening is a
+  # split-conformal interval built from held-out residuals: fit h on a
+  # proper-train split, fit a width model u on |y - h(x)|, take the quantile of
+  # |y - h|/u on the calibration split, embed h + q*u <= rhs. Consequences worth
+  # knowing before reading a number off it:
+  #   - uncertainty.rho does not reach it, so on run_rho_sweep.py its curve is
+  #     FLAT in rho by construction. That is what it is there for: a reference
+  #     line the shared-D curves cross, not a fourth reading of the same axis.
+  #   - the guarantee is MARGINAL over P_XY; x* is an argmin sitting on the
+  #     constraint, so feasibility here is an empirical consequence, not a
+  #     delivered guarantee.
+  #   - gastric's folds are temporal and conformal needs exchangeability. The
+  #     split below is random WITHIN a fold's training rows, so coverage is
+  #     marginal over the training years, not the validation year (Known gap #6).
+  cmicl:
+    # NOT a dial to be swept or calibrated: alpha is PINNED to 1 - the evaluation
+    # feasibility target (run_rho_sweep.py --feas-target, default 0.9), because
+    # the conformal level and the feasibility target are the same quantity. That
+    # is the whole comparison C-MICL is here for: the shared-D methods SEARCH for
+    # the rho that delivers 0.9 held-out feasibility, C-MICL ASSERTS 0.9 from the
+    # calibration set and is scored on whether it arrives. Change this only
+    # alongside --feas-target.
+    alpha: 0.1             # = 1 - 0.9
+    # Structural, one production value each -- not swept. Both values below are
+    # the PAPER'S (Ovalle et al. 2025 Sec. 5.1), not ours to pick.
+    cal_frac: 0.2          # their 80/20 train/calibration split; h is fit on the
+                           # 80%, so C-MICL embeds a model trained on fewer rows
+                           # than every other method here
+    # The paper's u is "a ReLU NN with two hidden layers, each with 32 units",
+    # shared across base models (Sec. 5.1). WE DELIBERATELY DO NOT USE IT, and
+    # the reason is a stack difference, not a disagreement: their ReLU-output net
+    # is non-negative by construction, while sklearn's MLPRegressor has a LINEAR
+    # output layer, so the same architecture fitted to |y - h(x)| predicts
+    # NEGATIVE widths. Measured on the reactor (n=1000, fold-free 80/20 split,
+    # seed 42): min u = -5.37, 5th pct -2.14, and 26% of calibration rows land
+    # on the floor -- which makes the score |y-h|/max(u,floor) explode, q90 of
+    # the scores 36.1 against 3.0 for the fallback, q = 27.6, and a mean
+    # half-width of 3.9 sd(y) on labels spanning 11-70. That is the floor
+    # amplifying a negative prediction, not conformal being conservative.
+    # null -> the embedded model's own type/params, which on the same split
+    # predicts min u = +0.38 and never hits the floor. Set the two keys below to
+    # reproduce the paper's architecture.
+    width_model_type: null
+    width_model_params: null
+    width_floor_frac: 0.05 # u is floored at this x the mean |residual|; a linear
+                           # or MLP width model can predict a NEGATIVE width,
+                           # which would loosen the constraint below nominal
+    # "none" (Ovalle et al.): each constraint marginal at 1-alpha.
+    # "bonferroni": alpha/C, so the JOINT statement holds at 1-alpha. On gastric
+    # that level is usually finer than n_cal can resolve, and the solve then
+    # fails with the reason printed rather than clipping to the largest score.
+    multiplicity: "none"   # "none" | "bonferroni"
+    robustify_objective: false  # matches cp/wrapper: nominal embedded OS
+
+  # ---- margin: feasibility-tuned nominal (the cheap baseline) --------------
+  # The same nominal fit against a tightened RHS:
+  #   sum_m w_m f_m(x) <= rhs - m_c,  m_c = margin * sum_m |w_m| * scale(y_m)
+  # ONE dial for the whole problem. It is dimensionless because each constraint
+  # is scaled by its OWN outcome's oof residual sd -- gastric's five toxicities
+  # would otherwise need five margins, which is a five-parameter fit rather than
+  # a baseline. margin=1 gives up one unexplained sd of headroom per constraint,
+  # so it reads on the same axis as rho and tau.
+  # Like cmicl it does NOT face the shared D, so its rho-sweep curve is flat by
+  # construction; its own axis is this margin (--margin-grid). Two properties
+  # worth knowing:
+  #   - monotone: the feasible set shrinks weakly in margin, so an m* at any
+  #     feasibility target always exists. That is the point of the baseline --
+  #     robust_reg's gastric feasibility FALLS with rho.
+  #   - no guarantee of any kind. m is fitted to held-out feasibility and means
+  #     only what that fit means.
+  # There is no robustify_objective here, unlike cp/wrapper/cmicl: a margin on a
+  # learned objective term is a CONSTANT, so it would shift the reported
+  # objective without moving x* -- vacuous rather than merely off.
+  margin:
+    margin: 0.5            # its one dial, in unexplained-sd units
+    # null -> uncertainty.scale_stat, so the margin and D's radius are multiples
+    # of the same estimate. Overriding it decouples them; don't, without saying so.
+    scale_stat: null
 
   # ---- GASTRIC ONLY: what run_chemo_robust.py executes ----------------------
   chemo:

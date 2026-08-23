@@ -47,6 +47,7 @@ DLT_ONLY = ["dlt_constraint", "os_constraint"]
 
 ALL_METHODS = [
     "nominal", "tree_violation", "robust_param", "robust_reg", "wrapper", "cp",
+    "cmicl", "margin",
 ]
 
 
@@ -121,6 +122,11 @@ def _resolve_run_settings(config, args):
     # methods are compared on their objective, so a per-method gap confounds it.
     settings["mip_gap"] = resolve_mip_gap(config)
     settings["cp_cut_whole_scenario"] = cp_cfg.get("cut_whole_scenario", True)
+    # Separation path: "auto" reads it off the bank's coherence (coherent -> one
+    # shared draw cut per iteration; incoherent -> the draws ranked per constraint,
+    # one model admitted for each). Gastric is where the two differ -- 5 constraints.
+    settings["cp_separation"] = cp_cfg.get("separation", "auto")
+    settings["cp_cut_rollback"] = cp_cfg.get("cut_rollback", "forward")
     # B: CP embeds one extra scenario per iteration, so it can afford a bank far
     # larger than the wrapper's P (which is embedded in full). --quick shrinks it.
     settings["cp_n_scenarios"] = (
@@ -164,6 +170,24 @@ def _resolve_run_settings(config, args):
     settings["robust_reg_label_eps"] = rr_cfg.get("label_eps", 0.1)
     settings["robust_reg_budget_frac"] = rr_cfg.get("budget_frac", 0.5)
     settings["robust_reg_K"] = rr_cfg.get("K", 5)
+    # C-MICL (src/methods/cmicl.py). Its dial is the conformal miscoverage alpha;
+    # everything below is structural and has one production value. It reads no
+    # uncertainty_set -- the only method here that does not face the shared D.
+    cm_cfg = config["methods"].get("cmicl", {})
+    settings["cmicl_alpha"] = cm_cfg.get("alpha", 0.1)
+    settings["cmicl_cal_frac"] = cm_cfg.get("cal_frac", 0.25)
+    settings["cmicl_width_model_type"] = cm_cfg.get("width_model_type") or None
+    settings["cmicl_width_model_params"] = cm_cfg.get("width_model_params") or None
+    settings["cmicl_width_floor_frac"] = cm_cfg.get("width_floor_frac", 0.05)
+    settings["cmicl_multiplicity"] = cm_cfg.get("multiplicity", "none")
+    settings["cmicl_robustify_objective"] = cm_cfg.get("robustify_objective", False)
+
+    mg_cfg = config["methods"].get("margin", {})
+    settings["margin"] = mg_cfg.get("margin", 0.5)
+    # The margin is quoted in the same units as rho and tau, so it reads the same
+    # label-scale estimator D's radius does unless told otherwise.
+    settings["margin_scale_stat"] = (mg_cfg.get("scale_stat")
+                                     or unc.get("scale_stat", "oof_sd"))
 
     calib_cfg = config.get("calibration", {})
     settings["calibrate_to_alpha"] = calib_cfg.get("enabled", True)
@@ -200,6 +224,8 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
         "robust_param": settings["robust_rho"],
         "robust_reg": settings["robust_reg_label_eps"],
         "wrapper": settings["wrapper_alpha"],
+        "cmicl": settings["cmicl_alpha"],
+        "margin": settings["margin"],
         # Single driver; gastric (multiple toxicity constraints over many patients)
         # auto-selects coherent separation.
         "cp": None,
@@ -245,6 +271,25 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
     elif method == "robust_reg":
         eps_max = ranges["robust_reg_eps_max"]
         strength_to_knob = lambda s: eps_max * s        # label-uncertainty radius
+    elif method == "cmicl":
+        # C-MICL's knob is the conformal miscoverage alpha, running the same way
+        # round as the wrapper's: smaller alpha = wider interval = stronger. The
+        # strong end stops at amin rather than 0 because it is BOUNDED BY n_cal,
+        # not by the dial: below alpha = 1/(n_cal + 1) no finite quantile exists
+        # and solve_cmicl fails the solve rather than clipping to the largest
+        # score, so s=1 -> alpha=0 would be an endpoint that can never solve.
+        amax = ranges.get("cmicl_alpha_max", 0.5)
+        amin = ranges.get("cmicl_alpha_min", 0.01)
+        strength_to_knob = lambda s: amax * (1.0 - s) + amin * s
+    elif method == "margin":
+        # The feasibility-tuned nominal baseline. Its knob is the RHS margin in
+        # unexplained-sd units and runs the same way round as robust_reg's
+        # label_eps: s=0 -> margin 0, which IS nominal (same fit, same MIP, same
+        # x*), and s=1 -> the widest tightening in the range. Monotone by
+        # construction, so an m* at any feasibility target exists -- which is what
+        # makes it the baseline the robust methods have to beat.
+        m_max = ranges.get("margin_max", 1.0)
+        strength_to_knob = lambda s: m_max * s
     elif method == "cp":
         # CP's knob is the RELATIVE distance tolerance tau: tolerance = tau * d0, with
         # d0 a QUANTILE (cp.d0_quantile, default 0.9) of the problem's own iteration-0

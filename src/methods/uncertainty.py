@@ -282,6 +282,62 @@ def label_scale_report(y, X=None, model_type=None, model_params=None,
     return out
 
 
+def instance_label_scales(instance,
+                          model_config_map: dict,
+                          stat: str = "oof_sd",
+                          seed: int = 42,
+                          folds: Optional[Sequence] = None,
+                          with_reports: bool = False):
+    """``{id(model_data) -> scale(y_c)}`` for every outcome of an instance.
+
+    The ONE place the per-outcome label scale is estimated. D's radius is
+    ``rho * scale(y_c) * sqrt(n)`` and the margin baseline's tightening is
+    ``margin * scale(y_c)``, so the two are multiples of the same estimate by
+    construction rather than by coincidence -- and ``tau`` is read in those units
+    too (``cp._build_scale_map`` divides by the bank's copy of this map). Sharing
+    the estimator is what lets rho, tau and the margin be quoted on one axis
+    ("unexplained standard deviations"); two independent copies could drift on a
+    fold scheme or a stat and nothing would flag it.
+
+    ``folds`` defaults to the problem's own scheme (:func:`instance_folds`:
+    temporal forward-chaining on gastric, KFold elsewhere), so an out-of-fold
+    scale never leaks future information. ``stat="sd"`` needs no folds.
+
+    Raises when any outcome has a non-positive scale: under it D is empty and a
+    margin is identically 0, so silently continuing would report a robust method
+    that is doing nothing.
+
+    Returns ``scales`` or, with ``with_reports``, ``(scales, reports)``.
+    """
+    if folds is None and stat != "sd":
+        folds = instance_folds(instance, seed)
+    mds, seen = [], set()
+    for constraint in instance.constraints:
+        for md in constraint.models_data:
+            if id(md) not in seen:
+                seen.add(id(md))
+                mds.append(md)
+    scales, reports = {}, {}
+    for md in mds:
+        m_type, m_params = model_config_map[id(md)]
+        scales[id(md)] = label_scale(
+            md.y_train, stat=stat, X=md.X_train, model_type=m_type,
+            model_params=m_params, folds=folds,
+        )
+        if with_reports:
+            reports[id(md)] = label_scale_report(
+                md.y_train, X=md.X_train, model_type=m_type,
+                model_params=m_params, folds=folds,
+            )
+    degenerate = [k for k, v in scales.items() if not np.isfinite(v) or v <= 0]
+    if degenerate:
+        raise ValueError(
+            f"{len(degenerate)} outcome(s) have a non-positive label scale under "
+            f"stat={stat!r}; D would be empty. Check the training labels."
+        )
+    return (scales, reports) if with_reports else scales
+
+
 def _normality_report(resid: np.ndarray) -> dict:
     """Shape of the out-of-fold residuals: the evidence for or against
     :func:`chi2_radius`.
@@ -644,28 +700,15 @@ class ScenarioBank:
                   flush=True)
 
         stat = scale_stat or uset.scale_stat
-        # Out-of-fold scales need a fold scheme; use the problem's own (temporal on
-        # gastric, so the scale estimate cannot leak future information).
-        if folds is None and stat != "sd":
-            folds = instance_folds(instance, seed)
-        self.scales: Dict[int, float] = {}
-        self.reports: Dict[int, dict] = {}
-        for md in self._mds:
-            m_type, m_params = model_config_map[id(md)]
-            self.scales[id(md)] = label_scale(
-                md.y_train, stat=stat, X=md.X_train, model_type=m_type,
-                model_params=m_params, folds=folds,
-            )
-            self.reports[id(md)] = label_scale_report(
-                md.y_train, X=md.X_train, model_type=m_type,
-                model_params=m_params, folds=folds,
-            )
-        degenerate = [k for k, v in self.scales.items() if not np.isfinite(v) or v <= 0]
-        if degenerate:
-            raise ValueError(
-                f"{len(degenerate)} outcome(s) have a non-positive label scale under "
-                f"stat={stat!r}; D would be empty. Check the training labels."
-            )
+        # Shared with the margin baseline (src/methods/margin.py), which tightens
+        # by `margin * scale(y_c)` against D's `rho * scale(y_c) * sqrt(n)`: one
+        # estimator, so the two dials are multiples of the same number rather than
+        # of two independently-estimated ones. Folds default to the problem's own
+        # scheme, so an out-of-fold scale cannot leak future information.
+        self.scales, self.reports = instance_label_scales(
+            instance, model_config_map, stat=stat, seed=seed, folds=folds,
+            with_reports=True,
+        )
 
         self._deltas: Dict[int, List[np.ndarray]] = {id(md): [] for md in self._mds}
         self._models: Dict[int, List] = {id(md): [] for md in self._mds}
@@ -821,22 +864,51 @@ class ScenarioBank:
         under-reports adverse events under-reports across all toxicity endpoints")
         never covered survival anyway.
 
-        **DLT is excluded from that average, not from the group.**
-        ``coherent_exclude`` names OS alone, so the branch below hands
-        ``dlt_constraint`` the shared ``u``: ``delta_dlt = R_dlt * u``, exactly
-        collinear with the other four before clipping (measured +1.0000; the
-        ``_clip_to_bounds`` call is the only decorrelator, leaving +0.94..+0.96 at
-        rho=1 with ~20% of rows clipped, +0.97..+0.99 at rho=0.25). Two
-        consequences: the group spends five outcomes' radius on four degrees of
-        freedom, and the draw is not a *consistent* relabeling -- delta perturbs
-        each outcome's percentile labels independently, so no delta in D leaves
-        perturbed-DLT equal to ``1 - prod(1 - perturbed tox)``. The under-reporting
-        story determines DLT's shift from the four components rather than leaving
-        it free, so coherent overstates it; the sign is still right and only the
-        magnitude is asserted. Fixing it means perturbing the four components,
-        re-deriving DLT through the identity and re-percentiling -- a change here
-        and in the label construction, not a config flip. See objection (4) in
-        CLAUDE.md.
+        **Which is why the production setting is now INCOHERENT** (config.yaml,
+        2026-08-21). Coherent asserts +1 where the data says +0.28; incoherent
+        asserts 0. Neither is right, but the block that genuinely *was* near +1 --
+        DLT against its four components -- is no longer a draw at all, so what is
+        left for a shared direction to model is the +0.28 block alone, and 0 is
+        the closer of the two available assertions. Coherent survives as
+        ``run_rho_sweep.py --coherent``.
+
+        **DLT is DERIVED, not drawn** (``uncertainty.derive_linked_labels``).
+        ``DLT_PROP = 1 - prod(1 - tox)`` holds exactly (2e-16) over the four
+        modeled toxicities, so DLT carries no degree of freedom of its own. It used
+        to take the shared ``u`` anyway (``delta_dlt = R_dlt * u``, collinear at
+        +1.0000 before clipping), which spent five outcomes' radius on four d.o.f.
+        and made every draw a relabeling of no trial: perturbed DLT did not equal
+        the identity applied to the perturbed components. The instance now declares
+        a :class:`~src.data.generate.LabelLink`, resolved in
+        :meth:`_resolve_links`, and the loop below hands DLT
+        ``derive(perturbed components) - baseline`` instead. Measured on gastric,
+        B=8 at seed 42, production cell (incoherent, ``clip_labels`` on):
+
+        ==========================  ===========  ===========
+        identity error, max         linked       free draw
+        ==========================  ===========  ===========
+        rho = 0.25                  6.25e-3      0.430
+        rho = 1.0                   6.25e-3      0.994
+        ==========================  ===========  ===========
+
+        The 6.25e-3 floor is 2/320 of a percentile rank and is not the link's
+        error: recomputing the identity in float differs from the stored
+        ``DLT_PROP`` by ~2e-16, which flips ties inside ``percentileofscore`` on 44
+        of 320 rows. ``baseline`` absorbs exactly that, so a zero component shift
+        derives a zero DLT shift to 0.0e0.
+
+        Two consequences worth stating. The derived shift correlates with a
+        component's at **+0.43..+0.46** under incoherent draws (vs +0.02 when DLT
+        drew freely, and +0.97..+0.99 under the old coherent draw) -- dependence
+        the identity implies rather than dependence asserted. And its size is now
+        an *output*: ``||delta_dlt||`` runs 1.19x its own ``R_dlt`` at rho=0.25 and
+        0.89x at rho=1 (clipping bites harder there), so the target's nominal
+        radius is **reported, not imposed** (:meth:`_log_links`) -- that radius
+        described a free outcome, and DLT has no freedom left. The link reaches the
+        bank, i.e. CP and the wrapper; robust_reg's per-outcome training adversary
+        is unlinked, since its inner max would have to become joint across
+        outcomes with no closed form. Under ``dlt_only`` the components are not
+        modeled, ``filter_constraints`` drops the link and DLT draws freely again.
         """
         rng = np.random.RandomState(self.seed + b)
         out = {}

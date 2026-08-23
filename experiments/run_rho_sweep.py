@@ -1,15 +1,45 @@
-"""Global rho sweep: every method read off one shared-D axis.
+"""Global PARAMETER sweep: every method walked along its own conservatism dial.
 
-``rho`` is the single size parameter of the ellipsoidal D
-(``R_c = rho * scale(y_c) * sqrt(n)``, see :mod:`src.methods.uncertainty`). It
-defines the problem all three methods solve, so it is **swept and reported, not
-fitted**: D is literally shared at every point of the axis, and that curve is
-where the shared-D comparison is read. The derived rho*(method) is then what the
-EVALUATION run uses -- each method at its own rho* -- so evaluation matches
-held-out feasibility rather than D. The criterion is what keeps that honest:
-held-out feasibility on training folds. Never fit rho against the GT ensemble (it
-tunes to the judge) or against synthetic's known ``noise_std`` (it calibrates D
-to the data-generating process, which CP would then win by construction).
+Each method is swept over the parameter that actually makes it conservative
+(``SWEEP_PARAM``), not over one quantity imposed on all of them:
+
+  ``rho``     cp, wrapper, robust_reg -- the radius of the shared ellipsoidal D
+              (``R_c = rho * scale(y_c) * sqrt(n)``, see
+              :mod:`src.methods.uncertainty`). **Within one grid value these
+              three still face the SAME D**, which is what the shared-D
+              comparison rests on. Only robust_reg's own dial tracks the axis;
+              CP's tau and the wrapper's alpha stay fixed and are ablated.
+  ``margin``  margin -- the RHS shift ``m`` in ``f(x) <= b - m*scale(y_c)``. It
+              builds no D, so sweeping rho for it would re-measure one number.
+  ``None``    nominal, cmicl -- no conservatism parameter. nominal has none by
+              definition; cmicl's alpha is pinned to ``1 - feas_target`` at
+              evaluation rather than chosen here. Each is scored ONCE and
+              repeated across the axis as a reference level.
+
+**One grid, because the units are shared.** rho, tau and the margin are all in
+unexplained standard deviations, so the same number means the same size of
+assumption for each method. What differs is what that assumption IS: for
+cp/wrapper/robust_reg a point on the axis is an assumed radius, for margin it is
+a tightening the optimizer simply pays for. Reading a margin curve as a "rho" is
+the one mistake this file is arranged to prevent -- hence the ``param_swept``
+column on every row. ``--margin-grid`` gives the margin its own values when the
+useful range of a direct RHS shift differs from that of an assumed radius.
+
+The parameter is **swept and reported, not fitted**, and the derived
+param*(method) is what the EVALUATION run uses -- each method at its own -- so
+evaluation matches held-out feasibility rather than D. The criterion is what
+keeps that honest: held-out feasibility on training folds. Never fit rho against
+the GT ensemble (it tunes to the judge) or against synthetic's known
+``noise_std`` (it calibrates D to the data-generating process, which CP would
+then win by construction).
+
+**What param* means differs by method, and the table says which.** For a
+rho-swept method it is capacity: the largest assumed uncertainty it still
+delivers under. For margin it is price: the largest RHS shift that still solves
+on enough contexts. Both are read by the same rule from the same curve, and the
+comparison that matters is not param* against param* but **objective at equal
+feasibility** -- which is why the curve, not the star table, is the primary
+output.
 
 Every output is scoped by the sweep CELL -- coherence and whether CP's bank B was
 matched to the wrapper's P -- via a ``_coh``/``_incoh``[``_matchbank``] suffix, so
@@ -66,6 +96,24 @@ Two things to know before reading a sweep:
   CP and the wrapper draw from. It therefore tracks rho, and ``--knobs`` cannot
   override it. CP's tau and the wrapper's alpha are genuinely separate dials and
   stay fixed.
+- **C-MICL is NOT on this axis and is not ablated here.** It faces no D, so every
+  cell of a rho curve would re-measure the same number, and its alpha is not a
+  dial to be chosen either: it is FIXED at ``1 - feas_target`` by definition,
+  because the conformal level and the feasibility target are the same quantity
+  (see ``methods.cmicl.alpha`` in config.yaml). It therefore enters at
+  EVALUATION only, at the target this sweep's rho* is read at -- the other
+  methods search for the rho that delivers 0.9, C-MICL asserts alpha=0.1 and is
+  scored on whether it does. Passing ``--methods ... cmicl`` still works and is
+  occasionally useful as a flat reference line, but it is not part of the
+  protocol.
+- **The margin baseline is a reference line too, and the one to beat.**
+  ``margin`` is nominal against a tightened RHS (``rhs - m * scale(y_c)``, one
+  dimensionless dial for the whole problem), so like C-MICL it faces no D and is
+  flat in rho. It is here because it is the cheapest thing that buys feasibility:
+  a shared-D curve that does not sit above it at equal feasibility is paying for
+  machinery that a one-line RHS shift delivers. Its own axis is the margin,
+  swept by ``--ablate``, and it is monotone -- an ``m*`` at any target exists,
+  which is exactly what robust_reg's falling gastric curve does not give.
 - **B != P is a confound on the rho* table.** CP samples D with B=200 draws, the
   wrapper with P=20. A wrapper that needs a smaller rho may simply be sampling
   the same D more sparsely. ``--match-bank`` sets B=P for an apples-to-apples
@@ -101,7 +149,39 @@ DEFAULT_GRID = [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]
 # Ablation grids, run at the CHOSEN rho rather than swept jointly with it.
 DEFAULT_TAU_GRID = [1.0, 0.1, 0.01, 0.001]
 DEFAULT_ALPHA_GRID = [0.0, 0.1, 0.2, 0.3, 0.5]
+# C-MICL has no grid here on purpose: its alpha is pinned to 1 - feas_target
+# rather than chosen, so there is nothing to ablate. See the module docstring.
+# The margin baseline's dial, in unexplained-sd units -- the SAME units as rho,
+# so this deliberately mirrors DEFAULT_GRID. A margin of m and a rho of m both
+# mean "one m-th of an unexplained sd", and running them on one grid is what
+# makes "CP at rho=0.75 vs a 0.75-sd RHS shift" a sentence worth writing.
+DEFAULT_MARGIN_GRID = list(DEFAULT_GRID)
 OUT_DIR = "results/rho_sweep"
+
+# Which parameter the sweep moves for each method. This is what makes the run a
+# PARAMETER sweep rather than a rho sweep: every method is walked along its own
+# conservatism dial, and the shared grid is read in the units they have in common
+# (unexplained sds), NOT as one physical set D imposed on all of them.
+#
+#   rho     cp / wrapper / robust_reg -- the radius of the shared D. Within one
+#           grid value these three still face the SAME set, which is what the
+#           shared-D comparison rests on; only robust_reg's own dial tracks it.
+#   margin  margin -- the RHS shift m. It builds no D at all, so sweeping rho for
+#           it would re-measure one number; its dial IS the axis.
+#   None    nominal / cmicl -- no conservatism parameter to move. nominal has
+#           none by definition; cmicl's alpha is pinned to 1 - feas_target at
+#           evaluation rather than chosen here. Scored ONCE, then repeated across
+#           the axis as a reference line.
+SWEEP_PARAM = {
+    "cp": "rho", "wrapper": "rho", "robust_reg": "rho",
+    "margin": "margin",
+    "nominal": None, "cmicl": None,
+}
+
+
+def sweep_param(method):
+    """The parameter ``method`` is swept over, or ``None`` if it has none."""
+    return SWEEP_PARAM.get(method, "rho")
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +329,8 @@ def _setup_gastric(config, args):
         # Bank seed only: `folds` above were already built from the config seed
         # (and gastric's scheme is temporal, so they do not move at all).
         cell["bootstrap_seed"] = bank_seed
+        if getattr(args, "separation", None):
+            cell["cp_separation"] = args.separation
         if args.match_bank:
             cell["cp_n_scenarios"] = int(config["uncertainty"].get("n_bootstrap", 20))
         build, _ = _method_build_map(method, cell, ranges,
@@ -325,7 +407,18 @@ The single-decision problems (``--problem synthetic``, ``--problem reactor``)
     n = getattr(args, "n_folds", None)
     seed = getattr(args, "seed", None)
     model = getattr(args, "synth_model", None)
+    # CP's separation path normally follows the coherence the cell is already named
+    # for (coherent bank -> coherent separation, incoherent -> per-constraint), so
+    # `_coh`/`_incoh` scopes it with no extra token -- which is why every committed
+    # `_coh` curve still reproduces. A FORCED mismatch does need one: the two paths
+    # cut different adversaries and measure tau on different statistics (mean over
+    # units vs per unit), and the resume key carries neither, so a shared
+    # checkpoint would hand the forced run the auto run's rows.
+    sep = getattr(args, "separation", None)
+    auto_sep = "coherent" if getattr(args, "coherent", False) else "incoherent"
+    sep_token = f"_sep{sep[:5]}" if (sep and sep != "auto" and sep != auto_sep) else ""
     return (("_coh" if args.coherent else "_incoh")
+            + sep_token
             + ("_matchbank" if getattr(args, "match_bank", False) else "")
             + (f"_f{int(n)}" if n else "")
             + (f"_m{model}" if model else "")
@@ -363,7 +456,18 @@ def run_sweep(config, args):
     knobs = _fixed_knobs(problem, args, config)
     bank_seed = _bank_seed(config, args)
     grid = [float(r) for r in (args.rho_grid or DEFAULT_GRID)]
+    margin_grid = [float(m) for m in (args.margin_grid or grid)]
     methods = args.methods or ["nominal", "cp", "wrapper", "robust_reg"]
+
+    def method_grid(method):
+        """The values THIS method is swept over.
+
+        One shared grid by default: rho, tau and the margin are all in unexplained-sd
+        units, so the same numbers mean the same size of assumption for each. The
+        margin can be given its own (``--margin-grid``) when the useful range of a
+        direct RHS shift differs from the useful range of an assumed radius.
+        """
+        return margin_grid if sweep_param(method) == "margin" else grid
 
     var = _variant_suffix(args)
     scores_path = os.path.join(OUT_DIR, f"{problem}_rho_sweep{var}.csv")
@@ -375,6 +479,11 @@ def run_sweep(config, args):
           f"coherent={args.coherent} folds={len(folds)} bank_seed={bank_seed} "
           f"sense={oracle.objective_sense}", flush=True)
     print(f"[rho-sweep] grid={grid}", flush=True)
+    if margin_grid != grid and "margin" in methods:
+        print(f"[rho-sweep] margin grid={margin_grid}", flush=True)
+    print("[rho-sweep] swept parameter: "
+          + ", ".join(f"{m}={sweep_param(m) or 'none (reference level)'}"
+                      for m in methods), flush=True)
     print(f"[rho-sweep] fixed knobs: {knobs}", flush=True)
     if not contextual:
         # Single-decision problems solve ONCE per fold, so held-out feasibility is
@@ -384,6 +493,24 @@ def run_sweep(config, args):
               f"quantized to 1/{len(folds)} = {1/len(folds):.2f}. Read the curve, "
               f"not rho*; raise --n-folds or use --problem gastric for a target "
               f"of {args.feas_target:g}.", flush=True)
+    if "margin" in methods:
+        # Swept on its OWN parameter, so its curve is a real curve -- but the axis
+        # under it is not the same physical quantity as the other methods'.
+        print(f"[rho-sweep] NOTE: margin is swept on its RHS margin m, not on rho "
+              f"({len(margin_grid)} values) -- it builds no D. Its curve is a "
+              f"conservatism curve like the others and in the same unexplained-sd "
+              f"units, but a point on it is a TIGHTENING, not an assumed radius. "
+              f"m* is the baseline a shared-D rho* must beat at equal feasibility.",
+              flush=True)
+    if "cmicl" in methods:
+        # cmicl is not part of the sweep protocol -- it belongs to the evaluation,
+        # at alpha = 1 - feas_target. Passed explicitly it still runs, as a flat
+        # reference line; say so rather than let a flat curve look like a result.
+        print(f"[rho-sweep] NOTE: cmicl is not a rho method -- it faces no D, so "
+              f"this curve is FLAT by construction and every cell re-measures the "
+              f"same number. Its alpha is pinned to 1 - feas_target "
+              f"({1 - float(args.feas_target):g}) at evaluation, not chosen here.",
+              flush=True)
     if args.match_bank:
         print("[rho-sweep] --match-bank: CP bank B set to the wrapper's P", flush=True)
 
@@ -406,6 +533,13 @@ def run_sweep(config, args):
         return d
 
     def row(d, method, **extra):
+        # `param`/`param_swept` say WHAT the axis value means for this method;
+        # `rho` is kept as the axis column so saved curves, pool_rho_seeds.py and
+        # the figures keep reading the same name. For a margin row `rho` is the
+        # margin, which is why param_swept must be consulted before calling any
+        # axis value a radius.
+        extra.setdefault("param", extra.get("rho"))
+        extra.setdefault("param_swept", sweep_param(method) or "none")
         return dict(problem=problem, method=method,
                     feasibility=d["feas"], objective=d["obj"],
                     solved_frac=d["solved"], status=d["status"],
@@ -418,14 +552,32 @@ def run_sweep(config, args):
                     seed=bank_seed, **extra)
 
     rows = []
-    for rho in grid:
-        uset = dataclasses.replace(base_uset, rho=rho)
-        for method in methods:
-            # robust_reg's label_eps IS the D radius -- it must track rho, or its
-            # adversary trains against a different set than the bank draws from.
-            knob = rho if method == "robust_reg" else knobs.get(method, 0.0)
-            d = score(f"{method}@rho={rho:g}", method, uset, knob)
-            rows.append(row(d, method, rho=rho, knob=knob, phase="rho_sweep"))
+    for method in methods:
+        pname = sweep_param(method)
+        if pname is None:
+            # No swept parameter: score ONCE, then emit the same row at every grid
+            # point so the figure keeps its horizontal reference line. Before this
+            # the cell was re-SOLVED at each rho for an identical answer -- 7
+            # nominal solves per sweep. The repeat is explicit in param_swept.
+            d = score(method, method, base_uset, knobs.get(method, 0.0))
+            for p_val in grid:
+                rows.append(row(d, method, rho=p_val, param=np.nan,
+                                param_swept="none",
+                                knob=knobs.get(method, 0.0), phase="param_sweep"))
+            continue
+        for p_val in method_grid(method):
+            if pname == "rho":
+                # cp / wrapper / robust_reg move D itself. robust_reg's label_eps
+                # IS the radius, so its dial tracks the axis; cp's tau and the
+                # wrapper's alpha stay fixed at their own values.
+                uset = dataclasses.replace(base_uset, rho=p_val)
+                knob = p_val if method == "robust_reg" else knobs.get(method, 0.0)
+            else:
+                # margin: the axis IS its dial, and it never builds a D.
+                uset, knob = base_uset, p_val
+            d = score(f"{method}@{pname}={p_val:g}", method, uset, knob)
+            rows.append(row(d, method, rho=p_val, param=p_val, param_swept=pname,
+                            knob=knob, phase="param_sweep"))
 
     df = pd.DataFrame(rows)
     tidy = os.path.join(OUT_DIR, f"{problem}_rho_curve{var}.csv")
@@ -457,6 +609,10 @@ def run_sweep(config, args):
                       uset_a, alpha)
             ab.append(row(d, "wrapper", rho=rho_a, knob=alpha,
                           phase="alpha_ablation"))
+        # No margin ablation: the margin IS the main axis now, so an ablation of
+        # it would re-run the sweep. m* is read off the sweep curve, like rho*.
+        # No C-MICL ablation: its alpha is pinned to 1 - feas_target, not chosen,
+        # so there is no dial to show was uncherry-picked.
         if ab:
             adf = pd.DataFrame(ab)
             apath = os.path.join(OUT_DIR, f"{problem}_ablations{var}.csv")
@@ -492,7 +648,10 @@ def _rho_star_from_csv(problem, target, min_solved, sense="min",
             f"(pass the same --coherent/--incoherent and --match-bank flags the "
             f"sweep used)")
     df = pd.read_csv(path)
-    df = df[df.get("phase", "rho_sweep") == "rho_sweep"]
+    # "param_sweep" is the current name; "rho_sweep" is what curves written before
+    # the sweep became per-method parameter carry. Both are the main-curve rows, so
+    # a saved curve from either era re-derives.
+    df = df[df.get("phase", "param_sweep").isin(("param_sweep", "rho_sweep"))]
     if exclude_capped:
         df = df[df["n_capped"] == 0]
     return _rho_star(df, problem, target, sense, min_solved,
@@ -506,7 +665,13 @@ def _pick_ablation_rho(star, grid):
     and taking it from the sweep's own answer avoids inventing a third number.
     """
     if star is not None and "rho_star" in star:
-        vals = [v for v in star["rho_star"].tolist() if v == v]   # drop NaN
+        st = star
+        # Only the rho-swept methods. A margin m* is in the same units but is not
+        # a radius, and the ablations being placed are CP's tau and the wrapper's
+        # alpha -- both of which live at a point on the D axis.
+        if "param_swept" in st:
+            st = st[st["param_swept"] == "rho"]
+        vals = [v for v in st["rho_star"].tolist() if v == v]   # drop NaN
         if vals:
             return float(np.median(vals))
     return float(np.median(grid))
@@ -563,6 +728,12 @@ def _fixed_knobs(problem, args, config):
         # robust_reg's knob tracks rho and is overwritten per cell; the value here
         # is never used, but is kept so the printed dict is not misleadingly empty.
         "robust_reg": float("nan"),
+        # C-MICL's dial. Unlike the other three it is NOT a setting on D -- see
+        # the flat-in-rho warning in run_sweep.
+        "cmicl": float((methods_cfg.get("cmicl", {}) or {}).get("alpha", 0.1)),
+        # The margin baseline's dial. Like cmicl's it is NOT a setting on D, so
+        # the sweep holds it fixed and the ablation is where it actually moves.
+        "margin": float((methods_cfg.get("margin", {}) or {}).get("margin", 0.5)),
     }
     _warn_if_degenerate(out)
     return out
@@ -611,6 +782,23 @@ def _rho_star(df, problem, target, sense, min_solved, out_suffix=""):
     rows = []
     for method, g_all in df.groupby("method"):
         g_all = g_all.sort_values("rho")
+        # A method with no swept parameter has no param*: its rows are one scored
+        # cell repeated along the axis. Reporting "grid_max, censored" for it would
+        # assert it absorbed the whole grid, the opposite of the truth -- it was
+        # never moved. Its feasibility is still carried, as the reference level.
+        swept = str(g_all["param_swept"].iloc[0]) if "param_swept" in g_all else "rho"
+        if swept == "none":
+            b = g_all.iloc[-1]
+            rows.append(dict(method=method, param_swept=swept, rho_star=np.nan,
+                             feasibility=float(b["feasibility"]),
+                             objective=float(b["objective"]),
+                             solved_frac=float(b["solved_frac"]),
+                             n_capped=int(b.get("n_capped", 0) or 0),
+                             master_time_s=float(b["master_time_s"]),
+                             test_time_per_point_s=float(b["test_time_per_point_s"]),
+                             bound="no_param",
+                             note="no swept parameter; constant reference level"))
+            continue
         # Censoring is a property of the GRID, so the max comes from the unfiltered
         # group -- before solved_frac drops anything.
         grid_max = float(g_all["rho"].max())
@@ -622,7 +810,8 @@ def _rho_star(df, problem, target, sense, min_solved, out_suffix=""):
         g = g_all[g_all["solved_frac"] >= min_solved]
         ok = g[g["feasibility"] >= target]
         if ok.empty:
-            rows.append(dict(method=method, rho_star=np.nan, feasibility=np.nan,
+            rows.append(dict(method=method, param_swept=swept,
+                             rho_star=np.nan, feasibility=np.nan,
                              objective=np.nan, solved_frac=np.nan, n_capped=0,
                              master_time_s=np.nan, test_time_per_point_s=np.nan,
                              bound="none", note=f"never reaches feas>={target:g}"))
@@ -656,7 +845,8 @@ def _rho_star(df, problem, target, sense, min_solved, out_suffix=""):
                              f"both bind above rho={rho_b:g}")
         if int(best.get("n_capped", 0) or 0):
             notes.append(f"n_capped={int(best['n_capped'])} (incumbent, not converged)")
-        rows.append(dict(method=method, rho_star=float(best["rho"]),
+        rows.append(dict(method=method, param_swept=swept,
+                         rho_star=float(best["rho"]),
                          feasibility=float(best["feasibility"]),
                          objective=float(best["objective"]),
                          solved_frac=float(best["solved_frac"]),
@@ -684,8 +874,17 @@ def main():
                    help="reactor is the C-MICL DMA-MR case study: the only "
                         "instance with a MECHANISTIC (ODE) ground truth")
     p.add_argument("--rho-grid", type=float, nargs="+", default=None,
-                   help=f"rho values to sweep (default {DEFAULT_GRID})")
-    p.add_argument("--methods", nargs="+", default=None)
+                   help=f"values to sweep (default {DEFAULT_GRID}). Read as rho "
+                        f"by cp/wrapper/robust_reg and as the margin m by margin "
+                        f"unless --margin-grid overrides; all are in "
+                        f"unexplained-sd units")
+    p.add_argument("--methods", nargs="+", default=None,
+                   help="default: nominal cp wrapper robust_reg. Add margin for "
+                        "the feasibility-tuned nominal baseline -- it is swept on "
+                        "its own dial m (it faces no D), so its curve is the one "
+                        "a shared-D rho* has to beat. cmicl also runs if named, "
+                        "but has no swept parameter: its alpha is pinned to "
+                        "1 - feas_target, so it enters as a reference level")
     p.add_argument("--knobs", default=None,
                    help="fixed dials, e.g. 'cp=0.01,wrapper=0.2'; default reads "
                         "methods.cp.dist_tol_rel and methods.wrapper.alpha from "
@@ -700,8 +899,21 @@ def main():
     p.add_argument("--min-solved", type=float, default=0.5,
                    help="drop cells whose solved_frac is below this before "
                         "reading rho* (default 0.5)")
-    p.add_argument("--coherent", action="store_true", default=True)
-    p.add_argument("--incoherent", dest="coherent", action="store_false")
+    # Incoherent is the production cell since 2026-08-21 (config.yaml says why);
+    # --coherent is the ablation. The cell suffix follows the flag either way, so
+    # no curve changes meaning -- but the DEFAULT cell is now _incoh, and an
+    # existing _coh checkpoint will not be resumed by a bare invocation.
+    p.add_argument("--incoherent", dest="coherent", action="store_false",
+                   default=False)
+    p.add_argument("--coherent", dest="coherent", action="store_true")
+    p.add_argument("--separation", dest="separation", default=None,
+                   choices=("auto", "coherent", "incoherent"),
+                   help="CP separation path. Default 'auto' follows the bank: a "
+                        "coherent bank cuts one shared draw per iteration (where "
+                        "the alpha=0 == tau->0 wrapper equivalence lives), an "
+                        "incoherent one ranks the draws per constraint and admits "
+                        "a model for each. Forcing a mismatch is legal, reported, "
+                        "and gets its own cell. Gastric-only in effect.")
     p.add_argument("--match-bank", action="store_true",
                    help="set CP's bank B to the wrapper's P, removing the B!=P "
                         "confound from the rho* comparison")
@@ -716,6 +928,12 @@ def main():
     p.add_argument("--alpha-grid", type=float, nargs="+", default=None,
                    help=f"wrapper alpha ablation grid (default {DEFAULT_ALPHA_GRID}); "
                         "0/0.1/0.2/0.5 are OptiCL's published WFP values")
+    p.add_argument("--margin-grid", type=float, nargs="+", default=None,
+                   help="values for the margin method only; default is the same "
+                        "grid as --rho-grid, since a margin m and a radius rho "
+                        "are both in unexplained-sd units. Give it its own when "
+                        "the useful range of a direct RHS shift differs from that "
+                        "of an assumed radius. m=0 is exactly nominal")
     p.add_argument("--n-folds", type=int, default=None,
                    help="single-decision problems only (synthetic, reactor): "
                         "KFold splits, default cv_calibration.n_kfold = 10. "
@@ -759,6 +977,14 @@ def main():
     # a re-derivation reads back the curve the sweep wrote. Gastric is untouched:
     # its folds are temporal (n_kfold is inert there) and its models come from
     # --cv-configs, so adding either token would only make its filenames lie.
+    # Settle CP's separation path before anything reads a cell name: --rho-star-only
+    # re-derives rho* from the curve the sweep wrote, so it has to resolve the
+    # same suffix a solving run would.
+    if args.separation is None:
+        args.separation = (
+            config.get("methods", {}).get("cp", {}).get("separation", "auto")
+        )
+
     if args.problem in ("synthetic", "reactor"):
         args.n_folds = _synth_n_folds(config, args)
         from experiments.run_sweep import synth_model_spec, reactor_model_spec

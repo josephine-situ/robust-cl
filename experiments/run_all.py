@@ -1,8 +1,10 @@
 """
 Main experiment runner.
 
-Runs all five methods on a problem instance, evaluates, and
-saves results.
+Runs every method on a problem instance, evaluates, and saves results.
+
+C-MICL is included and is the odd one out: it faces no D, so ``uncertainty.rho``
+does not reach it (see src/methods/cmicl.py).
 
 Usage:
     python experiments/run_all.py
@@ -117,10 +119,19 @@ def run_experiment(config, cv_configs=None, seed=None, knobs=None):
     robust_reg_cfg = config["methods"].get("robust_reg", {})
     wrapper_cfg = config["methods"]["wrapper"]
     cp_cfg = config["methods"]["cp"]
+    cmicl_cfg = config["methods"].get("cmicl", {})
+    margin_cfg = config["methods"].get("margin", {})
     fixed_knob = {
         "nominal": 0.0,
         "robust_reg": knobs.get("robust_reg", robust_reg_cfg.get("label_eps", 0.1)),
         "wrapper": knobs.get("wrapper", wrapper_cfg["alpha"]),
+        # C-MICL's dial is a conformal miscoverage level. It is the one method
+        # here that never reads uncertainty.rho, so it does not move when D does.
+        "cmicl": knobs.get("cmicl", cmicl_cfg.get("alpha", 0.1)),
+        # Feasibility-tuned nominal: rhs - margin * scale(y_c). The other method
+        # here that never reads uncertainty.rho, and the cheap baseline the rest
+        # have to beat -- m=0 reproduces nominal exactly.
+        "margin": knobs.get("margin", margin_cfg.get("margin", 0.5)),
         # Relative distance tolerance tau -- CP's robustness knob on the basic
         # (synthetic) path too. Without it the basic separation cuts every
         # violation > 1e-6, so CP has no lever and over-cuts to no solution.

@@ -287,7 +287,13 @@ def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
     full-length copy would (a) index past the fold's own rows -- an ``IndexError``
     inside ``label_scale`` on every gastric fold -- and (b) were it in range, put
     held-out rows into the scale estimate. D's radius is now estimated from the
-    fold's rows alone."""
+    fold's rows alone.
+
+    ``label_links`` carries a ``baseline`` of the same length, for the same reason.
+    ``LabelLink.derive`` is row-wise (every map in it is elementwise against a
+    fixed full-train reference), so ``baseline[train_idx]`` is exactly
+    ``derive`` evaluated on the fold's own unperturbed labels -- subsetting it is
+    not an approximation."""
     new_constraints = []
     for c in base.constraints:
         new_mds = [
@@ -302,6 +308,8 @@ def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
         new_constraints.append(dataclasses.replace(c, models_data=new_mds))
     tr_pts = base.trust_region_points
     years = base.train_pub_years
+    links = [dataclasses.replace(ln, baseline=np.asarray(ln.baseline)[train_idx])
+             for ln in (base.label_links or [])]
     return dataclasses.replace(
         base,
         constraints=new_constraints,
@@ -309,6 +317,7 @@ def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
         X_train=(base.X_train[train_idx] if base.X_train is not None else None),
         trust_region_points=(tr_pts[train_idx] if tr_pts is not None else None),
         train_pub_years=(years[train_idx] if years is not None else None),
+        label_links=links,
     )
 
 

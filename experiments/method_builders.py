@@ -27,7 +27,20 @@ strength maps stay in ``run_chemo_robust``. Only the argument lists live here.
                 cp_distance, cp_dist_tol, cp_trace_path, cp_robustify_objective,
                 cp_eval_mode, cp_nearest_distance, cp_cut_eviction,
                 cp_scenario_source, cp_n_scenarios, cp_d0_quantile,
-                cp_tolerance_basis, cp_objective_monotone, cp_cut_whole_scenario
+                cp_tolerance_basis, cp_objective_monotone, cp_cut_whole_scenario,
+                cp_separation, cp_cut_rollback
+    cmicl       cmicl_cal_frac, cmicl_width_model_type, cmicl_width_model_params,
+                cmicl_width_floor_frac, cmicl_multiplicity,
+                cmicl_robustify_objective
+    margin      margin_scale_stat
+
+``cmicl`` and ``margin`` are the two methods that read no ``uncertainty_set``.
+C-MICL's tightening comes from held-out residuals and the margin baseline's from
+a fitted dial, neither from the shared D (see :mod:`src.methods.cmicl`,
+:mod:`src.methods.margin`), so both are flat in rho by construction. Both still
+take ``bootstrap_seed``: it moves C-MICL's calibration SPLIT and the margin's
+fold scheme for ``scale(y_c)`` -- the same role the seed plays for the other
+methods' draws, so a multi-seed sweep varies every method's own randomness.
 """
 
 from functools import partial
@@ -36,6 +49,8 @@ from src.methods.nominal import resolve_mip_gap, solve_nominal
 from src.methods.robust_regression import solve_robust_regression
 from src.methods.wrapper import solve_wrapper, solve_tree_violation_wrapper
 from src.methods.cp import solve_cp
+from src.methods.cmicl import solve_cmicl
+from src.methods.margin import solve_margin
 from src.methods.uncertainty import uncertainty_set_from_config
 
 
@@ -78,6 +93,8 @@ def cp_solver(settings, model_type, model_params, cp_dist_tol_rel=None):
         cp_objective_monotone=settings["cp_objective_monotone"],
         cp_mip_gap=settings["mip_gap"],
         cp_cut_whole_scenario=settings["cp_cut_whole_scenario"],
+        cp_separation=settings["cp_separation"],
+        cp_cut_rollback=settings["cp_cut_rollback"],
         cp_uncertainty=settings["uncertainty_set"],
     )
 
@@ -89,8 +106,9 @@ def build_method(method, knob, model_type, model_params, settings,
     One knob per method, in its own native units: CP ``tau``
     (``cp_dist_tol_rel``; ``None`` falls back to the absolute
     ``settings["cp_dist_tol"]``), wrapper ``alpha``, robust_reg ``label_eps``,
-    robust_param ``rho``, tree_violation ``alpha``. ``nominal`` has none and
-    ignores ``knob``.
+    cmicl ``alpha`` (conformal miscoverage), margin ``margin`` (RHS tightening
+    in unexplained-sd units), robust_param ``rho``, tree_violation ``alpha``.
+    ``nominal`` has none and ignores ``knob``.
 
     ``mip_gap`` is ``settings["mip_gap"]`` for all of them: the methods are
     compared on their objective, so a per-method gap would confound that
@@ -141,6 +159,31 @@ def build_method(method, knob, model_type, model_params, settings,
             robustify_objective=settings["wrapper_robustify_objective"],
             mip_gap=mip_gap,
         )
+    if method == "cmicl":
+        # The one method with no uncertainty_set argument: C-MICL's tightening
+        # comes from held-out residuals, not from D. Its knob is the conformal
+        # miscoverage level alpha.
+        return partial(
+            solve_cmicl, model_type=model_type, model_params=model_params,
+            alpha=knob, cal_frac=settings["cmicl_cal_frac"],
+            width_model_type=settings["cmicl_width_model_type"],
+            width_model_params=settings["cmicl_width_model_params"],
+            width_floor_frac=settings["cmicl_width_floor_frac"],
+            multiplicity=settings["cmicl_multiplicity"],
+            seed=seed, rho=0.0,
+            robustify_objective=settings["cmicl_robustify_objective"],
+            mip_gap=mip_gap,
+        )
+    if method == "margin":
+        # Feasibility-tuned nominal: same fit, same MIP, rhs moved in by
+        # knob * scale(y_c) per constraint. No uncertainty_set -- it faces no D,
+        # so its rho-sweep curve is flat by construction and it is read as a
+        # reference line. `seed` reaches only the fold scheme behind scale(y_c).
+        return partial(
+            solve_margin, model_type=model_type, model_params=model_params,
+            margin=knob, scale_stat=settings["margin_scale_stat"], seed=seed,
+            rho=0.0, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap,
+        )
     if method == "cp":
         return cp_solver(settings, model_type, model_params,
                          cp_dist_tol_rel=knob)
@@ -171,6 +214,8 @@ def synth_settings(config, seed=None):
     cp_cfg = config["methods"].get("cp", {})
     wrap_cfg = config["methods"].get("wrapper", {})
     rr_cfg = config["methods"].get("robust_reg", {})
+    cm_cfg = config["methods"].get("cmicl", {})
+    mg_cfg = config["methods"].get("margin", {})
 
     return {
         "mip_gap": resolve_mip_gap(config),      # one gap for every method
@@ -207,4 +252,16 @@ def synth_settings(config, seed=None):
         "cp_tolerance_basis": cp_cfg.get("tolerance_basis", "scale"),
         "cp_objective_monotone": cp_cfg.get("objective_monotone", False),
         "cp_cut_whole_scenario": cp_cfg.get("cut_whole_scenario", True),
+        "cp_separation": cp_cfg.get("separation", "auto"),
+        "cp_cut_rollback": cp_cfg.get("cut_rollback", "forward"),
+        "cmicl_cal_frac": cm_cfg.get("cal_frac", 0.25),
+        "cmicl_width_model_type": cm_cfg.get("width_model_type") or None,
+        "cmicl_width_model_params": cm_cfg.get("width_model_params") or None,
+        "cmicl_width_floor_frac": cm_cfg.get("width_floor_frac", 0.05),
+        "cmicl_multiplicity": cm_cfg.get("multiplicity", "none"),
+        "cmicl_robustify_objective": cm_cfg.get("robustify_objective", False),
+        # Defaults to uncertainty.scale_stat: the margin is quoted in the same
+        # units as rho and tau, so it must be the same estimator.
+        "margin_scale_stat": mg_cfg.get("scale_stat")
+                             or unc.get("scale_stat", "oof_sd"),
     }

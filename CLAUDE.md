@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Research code for **robust constraint learning**: a trained model `f(x;theta)` is
 embedded as a constraint `f(x) <= b` inside an optimization problem, and noisy
 training labels yield models whose "optimal" decisions violate the *true*
-constraint. Four methods are benchmarked on a synthetic LP, the C-MICL DMA-MR
+constraint. Six methods are benchmarked on a synthetic LP, the C-MICL DMA-MR
 reactor (Ovalle et al. 2025, Sec. 5.1) and the OptiCL gastric-cancer case study
 (Maragno et al. 2025, Table 6).
 
@@ -39,6 +39,7 @@ uv run python experiments/verify_embedding.py           # MIP vs sklearn/xgb agr
 uv run python experiments/verify_embedding.py --problem synthetic   # CV-selected mlp
 uv run python experiments/verify_embedding.py --problem reactor     # CV-selected mlp
 uv run python experiments/run_adversary_probe.py        # is the random bank a weak adversary?
+uv run python experiments/probe_cmicl_cost_sampling.py  # does a SAMPLED c restore C-MICL's rate? (diagnostic; c stays ones everywhere else)
 sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu
 ```
 
@@ -46,15 +47,21 @@ sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu
 `geometry="ellipsoid"` regardless of `config.yaml`**:
 
 ```bash
-uv run python experiments/run_rho_sweep.py --problem gastric --ablate    # coherent cell (default)
-uv run python experiments/run_rho_sweep.py --problem gastric --incoherent --ablate
+uv run python experiments/run_rho_sweep.py --problem gastric --ablate    # incoherent cell (default since 2026-08-21)
+uv run python experiments/run_rho_sweep.py --problem gastric --coherent --ablate    # the ablation
 uv run python experiments/run_rho_sweep.py --problem gastric --match-bank    # B=P
 uv run python experiments/run_rho_sweep.py --problem synthetic   # 10 folds; feas quantized to 0.1
 uv run python experiments/run_rho_sweep.py --problem reactor     # ODE ground truth
 uv run python experiments/run_rho_sweep.py --seed 7          # repeat the sweep on another bank
+# The sweep is PER-METHOD PARAMETER (run_rho_sweep.SWEEP_PARAM): rho for
+# cp/wrapper/robust_reg, the RHS margin m for margin, nothing for nominal/cmicl
+# (scored once, repeated as a reference level). One grid, because all of them are
+# in unexplained-sd units. --margin-grid gives margin its own values.
+uv run python experiments/run_rho_sweep.py --problem gastric --methods nominal cp wrapper margin --ablate  # + the tuned-nominal baseline
+uv run python experiments/run_rho_sweep.py --problem reactor --methods nominal cp wrapper cmicl --ablate
 uv run python experiments/run_rho_sweep.py --rho-star-only --feas-target 0.8 --out-suffix _t080
-uv run python experiments/pool_rho_seeds.py --problem gastric --cell _coh  # spread across seeds
-uv run python experiments/plot_rho_sweep.py --suffix _coh    # -> results/figures/fig_rho_*.pdf
+uv run python experiments/pool_rho_seeds.py --problem gastric --cell _incoh  # spread across seeds
+uv run python experiments/plot_rho_sweep.py --suffix _incoh  # -> results/figures/fig_rho_*.pdf
 sbatch experiments/submit_rho_sweep.sh                       # seed job array; PROBLEM/COHERENCE/MATCH_BANK/RHO_GRID/SEEDS env
 ```
 
@@ -62,7 +69,10 @@ Grids: rho `[0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]`, tau `[1.0, 0.1, 0.01, 0.001]
 alpha `[0.0, 0.1, 0.2, 0.3, 0.5]`. Runs resume from a checkpoint keyed
 `(method@rho, knob)` **only**, so **always pass the cell flags** — otherwise a
 second cell resumes the first's rows and overwrites its curve. The cell is
-`_coh`/`_incoh` + `_matchbank` + `_f<n>` (`--n-folds`) + `_s<seed>` (`--seed`).
+`_coh`/`_incoh` + `_matchbank` + `_f<n>` (`--n-folds`) + `_m<model>` + `_s<seed>`
+(`--seed`). CP's separation path follows the coherence the cell is already named
+for, so it needs no token of its own; only a **forced** `--separation` mismatch
+adds one (`_sepcoher`/`_sepincoh`).
 
 **`--seed` is the bank axis** (since 2026-08-21). D is *sampled*: CP cuts against
 B=200 draws, the wrapper embeds P=20, so one curve cannot separate the method from
@@ -73,12 +83,45 @@ and the evaluation folds keep `uncertainty.bootstrap_seed` and stay bit-identica
 `pool_rho_seeds.py` writes `*_pooled.csv`: mean/sd of feasibility per (method,
 rho) and rho* per seed. With ~3 seeds that is a **range, not a CI**, and it leaves
 the training-draw half of Known gap #5 open (the folds are fixed by construction).
-`submit_rho_sweep.sh` runs one seed per array task (`SEEDS="42 7 13"`,
-`--array=0-2%2`), ablations on task 0 only, and **omits `robust_reg`** — see Known
-gaps #1; put it back with `METHODS="nominal cp wrapper robust_reg"`.
+`submit_rho_sweep.sh` runs one **(problem, seed) pair** per array task since
+2026-08-22 — `PROBLEMS="gastric reactor"` x `SEEDS="42 7 13"`, `--array=0-5%2`,
+seed varying fastest, so a truncated array still yields whole seed-sweeps of the
+first problem. Ablations run on the **first seed of each problem** (tasks 0 and
+3), not on global task 0, or the reactor would never get one. `PROBLEM=` singular
+still narrows to one problem and wins over `PROBLEMS`; **--array must be narrowed
+with it** (surplus tasks exit 0 saying "nothing to do", rather than failing).
+It **omits `robust_reg`** — see Known gaps #1; put it back with
+`METHODS="nominal cp wrapper robust_reg"`.
+
+**A seed is not a draw for every method.** `--seed` moves the METHODS'
+randomness: cp/wrapper's bank, robust_reg's refits, cmicl's calibration split. It
+does **not** reach `nominal` (`solve_nominal` takes no seed) and reaches `margin`
+only through the fold split behind `scale(y_c)` — which on **gastric is temporal
+and ignores the seed entirely**. Measured: gastric margin scales are
+bit-identical across seeds 42/7/13 (dlt 0.249513, blood 0.239812); synthetic
+moves ~0.6% (0.100790 / 0.100581 / 0.101148). So a pooled sd of 0 for nominal, or
+for margin on gastric, is **structural, not evidence of stability** — read it as
+"this method has nothing to resample", and do not report it beside a sampling
+method's spread as if the two were the same measurement.
+
+**No gastric result in the repo is current** (2026-08-21). Two changes hit every
+gastric bank at once: the production draw is now **incoherent** (`coherent:
+false`) and DLT is **derived** rather than drawn (`derive_linked_labels`). The
+default sweep cell is therefore `_incoh`, not `_coh`, and the committed `_coh`
+curves were produced with DLT on the shared direction — so they are neither the
+new production cell *nor* a valid `--coherent` ablation of it. Re-run both.
+Synthetic and the reactor declare no link and have one outcome, so coherence is
+vacuous there: **they are unaffected by this pair of changes.**
+
+**The 2026-08-22 incoherent separation path does NOT add to that.** CP's separation
+now follows the bank (below), so a **coherent** bank still cuts one shared scenario
+exactly as before — verified identical to the pre-change code on gastric, so every
+committed `_coh` curve reproduces. What changed is the `_incoh` cell, of which
+nothing was committed. The other three methods are untouched either way.
 
 **Only `results/rho_sweep/` and `results/figures/fig_rho_*` are current** —
-ellipsoid geometry and fixed temporal folds (2026-08-17/19). Everything else
+ellipsoid geometry and fixed temporal folds (2026-08-17/19), and on gastric only
+up to the paragraph above. Everything else
 (`results/gastric/` all <= 2026-08-13, `results/synthetic/`, `adversary_probe/`,
 `cv/*_robustness_knobs.json`) is `box_l1` and/or random-KFold-scaled. **Never read
 a `box_l1` number against an ellipsoid one**; re-run before citing.
@@ -90,7 +133,7 @@ synthetic are unaffected.
 
 ## Architecture
 
-### The four methods (`src/methods/`)
+### The five methods (`src/methods/`)
 
 Shared MIP scaffolding lives in `nominal.py` (`build_decision_vars`,
 `add_problem_constraints`, `embed_constraints`, objective builders); every method
@@ -129,11 +172,179 @@ synthetic/reactor) and the knob `ranges` / strength maps in `run_chemo_robust`.
   **wrapper objective numbers from before 2026-08-15 carry that bias** (up to 1.08
   months on gastric).
 - **`cp.py`** — Cutting Planes; see below.
+- **`margin.py`** — **feasibility-tuned nominal**, the cheap baseline the rest
+  have to beat, and the second method that never faces D. Same nominal fit, same
+  nominal MIP, RHS moved in:
+  `sum_m w_m f_m(x) <= rhs - m_c`, `m_c = margin * sum_m |w_m| * scale(y_m)`.
+  Deck 2026-08-19 next step 7, RHS-margin half only — the penalty-multiplier
+  variant is deliberately **not** implemented.
+  - **One dimensionless dial for the whole problem.** Each constraint is scaled
+    by its **own** `scale(y_c)`, so gastric's five toxicities take five different
+    absolute margins off one knob — five separate margins would be a
+    five-parameter fit against one feasibility number, which is no longer a
+    baseline. `margin=1` is one unexplained sd of headroom per constraint, so it
+    reads on the **same axis as `rho` and `tau`**. Measured, gastric: `rhs = 0.6`
+    -> 0.35 (dlt), 0.36 (blood), 0.31 (constitutional), 0.34 (infection),
+    0.33 (gi) at `margin=1`.
+  - **It is swept on `m`, not on rho** (`SWEEP_PARAM["margin"] = "margin"`), so
+    its sweep curve is a genuine conservatism curve and `m*` is read off it by
+    the same rule as `rho*`. The axis value is in the same unexplained-sd units
+    as rho and tau — which is what puts them on one plot — but a point on the
+    margin curve is a **tightening the optimizer pays for**, not an assumed
+    radius. The `param_swept` column on every row is what keeps the two apart;
+    never read an `m` as a rho. `--margin-grid` gives it its own values when the
+    useful range of a direct RHS shift differs from that of a radius.
+  - **The scale is literally D's scale** — `uncertainty.instance_label_scales`,
+    the same function `ScenarioBank` calls (verified bit-identical: reactor
+    `2.1902848847140364` both ways). Two independent copies could drift on a
+    fold scheme or a stat with nothing to flag it; sharing the estimator is what
+    lets rho, tau and m be quoted on one axis.
+  - **`|w_m|` keeps the sign right.** The reactor states a *lower* bound
+    (`weight = -1`, `rhs = -50`), and `|w|` tightens it to `F_C6H6 >= 52.19` at
+    `margin=1` rather than loosening it. Same worst-case-direction weighting
+    C-MICL uses for its half-width.
+  - **`margin=0` IS nominal** — same fit, same MIP, same `x*`; verified
+    bit-identical on synthetic and reactor (obj diff `0.0e0`, x diff `0.0e0`), so
+    the baseline's own curve starts *at* the nominal point rather than near it.
+  - **Monotone in `m`**, so an `m*` at any feasibility target always exists. That
+    is the whole point of it as a "tuned" baseline — contrast gastric
+    `robust_reg`, whose feasibility *falls* with rho. Measured on synthetic
+    (3 folds, `rho` inert): feas 0.000 -> 0.667 -> 1.000 and obj -1.2628 ->
+    -1.2269 -> -1.1910 at m = 0, 0.5, 1.0.
+  - **The objective term is deliberately untouched**, and there is no
+    `robustify_objective` flag: a margin on a learned objective model adds
+    `margin * |a| * scale`, a **constant**, which shifts the reported objective
+    without moving the argmin. It would corrupt the column the methods are
+    compared on while changing no decision — vacuous, not merely off.
+  - **It carries NO guarantee.** `m` is fitted to held-out feasibility and means
+    only what that fit means — which is also true of a fitted rho, and is the
+    honest comparison.
+  - **Large margins go infeasible, not conservative.** Once `rhs - m_c` drops
+    below anything the label range can produce the MIP has no solution;
+    `_unreachable_note` says so up front (a diagnostic, not a check — a linear or
+    MLP fit can predict outside the range) and it shows as a falling solved
+    fraction, which `--min-solved` guards.
+- **`cmicl.py`** — Ovalle et al.'s conformal MICL, and **the one method that does
+  not face D at all**. Per constraint model: split the training rows, fit `h` on
+  proper-train (this is what gets embedded), fit a **width model** `u` there on
+  `|y - h(x)|`, take the split-conformal quantile `q = s_(k)`,
+  `k = ceil((n_cal+1)(1-alpha))`, of `s_i = |y_i - h| / max(u, floor)` on the
+  held-out calibration rows, then embed **both** models as
+  `sum_m [w_m h_m(x) + |w_m| q_m u_m(x)] <= rhs`. Its dial is **`alpha`**, the
+  miscoverage level. Consequences that decide how its numbers may be read:
+  - **It is an EVALUATION method, not a rho one.** `rho` never reaches it, so a
+    rho curve for it is flat by construction and every cell re-measures the same
+    number — it is **not** in the sweep's default methods and has **no ablation**.
+    Its `alpha` is not a dial to be chosen either: it is **pinned to
+    `1 - feas_target`** (0.1 against the 0.9 target), because the conformal level
+    and the feasibility target are the same quantity. That is the comparison it
+    is here for — the shared-D methods **search** for the rho that delivers 0.9,
+    C-MICL **asserts** 0.9 from the calibration set and is scored on whether it
+    arrives. `--methods ... cmicl` still runs it as a flat reference line if you
+    want one; the sweep prints a note saying it is not part of the protocol.
+  - **The guarantee is marginal** over `P_XY`, while `x*` is an argmin sitting
+    **on** the constraint — exactly where Known gap #8 says a marginal statement
+    says least. Feasibility measured here is the empirical consequence, not a
+    delivered guarantee.
+  - **Exchangeability is assumed and is false on gastric** (temporal folds). The
+    calibration split is random *within* a fold's training rows, so coverage is
+    marginal over the training years, not the validation year.
+  - **`h` is fit on `1 - cal_frac` of the rows** (0.75), fewer than every other
+    method's model. Intrinsic to split conformal, which is why `cal_frac` is
+    structural and not a second dial.
+  - The interval is intersected with `label_bounds`, the conformal analogue of
+    `clip_labels`. With one model per constraint — every instance here — that clip
+    is either **vacuous** (`w*hi <= rhs`, constraint dropped) or **inert**, so it
+    needs no binaries; on gastric `hi = 1.0` against `rhs = 0.6`, so it is inert.
+  - `multiplicity: "bonferroni"` (alpha/C) makes the **joint** statement hold at
+    `1 - alpha`. On gastric that level is usually finer than `n_cal = 80` can
+    resolve — `ceil(81*(1-0.02)) = 80` is the edge — and there is then no finite
+    `q`. That is **reported as an infeasible solve with the reason printed**,
+    never clipped to the largest score.
+  - **Measured, reactor, ODE-judged, 10 folds, n=1000, CV-selected `mlp` base
+    (2026-08-22): it does NOT reproduce the paper's Figure 1, and the diagnostic
+    says why.** At their own alpha=0.1: ODE feasibility **0.60** against their
+    reported **>= 0.90**, objective 3061, versus nominal at feasibility **0.00**
+    and objective 2948. The conformal machinery is not the problem — **marginal
+    coverage on held-out rows is 0.899** (0.949 at alpha=0.05), i.e. exactly
+    `1 - alpha`. What collapses is coverage **at the optimum**:
+    `|F_ODE(x*) - h(x*)| <= q*u(x*)` holds on only **0.50** of folds (0.60 at
+    alpha=0.05), and the mean slack `F_ODE(x*) - (h - q*u)` is **+0.27** — the
+    optimizer drives the embedded bound right up to the truth and sits there, so
+    a small coverage failure flips feasibility. Feasibility (0.60) exceeds
+    coverage-at-x\* (0.50) because coverage is two-sided while the constraint is a
+    lower bound only. **That 0.899 -> 0.50 drop is their Assumption 4.1**
+    (conditional independence of feasibility and coverage) failing on this
+    instance, and it is the same object as Known gap #8.
+    **TESTED (2026-08-22), and the answer depends entirely on the cost
+    distribution** — `experiments/probe_cmicl_cost_sampling.py`, a diagnostic
+    that changes nothing in the evaluation (`cost_vector` stays ones everywhere a
+    result is produced; the probe passes its own). They average over **100 sampled
+    `c`** with the model held fixed; we average over **training draws at one `c`**.
+    Reproducing their average, alpha=0.1, N=100, full-data 800/200 fit:
+
+    | `c` scheme | C-MICL feas | coverage at x\* | mean slack | x\* mean pairwise |
+    |---|---|---|---|---|
+    | `unit` (`c_i ~ U(0,1)`, the literal reading) | **0.99** | 0.99 | +1.22 | 0.145 |
+    | `scaled` (`c_i ~ U(0,1)/span_i`) | **0.11** | 0.11 | -1.05 | 0.330 |
+    | nominal, either | 0.00 | | | |
+
+    1. **Their >= 0.90 IS reproducible here** (0.99 under the literal reading), so
+       our 0.60 is a different average, not a defect. The anchor agrees: at the
+       full-data fit with `c` = ones, C-MICL is feasible (`F = 51.79`) while
+       nominal is not (45.85) — so much of the 0.60 is **training-draw
+       variability at 720-row fold fits**, not the argmin effect.
+    2. **Feasibility EQUALS coverage-at-`x*` to two decimals under both schemes.**
+       Feasibility here is not mostly about coverage at the optimum, it **is**
+       coverage at the optimum. Mechanism, measured.
+    3. **The rate is a property of the cost distribution.** Under `unit` the
+       optimum barely moves and never leaves the well-fitted region (T pinned to a
+       bound, sd 9e-16); under `scaled` it roams over `d_t` and `L` (sd 0.17 each)
+       and coverage collapses. Assumption 4.1 holds in the first case by an
+       accident of variable scaling, not because the method secured it.
+
+    **Never quote a C-MICL reactor feasibility without naming the `c`
+    distribution it came from.** The paper does not state theirs (App. D.1 gives
+    the decision-variable ranges; Table 5 says only "operational or design cost
+    coefficient"), so both readings above are ours. Feasibility on the fold-based
+    number is quantized to 1/10, so +-0.1 there is one fold.
+    **The wrapper undershoots its own published band on the same folds, which is
+    what points at the instance rather than at either method.** Our wrapper is
+    W-MICL, whose Figure 1 range the repo records as 0.45-0.85; here it reaches
+    **0.30** (alpha=0.2, P=20, rho=1, objective 2997). So on this instance BOTH
+    our C-MICL and our W-MICL land below the paper's values for them, while the
+    conformal calibration itself is exact (0.899) — a common-cause pattern, and
+    the fixed `c` is the obvious common cause. **The W-MICL number is confounded
+    on its own terms** and is not a reproduction attempt: their W-MICL(P)
+    bootstraps ensembles of P in {5,10,25,50}, ours embeds P=20 draws from the
+    shared D at rho=1, which is a different ensemble.
+    Timing, same folds: C-MICL **25 s** vs the wrapper **905 s**, a 36x gap in
+    the direction of their Figure 3 (they claim two orders of magnitude).
+  - **Measured, gastric, `rf`, seed 42, `all_constraints` (2026-08-22): the
+    prediction holds — it is INFEASIBLE.** At alpha=0.1, `multiplicity: "none"`,
+    mean half-widths are **1.33-1.73 sd(y)** per toxicity (dlt 1.51, blood 1.33,
+    constitutional 1.39, infection 1.73, gi 1.46) against `method.tex`'s predicted
+    ~1.65 sd; on the percentile scale that is **0.38-0.50 against an rhs of 0.6**,
+    on five constraints at once, and the master solve returns `infeasible`.
+    Bonferroni at the same alpha (`alpha_eff = 0.02`, and `ceil(81*0.98) = 80 <=
+    n_cal = 80` is exactly the edge where a finite `q` still exists) widens those
+    to **2.05-2.99 sd(y)** and is infeasible too. Note the **cost of the negative
+    result**: proving the marginal case infeasible took **176 s** against
+    nominal's 0.9 s, while the Bonferroni case fell out in 2.9 s. A sweep that
+    includes gastric C-MICL should budget for that.
 
 ### `uncertainty.py` — the shared set D
 
-All three uncertainty-aware methods face one set and differ only in what they do
-with it (cut lazily / chance-constrain / robustify the fit).
+**Three** of the uncertainty-aware methods face this one set and differ only in
+what they do with it (cut lazily / chance-constrain / robustify the fit).
+**`cmicl` and `margin` are not among them** — the first calibrates against
+held-out residuals, the second just shifts the RHS by a fitted dial, and neither
+reads any `uncertainty.*` key except `scale_stat`. `margin` is still **swept**,
+on its own parameter rather than on rho; `cmicl` has no swept parameter at all.
+
+`instance_label_scales` is the **one place `scale(y_c)` is estimated** — D's
+radius, CP's tau basis and the margin's tightening are all multiples of its
+output, so they cannot drift onto different fold schemes or stats.
 
 **Default (`geometry: "ellipsoid"`, since 2026-08-19):**
 `D_c = {delta : ||delta||_2 <= R_c}`, `R_c = rho * scale(y_c) * sqrt(n)`.
@@ -197,35 +408,96 @@ still `box_l1`; only `config.yaml` carries the ellipsoid default.
   outcome, `random_state` fixed so the scenario is the only variation. Draw `b` is
   a pure function of `(seed, b)`, so the wrapper's P models are a **nested prefix**
   of CP's B — which is what makes the `alpha=0` == `tau->0` equivalence exact.
-- **`coherent` is a grouping, not a flag.** The group shares one standardized
-  direction (scaled by each outcome's radius); names in `coherent_exclude`
-  (production: `["os_constraint"]`) draw independently. Vacuous on synthetic —
-  bit-identical banks. Unknown names are ignored, since one config drives both
-  problems. Justification and open objections:
+- **Draws are INCOHERENT in production** (`coherent: false`, since 2026-08-21).
+  Coherence remains a *grouping*, not a global flag — under `coherent: true` the
+  group shares one standardized direction scaled by each outcome's radius, and
+  names in `coherent_exclude` (`["os_constraint"]`) draw independently — but that
+  is now the **ablation** (`run_rho_sweep.py --coherent`), not the default cell.
+  Vacuous on synthetic and the reactor either way (one outcome; bit-identical
+  banks). Unknown `coherent_exclude` names are ignored, since one config drives
+  both problems.
+
+  **Why the flip.** Coherent asserts +1 in-group; the measured OOF residual
+  correlation on gastric (n=145, forward-chaining) is **+0.28** across non-DLT
+  toxicity pairs on percentile labels. Incoherent asserts 0. Neither fits, and the
+  choice was previously defended by the one block that genuinely *is* near +1 —
+  DLT against its four components. **That block is no longer a draw**
+  (`derive_linked_labels`, below), so what a shared direction is left modelling is
+  the +0.28 block alone, where 0 is the closer of the two available assertions.
+  **`--coherent` is still required for the `alpha=0` == `tau->0` check**
+  (objection 3). Justification and open objections:
 
   1. **RESOLVED (2026-08-15): OS does not belong on the shared direction.** OOF
-     residual correlation (n=145, forward-chaining) is **+0.28** across non-DLT
-     toxicity pairs on percentile labels, vs **+0.06** for OS against every
-     toxicity. Matches the record-level-mismeasurement story, which never covered
-     survival. Still *asserted*: truth is +0.28, we impose +1 in-group.
-  2. **OPEN — incoherent is not the per-constraint worst case.** Its set is the
-     product `D_1 x ... x D_C`, but separation pulls every constraint's model from
-     one shared `b` and cuts that whole `b`, so the adversary searches B joint
-     points, not `B^C`. No flag reaches the mixed adversary
-     (`cut_whole_scenario=False` still cuts one `b`).
+     residual correlation is **+0.28** across non-DLT toxicity pairs, vs **+0.06**
+     for OS against every toxicity. Matches the record-level-mismeasurement story,
+     which never covered survival. Kept as `coherent_exclude` so flipping
+     `coherent` back restores the measured grouping, not a global +1.
+  2. **MOSTLY RESOLVED for CP (2026-08-22): the incoherent separation path.**
+     The objection was that the incoherent set is the product `D_1 x ... x D_C`
+     while separation pulled every constraint's model from one shared `b` and cut
+     that whole `b`, so the adversary searched B joint points, not `B^C`. On an
+     incoherent bank CP now ranks the draws **per constraint** and admits a model
+     for **each** constraint per iteration, so its search is B points per
+     constraint. What is **still asserted**: the cut set is the per-outcome worst,
+     a point of the product set that need not be any single sampled draw, so a CP
+     cut is no longer a relabeling of any trial — the mirror of the old objection,
+     traded deliberately. And **the wrapper is unchanged**: its `z[c,p]` still
+     gates on one draw per replicate, so this closes the gap on CP's side only.
   3. **OPEN — the flag means different things in CP and the wrapper.** The
      wrapper's incoherent arm gives each constraint its own `z[c,p]`; CP's has no
-     analogue. So the `alpha=0` == `tau->0` equivalence is a **coherent-arm
-     result**, untested (and likely false) on the incoherent arm.
-  4. **OPEN — DLT's draw is inconsistent.** `DLT = 1 - prod(1 - tox)` holds exactly,
-     yet DLT takes the shared direction: collinear at +1.0000 before clipping. The
-     group spends five radii on four d.o.f., and **no delta in D preserves the
-     identity**. Right sign, overstated magnitude. Fixing it means changing
-     `ScenarioBank._draw` and the label construction — not a config flip.
+     analogue. So the `alpha=0` == `tau->0` equivalence is a **coherent-arm**
+     result, untested (and now structurally false) on the incoherent arm, where CP
+     no longer cuts one relabeling at all. Since separation follows the bank,
+     **`--coherent` alone puts you in the arm where the check is defined** — it
+     flips the draws and the adversary together.
+  4. **RESOLVED (2026-08-21): DLT is derived, not drawn.** See
+     `derive_linked_labels` below.
 
-  Changing (2) is not free: the shared-`b` cut is what makes CP-at-`tau->0` equal
-  the wrapper-at-`alpha=0` and makes permanent scenario exclusion sound. Cheapest
-  next step is measurement (score both banks at the nominal `x*`), not a rewrite.
+  Changing (2) was not free, and the incoherent path is where the bill lands: the
+  shared-`b` cut is what made CP-at-`tau->0` equal the wrapper-at-`alpha=0`, so
+  that equivalence is now a **coherent-path** statement. Permanent exclusion stays
+  sound because it is re-keyed **(constraint, draw)** rather than draw — a draw cut
+  for one constraint remains eligible for the others, and a cut (constraint, draw)
+  can never be violated again for that constraint. Still worth measuring: score
+  both banks at the nominal `x*`.
+- **`derive_linked_labels` — DLT follows the identity instead of drawing** (on in
+  `config.yaml` since 2026-08-21; the dataclass field still defaults `False`).
+  `DLT_PROP = 1 - prod(1 - tox)` holds exactly (2e-16) over the four modeled
+  toxicities, so DLT carries no degree of freedom. It used to take the shared `u`
+  anyway, which spent five outcomes' radius on four d.o.f. and made every draw a
+  relabeling of no trial. The instance now declares a `LabelLink`
+  (`src/data/generate.py`) and `ScenarioBank._draw` hands DLT
+  `derive(perturbed components) - baseline`: perturbed percentile labels back to
+  raw proportions (`gastric_v11.percentile_inverse`), the identity, then
+  re-percentile against DLT's own reference. Measured, gastric, B=8 at seed 42,
+  production cell (incoherent, `clip_labels` on):
+
+  | | identity error (max) | norm vs own `R_dlt` | corr(DLT, blood) |
+  |---|---|---|---|
+  | linked, rho=0.25 | 6.25e-3 | 1.19x | +0.43 |
+  | linked, rho=1.0 | 6.25e-3 | 0.89x | +0.46 |
+  | free draw, rho=0.25 | 0.430 | 0.96x | +0.02 |
+  | free draw, rho=1.0 | 0.994 | 0.85x | +0.04 |
+
+  The 6.25e-3 floor is **not** the link's error: it is 2/320 of a percentile rank,
+  because recomputing the identity in float differs from the stored `DLT_PROP` by
+  ~2e-16 and that flips ties inside `percentileofscore` on 44 of 320 rows. Hence
+  `baseline` (the link at the *unperturbed* sources) rather than `y_train` — a zero
+  component shift then derives a zero DLT shift to **0.0e0**. Notes:
+  - **The target's radius is reported, not imposed** (`_log_links`). `R_dlt`
+    described a *free* outcome; under the link DLT's shift is an output of the four
+    component radii, so it may exceed it (1.19x at rho=0.25).
+  - **Only DLT moves.** The discarded free draw still consumes its `rng` call (and,
+    under `--coherent`, still creates the shared direction), so at the same seed
+    the other four outcomes' shifts are bit-identical to a bank built with the link
+    off.
+  - **Bank only** — CP and the wrapper. robust_reg's per-outcome training adversary
+    is unlinked: its inner max would have to become joint across outcomes, with no
+    closed form.
+  - **Dropped under `dlt_only`**, where the components are not modeled;
+    `filter_constraints` removes the link and DLT draws freely again.
+  - `LabelLink.derive` must be **row-wise**, so `cv_calibrate._fold_instance` can
+    carry a fold by subsetting `baseline` rather than rebuilding it.
 - **`rho`/`eps_0`/`budget_frac` are shared constants, not knobs.** Each method
   keeps exactly one dial: CP `tau`, wrapper `alpha`, robust_reg `label_eps`. Never
   pin D to robust_reg's calibrated optimum, to the GT ensemble (tunes to the
@@ -248,10 +520,35 @@ separation flag.**
   at `x*`, cut the single worst, ranked by the actual constraint model. The bank is
   a separation *pool*, not an embedded ensemble ("ensemble" here means the GT
   evaluator).
-- **coherent** (gastric: many constraints / many `x*` / learned objective) — a
-  scenario is one shared relabeling training every constraint and the epigraph
-  objective jointly. Cut the worst scenario per iteration, ranked by **mean
-  relative exceedance over (anchor x outcome) cells**.
+- **coherent / incoherent** (gastric: many constraints / many `x*` / learned
+  objective) — every draw is scored **per unit** (one unit per learned constraint,
+  plus the epigraph objective when robustified): its normalized exceedance averaged
+  over the anchors. **Which of the two runs is read off the bank's own geometry**
+  (`methods.cp.separation: "auto"`), not chosen per run — the adversary should
+  match the set it is drawn from, and `--coherent` then flips the draws *and* the
+  adversary as one ablation.
+  - **coherent bank** (`uncertainty.coherent: true`): the draws lie on a shared
+    direction, so a draw *is* one relabeling of the whole trial. One scenario is
+    cut per iteration, ranked by the **mean** of its unit distances (equivalently,
+    mean relative exceedance over (anchor x outcome) cells), and
+    `cut_whole_scenario` cuts all of it. **Unchanged from before 2026-08-22** —
+    verified identical to the pre-change code on gastric.
+  - **incoherent bank** (`uncertainty.coherent: false`, the production cell): D is
+    the product set, so **the draws are considered per constraint**. Each unit ranks
+    the whole eligible bank on its own outcome and one model is admitted for
+    **each** unit above tau — 5 gastric constraints give up to 5 cuts from up to 5
+    different draws. tau is met **per unit**, and CP stops only when *every* one is
+    within it.
+
+  `separation: "coherent"|"incoherent"` forces the path against the bank. Legal,
+  and the log says `[FORCED: bank is ...]`, but there is no result it produces that
+  a matched pair does not produce more honestly.
+
+  **tau does not transfer between the two.** The coherent path averages over the
+  units, the incoherent one does not, so incoherent distances run about C x larger
+  and the same tau separates far harder. Measured on gastric (B=30, 6 anchors,
+  seed 42): max iteration-0 distance **0.0623 coherent vs 0.2441 incoherent**.
+  Re-read the grid off a run before reusing it across paths.
 
 Other CP settings:
 
@@ -263,7 +560,42 @@ Other CP settings:
   still reproduces.
 - **`cut_whole_scenario: true`** cuts all of an accepted scenario's constraints —
   what makes permanent exclusion sound and matches the wrapper's per-replicate
-  indicator.
+  indicator. **Read on the coherent path only**; an incoherent cut is one
+  (constraint, draw) pair by construction, so there is no scenario left to complete.
+- **`cut_rollback`** (incoherent path only) decides what happens when a
+  constraint's model breaks a protected anchor. Either way **only that attempt's
+  embedded models are removed** — `remove_scenario` drops exactly the vars and
+  constraints `add_scenario` created for it, so the constraint's earlier cuts, the
+  nominal base and every other unit's cut stay put (audited: the master's
+  var/constr counts return exactly).
+  - **`"forward"`** (default): walk the constraints most-violating first; for each,
+    try its most-violating model and re-solve, and if a protected anchor breaks,
+    roll **that model** back, permanently reject that `(unit, draw)`, and try the
+    constraint's **next** most-violating model — until one is admitted or its
+    candidates run out. Then move to the next constraint. So an iteration ends with
+    a model added for **each** constraint that has an admissible one, rather than
+    dropping a constraint on its first failure.
+  - **`"peel"`**: stage every constraint's top model, test once, then drop from the
+    **least-violating** end until they fit. One anchor sweep when the whole set
+    fits, but **no fallback** to a constraint's next candidate, and the peeled model
+    is rejected on a **heuristic** attribution (it is never shown to be the
+    culprit).
+  Measured, gastric B=30 / 6 anchors / tau=0.001: forward added **5/5** constraint
+  models at iteration 0 (blood's draw 2 broke an anchor, its draw 0 got in) and ran
+  5 iterations; peel added **3/5** there (it dropped infection and blood outright)
+  and stopped at iteration 2. **Forward is the more expensive lever**: exhausting a
+  constraint's ranking cost 18 rollbacks in one iteration and 184s against peel's
+  24s. The cost is bounded across the *run*, not the iteration — rejections are
+  permanent, so at most `C x B` rollbacks are ever paid.
+  **`cut_eviction: "evict_slack"` is ignored on the incoherent path** (a warning is
+  printed); models are rolled back per constraint instead.
+- **Rejections are keyed `(unit, draw)` on the incoherent path**, not by draw, so
+  the same relabeling can be the legitimate worst case for a constraint it has not
+  been cut for. A draw is skipped outright only when every unit excludes it — which
+  is why `scanned=` no longer shrinks each iteration there.
+- **Both paths are vacuous with one unit** (synthetic, reactor: one constraint, no
+  robustified objective) — the per-constraint ranking *is* the shared ranking, and
+  those problems take the **basic** path anyway. `separation` reaches gastric only.
 - **`robustify_objective` stays off**: the ablation gave worse test feasibility
   *and* worse OS, and costs P extra OS embeddings in the wrapper.
 - **`objective_monotone`** (off) adds a no-deterioration cut; redundant while
@@ -301,8 +633,13 @@ Each found by a run, not by reading. Together: from an exact period-4 cycle to
 
 **tau is measured in unexplained standard deviations** (`tolerance_basis: "scale"`,
 default): each exceedance is divided by its own outcome's `oof_sd` and averaged
-over (anchor x outcome) cells. So tau is a physical quantity in the **same units as
-`rho`**, independent of seed/bank/B, and **the grid spans nominal** — a tau above
+over the anchors. On the **incoherent** path that per-outcome mean **is** the
+statistic tau is tested against, one test per constraint; on the **coherent** path
+the per-outcome means are averaged again over the outcomes, which is the old "mean
+over (anchor x outcome) cells". So tau is a physical quantity in the **same units
+as `rho`**, independent of seed/bank/B, but **its numeric scale differs by ~C
+between the two paths** — see `solve_cp` above. **The grid spans nominal** — a tau
+above
 the iteration-0 distance stops before any cut (verified on synthetic: tau=1.0
 returns the nominal objective in 1 iteration). The basic path keeps violations raw
 for logging and multiplies instead of divides; the two paths log different units
@@ -310,17 +647,22 @@ but tau means the same thing.
 
 - **One decade grid, wide range** (`[1.0, 0.1, 0.01, 0.001]`). Both paths max over
   draws, but a draw *scores* differently: basic has one cell (so, the raw
-  violation); coherent means over `n_anchors x n_outcomes`, i.e. (violating
-  fraction) x (mean exceedance among violators). Gastric's ~0.1 violating fraction
-  is why its maxima sit near 0.03 against synthetic's ~0.98. That is **range, not
-  meaning** — breadth is information. Read `[cp] basis=scale ... max iter-0 dist=`
-  off a real run before assuming the grid brackets a **new** problem.
+  violation); the multi-constraint paths mean over the anchors, i.e. (violating
+  fraction) x (mean exceedance among violators), and the **coherent** one divides
+  again by `n_outcomes`. Gastric's ~0.1 violating fraction is why its coherent
+  maxima sit near 0.03 against synthetic's ~0.98. That is **range, not meaning** —
+  breadth is information. Read `[cp] basis=scale ... max iter-0 dist=` off a real
+  run before assuming the grid brackets a **new** problem **or the other separation
+  path**: the same gastric bank reads 0.0623 coherent and 0.2441 incoherent.
 - **Do not pin the grid from measured distances**: those scale with D, i.e. with
   rho, so a fitted grid needs refitting after every rho and is circular. Order is
   (1) rho sweep at fixed tau, (2) tau ablation at the chosen rho.
 - **The mean is the right statistic and is anchor-count stable.** A scenario
-  breaking 2 of 20 cells badly is less dangerous than one breaking all 20
-  moderately; a max ranks those backwards. Measured max iteration-0 distance:
+  breaking 2 of 20 anchors badly is less dangerous than one breaking all 20
+  moderately; a max ranks those backwards. This is the *anchor* mean and it stands
+  on both paths; what the incoherent path drops is the second mean, the one **over
+  outcomes** — a draw that breaks one constraint badly and four not at all is that
+  constraint's adversary rather than being averaged down to a fifth. Measured max iteration-0 distance:
   `n_anchors` 4 -> 0.0307, 8 -> 0.0315, 16 -> 0.0178 — no 1/n trend.
 - **The scale is per outcome** (`_build_scale_map`), so cells are dimensionless and
   commensurable. Only a 1.17x spread on gastric (the percentile transform makes
@@ -570,6 +912,27 @@ largest rho meeting the target. D is shared at **every point of the sweep**, and
 that curve is where the shared-D comparison is read. rho is never *fitted*; tau and
 alpha become ablations at one rho (`--ablate`).
 
+**The sweep is per-method parameter, so the star table is too.** Each method
+walks its own dial (`SWEEP_PARAM`) and the same rule below is applied to it, with
+a `param_swept` column saying which quantity the star is in:
+
+- `rho` for **cp / wrapper / robust_reg**. Within one grid value these three
+  still face the **same D**, which is what the shared-D comparison rests on.
+  `rho*` is **capacity**: the largest assumed uncertainty the method still
+  delivers under.
+- `margin` for **margin**. `m*` is **price**: the largest RHS shift that still
+  solves on enough contexts. It is the number the shared-D `rho*` results have to
+  be defended against — the same feasibility bought by a one-line RHS shift.
+- **none** for **nominal / cmicl**, which have no conservatism parameter. They
+  are scored **once** and repeated across the axis as a reference level;
+  `rho_star` is `NaN` with `bound="no_param"`. Reporting `grid_max` for them
+  would assert they absorbed the whole grid, the opposite of the truth.
+
+**`rho*` and `m*` are not comparable to each other as numbers** — one is an
+assumption, the other a tightening. The comparison that matters is **objective at
+equal feasibility**, i.e. the curve, which is why the curve is the primary output
+and the star table the derived one.
+
 Rule: **largest grid rho with held-out feasibility >= 0.9 AND solved fraction
 >= 0.5** (both defaults). The solved floor is the artifact guard — high feasibility
 over few survivors is not a win, and it is what binds the wrapper. Measured
@@ -681,9 +1044,23 @@ re-run; the other rows are unaffected.
 is the shared embedded-model fallback, beaten by `reactor.model` and then by
 `results/cv/*_selected_configs.json`; `optimization.mip_gap` is the **one solver
 gap** every method runs at; `uncertainty.*` defines the **shared D**, with `alpha`
-the **legacy-calibration target only** and `clip_labels` shared in scope but in
-effect on **gastric alone**; `cv_calibration.*` holds the knob-CV folds and grids;
-`methods.{cp,wrapper,robust_reg}` one dial each; `methods.chemo.*` is **gastric
+the **legacy-calibration target only** and `clip_labels` / `derive_linked_labels`
+shared in scope but in effect on **gastric alone** (`coherent` is likewise vacuous
+off gastric); `cv_calibration.*` holds the knob-CV folds and grids;
+`methods.{cp,wrapper,robust_reg,cmicl,margin}` one dial each (CP's `separation`
+is **not** a dial — it defaults to `"auto"` and follows `uncertainty.coherent`;
+`cut_rollback` is structural and is not swept, and neither are `cmicl`'s
+`cal_frac` / `width_*` / `multiplicity`). **`methods.cmicl` and `methods.margin`
+are the two blocks that read (almost) nothing from `uncertainty.*`** — the first
+calibrates against held-out residuals, the second shifts the RHS by a fitted
+dial, so `rho`, `coherent`, `clip_labels` and the rest do not reach either.
+`methods.margin.scale_stat` is the one exception and defaults to `null`, meaning
+`uncertainty.scale_stat`: the margin is quoted in the same unexplained-sd units
+as `rho` and `tau`, so it must read the same estimator. Overriding it decouples
+them — don't, without saying so. There is deliberately no
+`methods.margin.robustify_objective`: a margin on a learned objective term is a
+constant and would move the reported objective without moving `x*`;
+`methods.chemo.*` is **gastric
 only** (`methods_to_run` / `constraint_modes`, `quick` for `--quick`). CV model
 selections come from `results/cv/*_selected_configs.json` and
 `*_gt_ensemble_configs.json` via `--cv-configs`.
@@ -695,12 +1072,16 @@ value so nothing moved: `calibration`, `conservativeness_sweep`,
 localized-bootstrap knobs, and the never-read `optimization.constraint_rhs` /
 `variable_bounds` (the real RHS is `0.5 * n_features` in `src/data/generate.py`).
 
-**Which coherence cell is the stronger adversary is not settled.** Coherent is
-stronger *as implemented* — finite B covers the diagonal better than the product
-set, and mean-over-cells scoring has a heavier right tail when exceedances move
-together. That is a property of (mean scoring x shared `b` x finite B), not of the
-sets: incoherent's set strictly contains coherent's, so under max-over-outcomes
-scoring the ordering would flip.
+**Which coherence cell is the stronger adversary is not settled, and the
+production cell is now the weaker-as-implemented one.** Coherent is stronger *as
+implemented* — finite B covers the diagonal better than the product set, and
+mean-over-cells scoring has a heavier right tail when exceedances move together.
+That is a property of (mean scoring x shared `b` x finite B), not of the sets:
+incoherent's set strictly contains coherent's, so under max-over-outcomes scoring
+the ordering would flip. The 2026-08-21 flip to `coherent: false` was made on
+**what the correlations say**, not on adversary strength, so expect the incoherent
+curves to sit above the coherent ones at the same rho; that is the sampling
+property above, not a method result. Run `--coherent` alongside.
 
 ## Known gaps (2026-08-19 deck's next steps)
 
@@ -723,13 +1104,63 @@ Stated limitations of the current numbers, not bugs to fix silently.
    are unused, the oracle is fit on the full training rows, and feasibility is
    quantized to `1/n_folds` — so a synthetic feasibility is an **m-out-of-n**
    statement over 6 possible values. **Read the curve, not rho\***, there.
-4. **The DLT draw is inconsistent** — objection (4) above.
+4. **RESOLVED (2026-08-21). DLT is derived through its identity**
+   (`uncertainty.derive_linked_labels`, `LabelLink`), and the production draw is
+   now **incoherent** — the +1 in-group assertion is gone along with the one
+   block that justified it. Identity error falls from up to 0.994 of a percentile
+   rank to a 6.25e-3 floor that is a `percentileofscore` tie, not the link. What
+   is **still asserted**: incoherent imposes 0 where the non-DLT toxicity pairs
+   measure +0.28, and the derived DLT shift is no longer confined to its own
+   `R_dlt` (1.19x at rho=0.25) because that radius described a free outcome.
+   robust_reg is unlinked. **Every gastric bank number changes** — re-run the
+   sweep before reading anything against a pre-2026-08-21 gastric curve.
+   **NEW (2026-08-22): the incoherent separation path.** On an incoherent bank CP
+   ranks the draws per constraint and admits a model for each, which answers the
+   product-set half of objection (2) on CP's side — separation searches B points
+   per constraint rather than B joint points. Selected from the bank, so the
+   coherent arm is untouched and every committed `_coh` curve reproduces. Three
+   things are **asserted, not shown**: (a) the cut set is the per-outcome worst, a
+   product-set point that need not be any sampled relabeling, so a CP cut is no
+   longer a relabeling of a trial; (b) the wrapper is unchanged, so shared D no
+   longer implies a shared *adversary shape* between them, on top of the direction
+   gap already documented under `uncertainty.py`; (c) tau's numeric scale moved by
+   ~C, so the `[1.0, 0.1, 0.01, 0.001]` grid is untested on this path — re-read
+   `max iter-0 dist` before the tau ablation. First measurement (gastric, B=30, 6
+   anchors, tau=0.001, seed 42): incoherent/forward ran to `coverage_cap` in 5
+   iterations, adding 5/5, 4/4, 3/3, 2/3 constraint models. **The readier
+   `coverage_cap` is expected** — the per-outcome worst is a strictly stronger
+   adversary, so more models break a protected anchor — but whether that costs
+   feasibility or buys it is **unmeasured**: no rho sweep has been run on this path.
 5. **Nothing is confirmed on the test set under the ellipsoid**, so rho\* has no
    training-draw error bars.
-6. **C-MICL (Ovalle et al. 2025) is not implemented** — no calibration split, no
-   width model, and our folds are temporal while conformal needs exchangeability.
-   Expected infeasible on gastric anyway: the 0.78-1.02 unexplained ratio gives a
-   ~1.65 sd half-width on five constraints at once.
+6. **MOSTLY RESOLVED (2026-08-22). C-MICL is implemented** (`src/methods/cmicl.py`,
+   `methods.cmicl` in `config.yaml`, `--methods ... cmicl` on every runner): the
+   calibration split and the width model both exist, and **the predicted gastric
+   infeasibility is confirmed** — 1.33-1.73 sd(y) half-widths on five constraints
+   at once, master infeasible at alpha=0.1 either multiplicity. What is **still
+   asserted, not fixed**: (a) our gastric folds are temporal while conformal needs
+   exchangeability, so the split is random *within* a fold's training rows and
+   coverage is marginal over the training years, not the validation year; (b) the
+   guarantee is marginal over `P_XY` while `x*` is an argmin sitting on the
+   constraint — and on the reactor that is now **measured, not asserted**:
+   marginal coverage 0.899 against coverage-at-`x*` of 0.50 (see the `cmicl.py`
+   bullet above). C-MICL is deliberately **not** on the rho axis and has no
+   ablation: its alpha is pinned to `1 - feas_target`, so it enters at evaluation
+   only.
+   **The reactor gap is now diagnosed, not open** (2026-08-22,
+   `experiments/probe_cmicl_cost_sampling.py`). We reach 0.60 at alpha=0.1 where
+   they report >= 0.90, but reproducing *their* average — 100 sampled `c`, model
+   fixed — gives **0.99** under `c_i ~ U(0,1)` and **0.11** under a
+   scale-normalized `c`. So the implementation is fine and the number is a
+   property of the cost distribution, which the paper does not state. See the
+   `cmicl.py` bullet above for the table and the mechanism (feasibility equals
+   coverage-at-`x*` to two decimals under both schemes). **What this leaves
+   genuinely open** is a claim the paper's Figure 1 cannot settle either: the
+   feasibility guarantee is not robust to the instance distribution, and on this
+   instance a cost distribution that actually explores the design box takes it to
+   0.11. That is worth a slide, and it is the strongest argument in the repo for
+   why a method whose conservatism is indexed by an assumed set may be preferable
+   to one indexed by a marginal coverage level.
 7. **PARTLY RESOLVED (2026-08-21). A third instance exists** — the C-MICL DMA-MR
    reactor, with a mechanistic ODE oracle. WFP food basket (Maragno's own wrapper
    setting) remains unimplemented, and no rho sweep has been *run* on the reactor
@@ -755,6 +1186,24 @@ Stated limitations of the current numbers, not bugs to fix silently.
    original 0.039 / 31% above were the six-member judge; the reactor's 25.9% is
    also pre-MLP. Tightening the band to 0.02 raises the flip rate to 39-40% for
    both judges — the failure is the band, not the member list.
+
+9. **PARTLY RESOLVED (2026-08-22). The feasibility-tuned nominal baseline
+   exists** (`src/methods/margin.py`, `methods.margin`, `--methods ... margin`) —
+   deck 2026-08-19 next step 7. `f(x) <= b - m*scale(y_c)`, one dimensionless
+   dial, monotone, `m=0` bit-identical to nominal. What is **NOT** done: (a) the
+   **penalty-multiplier** variant (`c*alpha` on the outcome's regularization) is
+   deliberately not implemented — the deck itself notes it only ever *shrinks*
+   `alpha` (`alpha_eff = alpha/(1 + rho/||r*||)`), so it is a weaker lever than
+   the margin and was dropped rather than deferred; (b) **no rho sweep has been
+   run with it on any problem**, so there is no `m*` beside the published `rho*`
+   yet, and the comparison the baseline exists to make — does a shared-D curve
+   sit above a plain RHS shift at equal feasibility? — is **unmeasured**;
+   (c) it is absent from `submit_rho_sweep.sh`'s default `METHODS`, so it must
+   be asked for explicitly. **Since 2026-08-22 the sweep is per-method parameter**
+   (`SWEEP_PARAM`): margin is swept on `m` rather than held flat while rho moves,
+   so `m*` comes off the main curve and its `--ablate` pass was removed as
+   redundant. That also stopped `nominal`/`cmicl` being re-solved once per grid
+   point for an identical answer.
 
 ## Presentations (`presentations/`)
 

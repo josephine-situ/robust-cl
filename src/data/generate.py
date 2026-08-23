@@ -61,6 +61,11 @@ class LabelLink:
     shift **exactly** rather than to within the identity's own float error (which a
     tie in ``percentileofscore`` would otherwise amplify to 1/n).
 
+    ``derive`` must be **row-wise** -- every map inside it elementwise against a
+    fixed full-train reference -- so that a fold or subsample can carry the link by
+    subsetting ``baseline`` (``cv_calibrate._fold_instance``) rather than rebuilding
+    it.
+
     Consumed by ``ScenarioBank._draw`` under ``uncertainty.derive_linked_labels``.
     """
     target: str                                              # constraint name derived

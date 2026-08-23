@@ -221,10 +221,11 @@
   \]
   \begin{itemize}
     \item \mc{Each $y$ has its own $\mathcal D_c$ (radius $R_c$), but the \emph{same} $\rho$.}
-    \item While each method has its own tunable parameters, we only tune $\rho$ for
-      consistency between methods.
-    \item CP/wrapper embed scenarios as multiple \emph{constraints}.
-      Embedding multiple directed scenarios makes the MIP infeasible.
+    \item Each method has its own dials; we tune only $\rho$, for comparability.
+    \item CP/wrapper embed scenarios as multiple \emph{constraints};
+      multiple \emph{directed} scenarios $\Rightarrow$ infeasible MIP.
+    \item \textbf{Two face no $\mathcal D$}: tuned nominal ($m$, swept alone) and
+      C-MICL ($\alpha$ \emph{pinned} at $1-$target: evaluation only).
   \end{itemize}
   \begin{center}\small
   \begin{tabular}{@{}lll@{}}
@@ -234,6 +235,8 @@
     Robust Reg. & \textbf{directed}: $\delta = R\,r/\lVert r\rVert$ & the \emph{fit} \\
     CP          & \textbf{random} draws, cut the argmax  & a \emph{cut} \\
     Wrapper     & \textbf{random} draws, chance constraint & $P$ \emph{constraints} \\
+    C-MICL      & \textbf{no $\mathcal D$}: held-out residuals & a \emph{tightening} $\hat q\hat u(x)$ \\
+    Margin      & \textbf{no $\mathcal D$}: nothing --- $m$ is fitted & a shift of $b$ \\
     \bottomrule
   \end{tabular}
   \end{center}
@@ -247,6 +250,29 @@
     \item $\sqrt n$: $\rho=1$ = L2 norm of iid noise at one
       unexplained sd/row. Transfers across $n{=}200$ and $n{=}320$.
     \item \textbf{Derived}: $\rho^\ast(\text{method})$ at a fixed feasibility target.
+  \end{itemize}
+  \medskip
+  \textbf{The sweep is per-method \emph{parameter}}, each method walked along the
+  dial that actually makes it conservative:
+  \vspace{-0.3em}
+  \begin{center}\footnotesize
+  \begin{tabular}{@{}lll@{}}
+    \toprule
+    Swept & Methods & A point on the axis is \\
+    \midrule
+    $\rho$ & CP, wrapper, robust\_reg & an \emph{assumed} radius \\
+    $m$    & tuned nominal            & a \emph{tightening} that is paid for \\
+    ---    & nominal, C-MICL          & nothing: scored once, a level \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \vspace{-0.2em}
+  \begin{itemize}\footnotesize
+    \item One grid: all are in unexplained sds. \textbf{Within a grid value the
+      three $\rho$ methods still face the \emph{same} $\mathcal D$} --- that is
+      what the shared-$\mathcal D$ comparison rests on.
+    \item $\rho^\ast$ is \emph{capacity}, $m^\ast$ is \emph{price}: not comparable
+      as numbers. Compare \textbf{objective at equal feasibility} --- the curve.
   \end{itemize}
 \end{frame}
 
@@ -284,8 +310,12 @@
       $\Rightarrow$ a bank of size $P<B$ is a genuine \emph{prefix} of one of size $B$.
     \item \texttt{random\_state} fixed across members: the scenario is the
       \emph{only} source of variation.
-    \item \mc{Coherent: one standardized direction shared across the \emph{group},
-      scaled by each outcome's own radius. Incoherent: independent draws.}
+    \item \mc{\textbf{Incoherent by default}: independent draws per outcome.
+      Coherent (the ablation): one standardized direction shared across the
+      \emph{group}, scaled by each outcome's own radius.}
+    \item \mc{\textbf{DLT is derived, not drawn}: perturb the 4 components,
+      un-percentile, apply $1-\prod(1-\cdot)$, re-percentile. Reaches the bank
+      (CP, wrapper); robust reg's per-outcome adversary is unlinked.}
     \item \mc{Percentile labels are clipped to $[0,1]$ (clipping only shrinks
       $|\delta_i|$, so the draw stays in $\mathcal D$). \textbf{Every} method that
       faces $\mathcal D$ clips --- bank draws \emph{and} robust reg's training
@@ -299,10 +329,10 @@
 \end{frame}
 
 % ---------------------------------------------------------------------------
-\begin{frame}{\mc{Coherent is a grouping (gastric)}}
+\begin{frame}{\mc{Why incoherent, and why DLT is derived (gastric)}}
   \small
-  Coherent worst-case draws asserts residual correlation $+1$ across outcomes;
-  incoherent asserts $0$. OOF residuals ($n=145$, forward-chaining):
+  Coherent draws assert residual correlation $+1$ across outcomes;
+  incoherent assert $0$. OOF residuals ($n=145$, forward-chaining):
   \begin{center}\small
   \begin{tabular}{@{}lcc@{}}
     \toprule
@@ -315,15 +345,27 @@
   \end{center}
   \medskip
   \begin{itemize}
-    \item \textbf{OS is uncoupled}.
-    \item $\Rightarrow$ \texttt{coherent\_exclude}: toxicities share a direction,
-      OS draws independently. A \emph{grouping}, not a flag.
+    \item \textbf{OS is uncoupled}. \texttt{coherent\_exclude} keeps it off the
+      shared direction whenever coherence is on --- a \emph{grouping}, not a flag.
     \item DLT excluded \emph{from the average}: $\text{DLT}=1-\prod_c(1-y_c)$
-      holds exactly, so its $+0.44$--$0.80$ row is construction.
-    \item But DLT stays \emph{in} the coherent group --- only OS is excluded.
-      So: 5 outcomes' radius on 4 d.o.f., and no $\delta\in\mathcal D$ preserves
-      the identity (percentile labels shift independently).
-    \item Still \emph{asserted}: truth is $+0.28$, we impose $+1$ in-group.
+      holds exactly (2e-16), so its $+0.44$--$0.80$ row is construction.
+    \item \textbf{So DLT is not drawn at all.} Its $\delta$ is
+      $\text{derive}(\text{perturbed components})-\text{baseline}$: identity error
+      $\le 6.25$e-3 (a \texttt{percentileofscore} tie, $2/320$ of a rank) against
+      $0.43$--$0.99$ for a free draw. Its size is now an \emph{output} ---
+      $1.19\times$ its own $R_{\text{DLT}}$ at $\rho{=}0.25$, $0.89\times$ at
+      $\rho{=}1$ --- so that radius is \textbf{reported, not imposed}.
+    \item \textbf{$\Rightarrow$ incoherent is the default.} The one block that
+      genuinely was $\approx+1$ is gone; what a shared direction would still model
+      is the $+0.28$ block, and $0$ is the closer of the two assertions available.
+    \item Still \emph{asserted}: we impose $0$ where truth is $+0.28$. Coherent
+      survives as the ablation --- and is \emph{required} for the
+      $\alpha{=}0\equiv\tau\to0$ check: CP's separation follows the bank, so
+      \texttt{--coherent} is the arm where that equivalence is defined at all.
+    \item \textbf{Product-set coverage}: on the incoherent path each constraint
+      ranks the bank itself, so separation searches $B$ points \emph{per
+      constraint} rather than $B$ joint points --- the objection incoherence
+      raised, answered on CP's side. The wrapper is unchanged.
   \end{itemize}
 \end{frame}
 
@@ -460,8 +502,9 @@
       \item Differs from bootstrap resamples (prop 0.5) used by Maragno et al. for WFP example as
         it is smoother at small n. Also aligns with other robust methods.
     \end{itemize}
-    \item \mc{Coherent: $z_p=1$ iff $x$ satisfies \emph{every} constraint under replicate
-      $p$ (one indicator per draw). Incoherent: $z_{c,p}$ per constraint.}
+    \item \mc{Incoherent (default): $z_{c,p}$ per constraint. Coherent (ablation):
+      $z_p=1$ iff $x$ satisfies \emph{every} constraint under replicate $p$ --- one
+      indicator per draw, and the arm CP's shared-$b$ cut has an analogue for.}
       \vspace{-0.2em}
       {\scriptsize
       \[
@@ -476,8 +519,9 @@
       \]}
       \vspace{-0.5em}
       \begin{itemize}\scriptsize
-        \item \mc{One $u_p$ scaled by each $R_c$; OS excluded,
-          draws on its own. \textbf{Incoherent}: every row its own direction.}
+        \item \mc{Shown: the \textbf{coherent} ablation --- one $u_p$ scaled by
+          each $R_c$, OS on its own. \textbf{Default}: every row its own
+          direction, the DLT row \emph{derived} from the other four.}
       \end{itemize}
       \vspace{-0.3em}
     \item Chance constraint: $\tfrac1P\sum_p z_p \ge 1-\alpha$.
@@ -497,16 +541,35 @@
       distance $>$ tolerance.
     \item \textbf{Feasibility rollback}: add the cut \emph{tentatively}; if the master
       then has no solution \mc{at any \textbf{protected anchor}}, remove it,
-      \textbf{permanently reject} that draw, try the next-worst candidate. Repeat.
+      \textbf{permanently reject} it, try the next candidate. Repeat.
   \end{enumerate}
+  \mc{Two separation paths, \textbf{auto-selected from the bank} --- the adversary
+  matches the set it is drawn from, so \texttt{--coherent} flips draws \emph{and}
+  adversary as one ablation.}
   \begin{itemize}
-    \item \mc{\textbf{coherent} (gastric): a scenario is one shared relabeling training
-      all 5 constraints \emph{and} the objective; rank by mean relative exceedance
-      over anchor $\times$ outcome, cut the whole worst \emph{scenario}.}
+    \item \mc{\textbf{Incoherent} (gastric, production): $\mathcal D$ is the
+      \emph{product} set, so which relabelings one draw pairs is a sampler
+      artefact. The draws are ranked \textbf{per constraint} and one model is
+      admitted for \emph{each} of the 5 $\Rightarrow$ up to 5 cuts/iteration from
+      up to 5 different draws. $\tau$ met \textbf{per constraint} (mean exceedance
+      over anchors); CP stops only when \emph{every} constraint is within it.}
+    \item \mc{\textbf{Forward} rollback: constraints most-violating first; a model
+      that breaks a protected anchor is rolled back and that constraint tries its
+      \emph{next} most-violating model --- so an iteration ends with a model added
+      for each constraint. Only that attempt's models are removed, never the
+      constraint's other cuts. (\texttt{peel}: stage all, drop from the
+      least-violating end, no fallback --- cheaper, heuristic attribution.)}
     \item \mc{\textbf{OS robustification off}: ablation gave worse feasibility \emph{and} OS.}
     \item $\tau$ (stopping tolerance, in unexplained SD) is CP's \emph{only}
       parameter --- no coverage dial.
-    \item Separation \emph{pool}: $B{=}200$ scored, one cut/iter; wrapper embeds all $P{=}20$.
+    \item Separation \emph{pool}: $B{=}200$ scored; wrapper embeds all $P{=}20$.
+    \item \mc{\textbf{Coherent} path (the \texttt{--coherent} ablation,
+      \emph{unchanged}): draws share a direction, so one draw \emph{is} one
+      relabeling --- cut it whole, ranked by mean exceedance over anchor $\times$
+      outcome. Where the $\alpha{=}0\equiv\tau\to0$ check lives.}
+    \item \mc{$\tau$ is \emph{not} comparable across the paths: coherent averages
+      over the 5 outcomes, incoherent does not, so incoherent distances run
+      ${\approx}5\times$ larger (gastric, same bank: $0.062$ vs $0.244$).}
   \end{itemize}
 \end{frame}
 
@@ -539,8 +602,11 @@
 \begin{frame}{\mc{Cutting Planes: coverage (anchors)}\implnote}
   \begin{itemize}
     \item Adding cuts can make the master infeasible at some anchor.
-    \item A cut breaking the protected set is \textbf{rolled back and its draw
-      permanently rejected}. So $\tau$ is CP's only robustness parameter.
+    \item A cut breaking the protected set is \textbf{rolled back and permanently
+      rejected}. So $\tau$ is CP's only robustness parameter. \mc{On the
+      incoherent path rejection is keyed \textbf{(constraint, draw)} --- a draw cut
+      for one constraint stays eligible for the others --- which bounds the whole
+      run at $C\times B$ rollbacks.}
     \item The protected set is \textbf{fixed}, not recomputed per iteration ---
       the anchors the \emph{nominal} fit could serve (8/10 on gastric), tested
       set-wise so CP cannot trade one patient's feasibility for another's.
@@ -627,27 +693,59 @@
 \end{frame}
 
 % ===========================================================================
-\begin{frame}{Related: conformal MICL (\textbf{not implemented})}
+\begin{frame}{C-MICL --- calibrate instead of assuming $\mathcal D$}
   \small
-  Ovalle et al.\ 2025. Same goal --- ground-truth feasibility --- by conformal
-  prediction rather than an ensemble.
+  Ovalle et al.\ 2025. Same goal --- ground-truth feasibility --- from held-out
+  residuals rather than an assumed set. \texttt{src/methods/cmicl.py}.
   \begin{itemize}
-    \item Fit $\hat h$; fit $\hat u$ on $|\hat h(x)-y|$; take $\hat q_{1-\alpha}$
-      of $|\hat h-y|/\hat u$ on a \emph{held-out} calibration set. Embed
-      $\hat h(x)\pm\hat q_{1-\alpha}\hat u(x)\subseteq[\underline y,\overline y]$.
-    \item Guarantee is \textbf{marginal} over $\mathcal P_{XY}$ and rests on
-      feasibility $\perp$ coverage $\mid$ GT feasibility. Our $x^\ast$ is an
-      argmin, not a random draw.
+    \item Split the training rows. Fit $\hat h$ (the embedded model) on
+      proper-train; fit $\hat u$ there on $|y-\hat h(x)|$; on the \emph{held-out}
+      calibration rows take $\hat q=s_{(k)}$,
+      $k=\lceil(n_{\mathrm{cal}}{+}1)(1-\alpha)\rceil$, of
+      $s_i=|y_i-\hat h|/\max(\hat u,\mathrm{floor})$.
+    \item Embed \emph{both}:
+      $\sum_m[w_m\hat h_m(x)+|w_m|\hat q_m\hat u_m(x)]\le b$, intersected with
+      $[\underline y,\overline y]$.
+    \item \textbf{$\alpha$ pinned, not tuned}: $\alpha=1-$target$=0.1$. Others
+      \emph{search} for the $\rho$ delivering $0.9$; C-MICL \emph{asserts} it. So
+      it enters at \textbf{evaluation}, not on the $\rho$ axis.
+    \item Paper-matched: $80/20$ split, $\hat u$ a ReLU NN $2\times32$ shared
+      across base models, $\hat q$ their $(1-\alpha)(1{+}1/N)$ quantile.
   \end{itemize}
-  \medskip
-  \textbf{Why we expect it to be infeasible on gastric}: unexplained ratio
-  $0.78$--$1.02$ $\Rightarrow$ $\hat u\approx\mathrm{sd}(y)$ $\Rightarrow$
-  ${\approx}1.65\,\mathrm{sd}(y)$ half-width on 5 constraints at once. CP absorbs
-  the same poor fit by cutting the worst scenario instead.
-  \medskip
-  \footnotesize
-  Not implemented: no calibration split, no $\hat u$, and our folds are
-  \emph{temporal} --- conformal needs exchangeability.
+  \smallskip
+  \textbf{Stated, not fixed}: guarantee is \textbf{marginal} over
+  $\mathcal P_{XY}$ while $x^\ast$ is an argmin sitting \emph{on} the constraint;
+  gastric folds are \emph{temporal}, conformal needs exchangeability.
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Tuned nominal --- the baseline to beat}
+  \small
+  Nominal fit, nominal MIP, RHS moved in. \texttt{src/methods/margin.py}.
+  \vspace{-0.4em}
+  \[
+    \sum_m w_m f_m(x)\ \le\ b - m_c,
+    \qquad m_c = m\,\sum_m |w_m|\,\mathrm{scale}(y_m)
+  \]
+  \vspace{-1.3em}
+  \begin{itemize}
+    \item \textbf{One dial $m$ per problem}, dimensionless. Each constraint is
+      scaled by its \emph{own} $\mathrm{scale}(y_c)$ --- the same out-of-fold
+      residual sd that sets $R_c$ --- so $m$ reads on the $\rho$/$\tau$ axis:
+      $m{=}1$ is one unexplained sd of headroom per constraint.
+    \item Gastric $m{=}1$: $b{=}0.6\to 0.35$ (DLT), $0.31$ (constitutional).
+      $|w_m|$ keeps the sign: reactor $-F\le-50$ tightens to $F\ge52.19$.
+    \item $m{=}0$ \emph{is} nominal (verified bit-identical, both problems).
+    \item \textbf{Monotone} $\Rightarrow$ $m^\ast$ always exists at any target.
+      Contrast robust\_reg, whose gastric feasibility \emph{falls} with $\rho$.
+    \item Objective term deliberately untouched: a margin there is a
+      \emph{constant}, shifting the reported objective without moving $x^\ast$.
+  \end{itemize}
+  \smallskip
+  \textbf{Why it is here}: it is the cheapest thing that buys feasibility. A
+  shared-$\mathcal D$ curve that does not sit above it at equal feasibility is
+  paying for machinery a one-line RHS shift delivers. \textbf{No guarantee of any
+  kind} --- $m$ is fitted to held-out feasibility, exactly as a fitted $\rho$ is.
 \end{frame}
 
 \end{document}

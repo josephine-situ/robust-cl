@@ -26,12 +26,21 @@ import matplotlib.pyplot as plt
 RES = "results/rho_sweep"
 OUT = "results/figures"
 
-METHODS = ["nominal", "robust_reg", "wrapper", "cp"]
+# cmicl and margin are plotted only when the curve carries them (both are opt-in
+# on the sweep). NEITHER faces D, so their lines are flat in rho by construction
+# -- reference levels, not further readings of the axis; dashed, so they do not
+# read as one.
+METHODS = ["nominal", "robust_reg", "wrapper", "margin", "cmicl", "cp"]
 LABEL = {"nominal": "Nominal", "robust_reg": "Robust Reg.",
-         "wrapper": "Wrapper", "cp": "CP (ours)"}
+         "wrapper": "Wrapper", "cmicl": r"C-MICL (no $\mathcal{D}$)",
+         "margin": r"Tuned nominal, RHS margin (no $\mathcal{D}$)",
+         "cp": "CP (ours)"}
 COLOR = {"nominal": "#595959", "robust_reg": "#E69F00",
-         "wrapper": "#009E73", "cp": "#0072B2"}
-MARKER = {"nominal": "o", "robust_reg": "s", "wrapper": "^", "cp": "D"}
+         "wrapper": "#009E73", "cmicl": "#CC79A7", "margin": "#56B4E9",
+         "cp": "#0072B2"}
+MARKER = {"nominal": "o", "robust_reg": "s", "wrapper": "^", "cmicl": "v",
+          "margin": "P", "cp": "D"}
+LINESTYLE = {"cmicl": "--", "margin": "--"}
 # Objective sense per problem: synthetic minimises c'x, gastric maximises OS.
 PROBLEMS = ["synthetic", "gastric"]
 PTITLE = {"synthetic": "Synthetic", "gastric": "Gastric"}
@@ -78,7 +87,13 @@ def _series(df, method):
 
 def _rho_axis(ax, rhos):
     ax.set_xscale("log")
-    ax.set_xlabel(r"$\rho$  (shared-$D$ radius, unexplained sd)",
+    # Each method is swept on its OWN parameter (run_rho_sweep.SWEEP_PARAM): a
+    # radius for the shared-D methods, the RHS shift m for the margin baseline.
+    # Both are in unexplained sds, which is what puts them on one axis -- but the
+    # label must not call the margin's value a radius.
+    ax.set_xlabel(r"Conservatism parameter, unexplained sd"
+                  "\n"
+                  r"($\rho$ = shared-$D$ radius; margin: $m$)",
                   fontsize=12)
     ax.set_xticks(rhos)
     ax.set_xticklabels([f"{r:g}" for r in rhos])
@@ -92,7 +107,8 @@ def _curve_panel(ax, df, col, star=None):
         if s.empty:
             continue
         ax.plot(s["rho"], s[col], marker=MARKER[m], color=COLOR[m],
-                label=LABEL[m], lw=1.8, ms=6.5, mec="white", mew=0.8)
+                label=LABEL[m], lw=1.8, ms=6.5, mec="white", mew=0.8,
+                ls=LINESTYLE.get(m, "-"))
         # A capped cell is an incumbent at max_iterations, not a converged answer.
         cap = s[s["n_capped"] > 0]
         if not cap.empty:
@@ -191,6 +207,10 @@ def fig_ablation(abls):
         rho = df["rho"].iloc[0]
         xspan = max(df["objective"].max() - df["objective"].min(), 1e-9)
         yspan = max(df["feasibility"].max() - df["feasibility"].min(), 1e-9)
+        # Only tau and alpha are ablated. The margin is not: it is swept on the
+        # MAIN curve now (it is that method's own parameter), so an ablation of it
+        # would just re-plot the sweep. Its frontier is in fig_rho_feasibility /
+        # fig_rho_objective alongside the shared-D methods.
         for m, knob in [("cp", r"$\tau$"), ("wrapper", r"$\alpha$")]:
             s = df[df["method"] == m].sort_values("knob")
             if s.empty:
