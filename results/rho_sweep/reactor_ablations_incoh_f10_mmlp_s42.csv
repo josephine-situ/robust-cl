@@ -1,0 +1,10 @@
+problem,method,feasibility,objective,solved_frac,status,n_capped,master_time_s,test_time_s,test_time_per_point_s,coherent,matched_bank,seed,rho,knob,phase,param,param_swept
+reactor,cp,0.0,2988.8202541026567,1.0,optimal,0,80.89718809127808,0.0,0.0,False,False,42,0.3,1.0,tau_ablation,0.3,rho
+reactor,cp,0.0,3049.870183259948,1.0,optimal,0,81.0141622543335,0.0,0.0,False,False,42,0.3,0.1,tau_ablation,0.3,rho
+reactor,cp,0.0,3052.080555652125,1.0,optimal,0,75.49661712646484,0.0,0.0,False,False,42,0.3,0.01,tau_ablation,0.3,rho
+reactor,cp,0.0,3052.1184090215106,1.0,optimal,0,81.00796675682068,0.0,0.0,False,False,42,0.3,0.001,tau_ablation,0.3,rho
+reactor,wrapper,0.0,3008.5405664277587,1.0,optimal,0,11.600007677078247,0.0,0.0,False,False,42,0.3,0.0,alpha_ablation,0.3,rho
+reactor,wrapper,0.0,2986.3014265969473,1.0,optimal,0,18.088811779022215,0.0,0.0,False,False,42,0.3,0.1,alpha_ablation,0.3,rho
+reactor,wrapper,0.0,2974.1682816903835,1.0,optimal,0,20.280998468399048,0.0,0.0,False,False,42,0.3,0.2,alpha_ablation,0.3,rho
+reactor,wrapper,0.0,2962.118582927927,1.0,optimal,0,22.957282924652098,0.0,0.0,False,False,42,0.3,0.3,alpha_ablation,0.3,rho
+reactor,wrapper,0.0,2942.5128647263696,1.0,optimal,0,19.601206493377685,0.0,0.0,False,False,42,0.3,0.5,alpha_ablation,0.3,rho

@@ -1,0 +1,5 @@
+feas_target,min_solved,method,param_swept,rho_star,feasibility,objective,solved_frac,n_capped,master_time_s,test_time_per_point_s,bound,note
+0.9,0.5,cp,rho,1.0,0.9802631578947368,9.500214743650314,0.7276237276237276,0,675.4425155520439,0.700330244261643,grid_max,censored at grid max
+0.9,0.5,wrapper,rho,1.0,0.96875,10.627756170988972,0.5052650052650052,0,17.548223733901978,1.4077940842200969,grid_max,censored at grid max
+0.9,0.5,margin,margin,0.5,0.9615942028985507,9.852660515016348,0.6488826488826489,0,0.9664668440818787,0.09256205229923643,solved_floor,NOT grid-censored: solved_frac<0.5 above rho=0.5
+0.9,0.5,nominal,none,,0.8911458333333333,11.302147218982885,0.9510354510354511,0,0.7533453702926636,0.08850908772698764,no_param,no swept parameter; constant reference level
