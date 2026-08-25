@@ -1,6 +1,7 @@
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Ask me questions about anything unclear before implementing.
 
 ## What this is
 
@@ -42,6 +43,18 @@ uv run python experiments/run_adversary_probe.py        # is the random bank a w
 uv run python experiments/probe_cmicl_cost_sampling.py  # does a SAMPLED c restore C-MICL's rate? (diagnostic; c stays ones everywhere else)
 sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu
 ```
+
+**Every `submit_*.sh` sources `experiments/_activate_env.sh`** rather than running
+`module load miniforge` itself. That name is **not present on every node of**
+**`mit_normal`**: on 2026-08-25 a 6-task rho sweep lost tasks 4-5 (reactor, seeds 7
+and 13) to `Lmod ... module(s) are unknown: "miniforge"` while tasks 0-3 ran on the
+same script. The helper tries a cached conda base, then several module names (plain
+and `--ignore_cache`), then conda.sh by absolute path, and on success caches the
+resolved base in `logs/.conda_base` so later tasks skip Lmod entirely. Prime it once
+from a login node — `conda info --base > logs/.conda_base` — and no task depends on a
+module name again. On failure it prints the node, `MODULEPATH` and the conda modules
+that node *does* have, then **aborts the task** (the caller's `set -e`) instead of
+running python against the wrong interpreter.
 
 **The rho sweep is the current headline experiment.** `run_rho_sweep.py` **forces
 `geometry="ellipsoid"` regardless of `config.yaml`**:

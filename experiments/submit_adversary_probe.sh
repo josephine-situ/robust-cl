@@ -15,8 +15,11 @@ mkdir -p logs results/adversary_probe
 echo "Job ${SLURM_JOB_ID:-local} on $(hostname) at $(date)"
 echo "Working directory: $PWD"
 
-module load miniforge
-conda activate robcl_env
+# Env setup is shared and node-tolerant: `module load miniforge` is unknown on
+# some nodes of mit_normal (it killed 2 of 6 rho-sweep array tasks on
+# 2026-08-25). See experiments/_activate_env.sh -- the caller has already cd-ed
+# to the repo root.
+source experiments/_activate_env.sh
 
 export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 
