@@ -928,6 +928,49 @@ def _cell_divisor(scale_map: dict, c_idx: int, rhs: float, basis: str) -> float:
     return max(1.0, abs(float(rhs)))
 
 
+def _resolve_tolerance(tau: float, conv: float, resolution_floor: float,
+                       abs_floor: float = 0.0) -> tuple:
+    """``tolerance = tau x conv``, floored at ``resolution_floor x conv``.
+
+    ONE form for every separation path. tau is a quantity in **unexplained
+    standard deviations**; ``conv`` turns it into whatever units that path's
+    distances are measured in:
+
+    ==========================  ======  ================================
+    path                        conv    because
+    ==========================  ======  ================================
+    basic (synthetic, reactor)  s_c     violations are kept RAW
+    contextual (gastric)        1.0     exceedances were ALREADY / s_c
+    ==========================  ======  ================================
+
+    **Multiplying tau is the primitive.** Dividing the distance is the same
+    operation moved to the other side of the comparison, and it survives in
+    exactly one place: the COHERENT path averages a draw's distance across
+    outcomes whose ``s_c`` differ, so there is no single ``conv`` to multiply by
+    and the division has to happen per cell, before that mean. Its ``conv`` is
+    therefore 1.0 here -- the work is already done. On the incoherent path the
+    mean is within one outcome, so its per-cell division IS a multiply by
+    ``tau * s_c`` written the other way round; it is left as a division only
+    because changing it would restate every logged distance without moving a
+    single decision.
+
+    **Both sides of the max use the same conv**, which is the invariant this
+    function exists to hold. The floor is one ``mip_gap`` of resolution expressed
+    in tau's own units, so ``tau < mip_gap`` is the floored region on every
+    problem. Before it was written the basic path converted tau with ``s_c`` and
+    its floor with ``max(1, |rhs|)``, which put the reactor's floor at 2.3e-3 in
+    tau units against gastric's 1e-4 -- a factor of 23 coming from a constraint's
+    right-hand side rather than from anything about solver resolution.
+
+    ``abs_floor`` is the basic path's legacy 1e-6 backstop ("cut everything above
+    1e-6"), kept there and absent on the contextual path, where it never applied.
+
+    Returns ``(tol, floor)``, both in the path's own units.
+    """
+    floor = max(float(resolution_floor) * float(conv), float(abs_floor))
+    return max(float(tau) * float(conv), floor), floor
+
+
 def _resolve_d0(distances, quantile: float) -> float:
     """``d0`` = a high quantile of the iteration-0 scenario distances, not their max.
 
@@ -1205,10 +1248,9 @@ class _BasicSeparation:
                 scale_basis = env.tolerance_basis == "scale" and bool(scale_map)
                 if scale_basis:
                     s_c = max(scale_map.values())
-                    d0, raw = None, float(self.dist_tol_rel) * s_c
+                    d0 = None
                 else:
                     d0 = _resolve_d0(all_viol, env.d0_quantile)
-                    raw = float(self.dist_tol_rel) * d0
                 # The tau that would stop THIS run at iteration 0. Violations stay
                 # raw on this path and the stopping statistic is their max, so the
                 # tau-equivalent is that max divided by whatever tau multiplies --
@@ -1222,8 +1264,33 @@ class _BasicSeparation:
                 # returns any incumbent within `mip_gap` of optimal, so a cut whose
                 # effect is smaller leaves x* unmoved. 1e-6 is the absolute backstop
                 # (the legacy "cut everything > 1e-6" semantics).
-                floor = max(env.resolution_floor * tol_scale, 1e-6)
-                self._tol = max(raw, floor)
+                # ONE tolerance rule, shared with the contextual path
+                # (_resolve_tolerance): tolerance = tau x conv, floored at
+                # mip_gap x the SAME conv, so tau < mip_gap is the floored region
+                # on every problem. Violations are raw here, so conv = s_c.
+                #
+                # Under the legacy d0 basis conv is d0 for the tolerance but
+                # `tol_scale` = max(1, |rhs|) for the floor -- kept exactly as it
+                # was, since that basis's whole point is reproducing prior runs.
+                # Under "scale" that split was a BUG: tol_scale is the d0 basis's
+                # normalizer (the coherent path divides by it only under "d0"),
+                # so the reactor's rhs of -50 gave tol_scale=50 against s_c=2.19
+                # and put the floor at 2.3e-3 in tau units against gastric's
+                # 1e-4. It silently floored the tau=0.001 cell of
+                # reactor_ablations_incoh_f10_mmlp_s42.csv, which actually ran at
+                # tau=0.00228 (objective 3052.118 vs 3052.081 at tau=0.01, so no
+                # conclusion moved -- but a mislabelled tau is a different matter
+                # now that tau is the swept AXIS of run_dial_sweep.py). Changes no
+                # run at tau >= 2.3e-3 on the reactor or 9.7e-4 on synthetic.
+                if scale_basis:
+                    self._tol, floor = _resolve_tolerance(
+                        self.dist_tol_rel, s_c, env.resolution_floor,
+                        abs_floor=1e-6)
+                    raw = float(self.dist_tol_rel) * s_c
+                else:
+                    raw = float(self.dist_tol_rel) * d0
+                    floor = max(env.resolution_floor * tol_scale, 1e-6)
+                    self._tol = max(raw, floor)
                 # Report a floored tolerance explicitly, as the coherent path does:
                 # it means every tau below that point gives the SAME run, so a tau
                 # grid must be spanned above it to be informative.
@@ -2045,12 +2112,19 @@ class _CoherentSeparation:
             if self.dist_tol_rel is not None:
                 scale_basis = env.tolerance_basis == "scale" and bool(scale_map)
                 if scale_basis:
-                    # tau IS the tolerance: distances are already in units of
-                    # unexplained sd, averaged over (anchor x outcome) cells. No
-                    # bank statistic enters, so tau does not move with the seed,
-                    # with B, or with how severe this particular draw set happened
-                    # to be -- and a tau above the iteration-0 distance stops
-                    # immediately, which is nominal.
+                    # conv = 1.0: the exceedances were ALREADY divided by each
+                    # outcome's own s_c before being averaged, so tau needs no
+                    # further conversion. That division is not a stylistic choice
+                    # here -- the COHERENT score means across outcomes with
+                    # different s_c, so there is no single factor to multiply tau
+                    # by and the normalization has to happen per cell, before the
+                    # mean. See _resolve_tolerance.
+                    #
+                    # Consequence, and it is the useful one: no bank statistic
+                    # enters, so tau does not move with the seed, with B, or with
+                    # how severe this particular draw set happened to be -- and a
+                    # tau above the iteration-0 distance stops immediately, which
+                    # is nominal.
                     d0, raw = None, float(self.dist_tol_rel)
                 else:
                     d0 = _resolve_d0(all_dists, env.d0_quantile)
@@ -2071,8 +2145,12 @@ class _CoherentSeparation:
                 # accomplishes nothing. Reported explicitly: a floored tolerance
                 # means every tau below the floor gives the SAME run, so a tau grid
                 # must be spanned above it to be informative.
-                floor = env.resolution_floor
-                self._tol = max(raw, floor)
+                if scale_basis:
+                    self._tol, floor = _resolve_tolerance(
+                        self.dist_tol_rel, 1.0, env.resolution_floor)
+                else:
+                    floor = env.resolution_floor
+                    self._tol = max(raw, floor)
                 if raw >= floor:
                     note = ""
                 elif scale_basis:

@@ -734,6 +734,39 @@ returns the nominal objective in 1 iteration). The basic path keeps violations r
 for logging and multiplies instead of divides; the two paths log different units
 but tau means the same thing.
 
+**One tolerance rule, `_resolve_tolerance` (2026-08-25):**
+`tolerance = tau * conv`, floored at `mip_gap * the SAME conv`. **Multiplying tau
+is the primitive**; `conv` converts it into whatever units that path compares in:
+
+| path | `conv` | because |
+|---|---|---|
+| basic (synthetic, reactor) | `s_c` | violations are kept **raw** |
+| contextual (gastric) | `1.0` | exceedances were **already** `/ s_c` |
+
+The surviving division is **structural, in exactly one place**: the coherent path
+averages a draw across outcomes whose `s_c` differ, so there is no single factor
+to multiply tau by and the normalization must happen per cell, *before* that mean.
+The incoherent path's mean is within one outcome, so its division **is** a
+`tau * s_c` written the other way round — left as a division only because flipping
+it would restate every logged distance without moving a decision.
+
+**Both sides of the `max` now use the same `conv`, so the floor is 1e-4 in tau
+units on every problem** and `tau < mip_gap` is the floored region everywhere.
+Before this the basic path converted tau with `s_c` and its floor with
+`tol_scale = max(1, |rhs|)` — the **legacy d0 basis's** normalizer, which the
+coherent path only uses under `tolerance_basis: "d0"`. Measured floors in tau
+units before -> after: gastric 1e-4 -> 1e-4, synthetic 9.7e-4 -> 1e-4, reactor
+**2.3e-3 -> 1e-4** (its `rhs` of -50 gave `tol_scale = 50` against `s_c = 2.19`,
+so a factor of 23 came from the constraint's right-hand side rather than from
+anything about solver resolution). **It floored a committed cell**: the tau=0.001
+row of `reactor_ablations_incoh_f10_mmlp_s42.csv` actually ran at **tau=0.00228**
+(objective 3052.118 vs 3052.081 at tau=0.01, feasibility 0 either way, so no
+conclusion moved — but a mislabelled tau matters now that tau is the swept **axis**
+of `run_dial_sweep.py`). Nothing at `tau >= 2.3e-3` (reactor) or `9.7e-4`
+(synthetic) changes, and the contextual path is bit-identical; verified by
+reproducing all six synthetic CP cells of the dial sweep exactly. The legacy `d0`
+basis keeps `tol_scale` untouched, since reproducing prior runs is its only job.
+
 - **One decade grid, wide range** (`[1.0, 0.1, 0.01, 0.001]`). Both paths max over
   draws, but a draw *scores* differently: basic has one cell (so, the raw
   violation); the multi-constraint paths mean over the anchors, i.e. (violating
