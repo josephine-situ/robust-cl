@@ -612,27 +612,52 @@
       set-wise so CP cannot trade one patient's feasibility for another's.
     \item Rejections are \textbf{cached} (113/200 draws on gastric); a fixed
       protected set plus a monotone master makes that sound.
+    \item \mc{The cap is a count budget, $\lfloor\alpha_{\text{cp}}n\rfloor$ less
+      the anchors nominal already failed; \textbf{pinned at $0$} for every result
+      and moved only by its \emph{ablation}. Above $0$ CP does trade one patient
+      for another, and which one is an artefact of the anchor order.}
   \end{itemize}
 \end{frame}
 
 % ===========================================================================
-\begin{frame}{Calibration: the target is $\rho^\ast$}
-  Held-out CV, after model selection. Sweep the \textbf{shared} $\rho$; each
-  method's own parameter \emph{fixed} ($\tau{=}0.01$, $\alpha{=}0.2$).
+\begin{frame}{Calibration: primary axis is each method's own dial}
+  Held-out CV, after model selection. $\rho$ \textbf{fixed} at two columns per
+  problem (gastric $0.5,1$; reactor $1,2$); each method walks \emph{its own} dial.
   \begin{itemize}
-    \item $\rho^\ast(\text{method})$: largest $\rho$ meeting the feasibility target.
+    \item Reported object: the curve in \textbf{objective $\times$ feasibility}.
+      ``At equal feasibility, whose decisions are better'' is a two-axis claim.
+    \item Dials: CP $\tau$, wrapper $\alpha$, margin $m$, C-MICL $\alpha$
+      (protocol point $1-$target), nominal none. \textbf{Robust~Reg.\ is absent}:
+      its dial \emph{is} $\rho$.
+    \item Derived per series: \textbf{best objective} among cells meeting the
+      target on enough solved contexts. No monotonicity assumed.
+    \item \mc{$\tau$'s grid is placed per $\rho$ column from that column's own
+      iteration-$0$ distance. Fixing $\rho$ makes this non-circular: it is fitted
+      to the \emph{assumed set}, not to the feasibility it will be scored on.}
+    \item \mc{One bank per $(\rho$ column, fold$)$ serves both grids: a bank is a
+      pure function of $(\text{inst},\mathcal D,\text{seed},B)$.}
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Calibration: the $\rho$ axis (supporting)}
+  Sweep the \textbf{shared} $\rho$; each method's own parameter \emph{fixed}
+  ($\tau{=}0.01$, $\alpha{=}0.2$).
+  \begin{itemize}
+    \item $\rho^\ast(\text{method})$: largest $\rho$ meeting the feasibility target
+      --- \emph{capacity}, not a frontier point.
     \item Curve is the primary reading; $\rho^\ast$ is \emph{derived} from it,
       re-derivable at a new target without re-solving.
     \item \textbf{Evaluation runs each method at its own $\rho^\ast$}: matched
       held-out feasibility, not a matched $\mathcal D$.
     \item $\tau,\alpha$: ablations at one $\rho$.
-    \item Train-only. Folds: temporal \mc{(gastric)} / KFold. Per (method,
-      \mc{coherence}) cell.
-    \item Scores \textbf{conditional} on a solve; \texttt{solved\_frac} beside
-      them; capped cells out of $\rho^\ast$.
-    \item Clock split \emph{master} vs \emph{test-point}: CP pays up front, the
-      wrapper per point.
   \end{itemize}
+  Both axes: train-only; folds temporal \mc{(gastric)} / KFold; scores
+  \textbf{conditional} on a solve with \texttt{solved\_frac} beside them; capped
+  cells flagged. \mc{Per-context records $(\text{fold},\text{context},\text{solved},
+  \text{feasible},\text{objective})$ are written too, so a same-cohort objective is
+  derivable --- a conditional mean flatters whoever solved least.} Clock split
+  \emph{master} vs \emph{test-point}: CP pays up front, the wrapper per point.
 \end{frame}
 
 % ===========================================================================

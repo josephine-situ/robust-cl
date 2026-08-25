@@ -56,7 +56,80 @@ module name again. On failure it prints the node, `MODULEPATH` and the conda mod
 that node *does* have, then **aborts the task** (the caller's `set -e`) instead of
 running python against the wrong interpreter.
 
-**The rho sweep is the current headline experiment.** `run_rho_sweep.py` **forces
+**The DIAL sweep is the headline experiment; the rho sweep is now supporting
+evidence** (2026-08-25). `run_dial_sweep.py` walks each method along **its own
+dial at a FIXED rho** and the primary output is a scatter in **objective x
+held-out feasibility** — because the claim the contribution rests on is "at equal
+feasibility, whose decisions are better", which is a statement about two axes at
+once. `run_rho_sweep.py` answers a different question ("how much assumed
+uncertainty does each method absorb"), which is about D; it is still run, still
+current, and is no longer the headline.
+
+```bash
+uv run python experiments/run_dial_sweep.py --problem gastric               # the primary axis
+uv run python experiments/run_dial_sweep.py --problem reactor --rho-columns 1 2 3
+uv run python experiments/run_dial_sweep.py --problem gastric --coherent    # the ablation cell
+uv run python experiments/run_dial_sweep.py --problem gastric --cp-alpha-ablate
+uv run python experiments/plot_dial_sweep.py --all --suffix _incoh          # -> fig_dial_frontier_*.pdf
+uv run python experiments/measure_clip_fraction.py       # how much of D the label bounds remove, per rho
+sbatch experiments/submit_dial_sweep.sh                  # one array task per problem
+```
+
+The grid:
+
+| method | dial | rho columns | notes |
+|---|---|---|---|
+| `cp` | tau | gastric {0.5, 1.0}, reactor {1, 2} | grid **re-read per rho column** |
+| `wrapper` | alpha | same | its P models are a prefix of CP's bank |
+| `margin` | m | — | scored once; faces no D |
+| `cmicl` | alpha | — | scored once; alpha=0.1 flagged as the protocol point |
+| `nominal` | none | — | single reference point |
+| `robust_reg` | — | — | **dropped**: its dial IS rho, so at fixed rho it has none |
+
+- **Both rho columns share one output CSV.** The `rho` column tells them apart and
+  one file per (problem, coherence, seed) is what the plot reads. The checkpoint
+  key is `(method@rho, dial)`, so resume is unchanged.
+- **The tau grid is placed per rho column, not reused.** tau's scale tracks D, so
+  one absolute grid separates far harder at rho=0.5 than at rho=1.0 and more cells
+  collapse to nominal. Each column is **probed** — one CP run at a tau above every
+  distance, reading the new `CPHistory.iter0_tau` — and its grid is fractions of
+  that (`--tau-frac-grid`, default `[1.0, 0.5, 0.25, 0.1, 0.05, 0.02]`). **Fixing
+  rho is what makes this legitimate rather than circular**: the grid is placed
+  from a statistic of the *assumed set*, never from the feasibility it is about to
+  be scored on. `tau_frac = 1` stops before any cut, so that endpoint **is**
+  nominal — verified on synthetic, tau=0.5205 returns the nominal objective to the
+  last digit. The probe is cached in `{problem}_tau_probe{cell}.json`.
+- **One shared bank per (rho column, fold)** (`cv_calibrate.FoldCache`,
+  `uncertainty.build_bank_for_instance`). A bank is a pure function of
+  `(instance, D, seed, B)` — neither tau nor alpha reaches it — so one B=200 bank
+  serves CP's whole tau grid *and* the wrapper's alpha grid. Verified on
+  synthetic: **2 constructions for 2 folds across 5 solves** (was 10), and CP at
+  the smallest tau still equals the wrapper at alpha=0 to the last digit. Cost:
+  the cache holds every fold's bank at once, so memory is `len(folds)` x the
+  models; it is dropped between rho columns for that reason.
+- **Per-context records**: `{problem}_dial_contexts{cell}.csv` carries
+  `(fold, context_idx, solved, feasible, objective)` per cell. Primary scoring is
+  **unchanged** — still conditional on each cell's own solved contexts, and that
+  independence is load-bearing — but the objective is the deliverable now, and a
+  conditional mean of it flatters whoever solved least. The same-cohort comparison
+  is derivable from these rows afterwards rather than made primary.
+- **The plot encodes solved fraction as marker size.** Without it gastric margin
+  at m=0.75 (obj 8.78, feas 1.000, solved 0.203) reads as a dominating point when
+  it is a 20% cohort. Pareto direction follows `oracle.objective_sense`, carried
+  as a column, because gastric maximises survival and the reactor minimises cost.
+- **Seeds**: the full dial grids run at **seed 42 only**. Repeating three seeds
+  triples a grid that is already |rho columns| x |dial grid|; re-run the protocol
+  points at 7 and 13 instead if the curves come out non-monotone.
+
+Pre-registered expectations, so a surprise reads as a result and not a bug:
+**gastric C-MICL will be infeasible over much of its alpha grid** (measured
+infeasible at 0.1 under both multiplicity settings; `n_cal = 80` means
+alpha >= 0.02 for a finite `q` at all), which is why its grid is extended
+**upward** to 0.2/0.3/0.5 — where it *first solves* is the result, and proving the
+marginal case infeasible costs 176 s against nominal's 0.9 s. **Reactor rho=2 may
+be short**: nominal misses by ~4 units of `F` and rho=1 buys ~2.2, so add 3.
+
+**The rho sweep.** `run_rho_sweep.py` **forces
 `geometry="ellipsoid"` regardless of `config.yaml`**:
 
 ```bash
@@ -377,9 +450,28 @@ still `box_l1`; only `config.yaml` carries the ellipsoid default.
   (`_clip_to_bounds`), and robust_reg's training adversary now clips too — before
   this, CP and the wrapper faced `D n [0,1]` on the gastric toxicities while
   robust_reg faced the raw ball, so **shared D held only up to the bounds**. It
-  binds hardest exactly there: on the five gastric toxicities at `rho=1`, 45-49%
-  of shifted labels leave `[0,1]` and clipping roughly **halves** the realizable
-  shift (DLT `||delta||` 4.56 -> 2.56); at `rho=0.75`, 39-41% and 3.42 -> 2.22.
+  binds hardest exactly there. **Re-measured 2026-08-25**
+  (`experiments/measure_clip_fraction.py`, production cell: ellipsoid,
+  incoherent, DLT derived, B=30, seed 42) on the four freely drawn toxicities:
+
+  | rho | rows leaving `[0,1]` | reach = `\|clipped\|/\|raw\|` |
+  |---|---|---|
+  | 0.5 | 9.6-11.8% | 0.921-0.934 |
+  | 0.75 | 14.5-17.7% | 0.878-0.899 |
+  | 1.0 | 19.2-23.1% | 0.834-0.864 |
+
+  **rho=0.5 is now read, not inferred** — it is a headline dial-sweep column. The
+  coherent cell is within a percentage point at every rho (0.8-23.4% at rho=1),
+  so coherence does not move this marginal statistic. **Derived DLT barely clips
+  at all** (0.07-0.16% of rows, reach 1.000): the identity maps in-range
+  components to an in-range DLT by construction, which is a property of the link
+  rather than of D.
+  **The figures previously recorded here — 45-49% at rho=1, and `||delta||`
+  4.56 -> 2.56 — do not reproduce on current code** under either geometry or
+  either coherence cell (`box_l1` at `eps_0=1` gives 12-16%). They predate both
+  the `IterativeImputer` label correction and `derive_linked_labels`, and the
+  4.56 was DLT's *free-draw* radius under an older `oof_sd`. Treat them as
+  superseded; the cause has not been isolated further.
   Clipping only shrinks `|delta_i|`, so the shift stays in D. Bites
   only where `label_bounds` is set — gastric's five toxicities; **gastric OS and
   synthetic carry none and do not move**. **Gastric robust_reg numbers predating
@@ -420,7 +512,7 @@ still `box_l1`; only `config.yaml` carries the ellipsoid default.
 - **`ScenarioBank`** draws B **vertices** of D and trains one model per draw per
   outcome, `random_state` fixed so the scenario is the only variation. Draw `b` is
   a pure function of `(seed, b)`, so the wrapper's P models are a **nested prefix**
-  of CP's B — which is what makes the `alpha=0` == `tau->0` equivalence exact.
+  of CP's B.
 - **Draws are INCOHERENT in production** (`coherent: false`, since 2026-08-21).
   Coherence remains a *grouping*, not a global flag — under `coherent: true` the
   group shares one standardized direction scaled by each outcome's radius, and
@@ -437,8 +529,7 @@ still `box_l1`; only `config.yaml` carries the ellipsoid default.
   DLT against its four components. **That block is no longer a draw**
   (`derive_linked_labels`, below), so what a shared direction is left modelling is
   the +0.28 block alone, where 0 is the closer of the two available assertions.
-  **`--coherent` is still required for the `alpha=0` == `tau->0` check**
-  (objection 3). Justification and open objections:
+  Justification and open objections:
 
   1. **RESOLVED (2026-08-15): OS does not belong on the shared direction.** OOF
      residual correlation is **+0.28** across non-DLT toxicity pairs, vs **+0.06**
@@ -456,23 +547,9 @@ still `box_l1`; only `config.yaml` carries the ellipsoid default.
      cut is no longer a relabeling of any trial — the mirror of the old objection,
      traded deliberately. And **the wrapper is unchanged**: its `z[c,p]` still
      gates on one draw per replicate, so this closes the gap on CP's side only.
-  3. **OPEN — the flag means different things in CP and the wrapper.** The
-     wrapper's incoherent arm gives each constraint its own `z[c,p]`; CP's has no
-     analogue. So the `alpha=0` == `tau->0` equivalence is a **coherent-arm**
-     result, untested (and now structurally false) on the incoherent arm, where CP
-     no longer cuts one relabeling at all. Since separation follows the bank,
-     **`--coherent` alone puts you in the arm where the check is defined** — it
-     flips the draws and the adversary together.
-  4. **RESOLVED (2026-08-21): DLT is derived, not drawn.** See
+  3. **RESOLVED (2026-08-21): DLT is derived, not drawn.** See
      `derive_linked_labels` below.
 
-  Changing (2) was not free, and the incoherent path is where the bill lands: the
-  shared-`b` cut is what made CP-at-`tau->0` equal the wrapper-at-`alpha=0`, so
-  that equivalence is now a **coherent-path** statement. Permanent exclusion stays
-  sound because it is re-keyed **(constraint, draw)** rather than draw — a draw cut
-  for one constraint remains eligible for the others, and a cut (constraint, draw)
-  can never be violated again for that constraint. Still worth measuring: score
-  both banks at the nominal `x*`.
 - **`derive_linked_labels` — DLT follows the identity instead of drawing** (on in
   `config.yaml` since 2026-08-21; the dataclass field still defaults `False`).
   `DLT_PROP = 1 - prod(1 - tox)` holds exactly (2e-16) over the four modeled
@@ -514,9 +591,8 @@ still `box_l1`; only `config.yaml` carries the ellipsoid default.
 - **`rho`/`eps_0`/`budget_frac` are shared constants, not knobs.** Each method
   keeps exactly one dial: CP `tau`, wrapper `alpha`, robust_reg `label_eps`. Never
   pin D to robust_reg's calibrated optimum, to the GT ensemble (tunes to the
-  judge), or to synthetic's known `noise_std` (CP then wins by construction). **Do
-  not fix `tau->0` and `alpha=0` together**: at B=P that collapses CP into the
-  wrapper. The sweep's fixed dials are **tau = 0.01** (`methods.cp.dist_tol_rel`)
+  judge), or to synthetic's known `noise_std` (CP then wins by construction).
+  The sweep's fixed dials are **tau = 0.01** (`methods.cp.dist_tol_rel`)
   and **alpha = 0.2** (`methods.wrapper.alpha`), read from `config.yaml` by
   `_fixed_knobs` — *not* from `results/cv/*_robustness_knobs.json`, whose tau was
   selected under the old `d0` basis and means a different quantity
@@ -667,9 +743,23 @@ but tau means the same thing.
   breadth is information. Read `[cp] basis=scale ... max iter-0 dist=` off a real
   run before assuming the grid brackets a **new** problem **or the other separation
   path**: the same gastric bank reads 0.0623 coherent and 0.2441 incoherent.
-- **Do not pin the grid from measured distances**: those scale with D, i.e. with
-  rho, so a fitted grid needs refitting after every rho and is circular. Order is
-  (1) rho sweep at fixed tau, (2) tau ablation at the chosen rho.
+- **Do not pin the grid from measured distances while rho is moving**: those
+  scale with D, so a grid fitted across a rho sweep needs refitting after every
+  rho and is circular. On the rho sweep the order stays (1) rho sweep at fixed
+  tau, (2) tau ablation at the chosen rho.
+  **At a FIXED rho the circularity is gone and the grid IS placed from the
+  distances** — that is what `run_dial_sweep.py` does, one probe per rho column.
+  The distinction is which quantity the grid is fitted against: a statistic of the
+  *assumed set* (legitimate, and the only way tau transfers across rho columns and
+  across the two separation paths) versus the *feasibility* the grid is about to
+  be scored on (circular, and never done).
+- **`CPHistory.iter0_tau`** is that statistic: the iteration-0 separation
+  distance expressed in tau's own units, set by whichever strategy ran, so it
+  reads the same off the basic path (max raw violation / `scale(y_c)`) and the
+  contextual ones (the distance itself under `basis="scale"`). Read it from a
+  probe run at a tau above every distance — the loop separates once, reports, and
+  stops at iteration 0. It is a **placement statistic and never enters a scored
+  cell**.
 - **The mean is the right statistic and is anchor-count stable.** A scenario
   breaking 2 of 20 anchors badly is less dangerous than one breaking all 20
   moderately; a max ranks those backwards. This is the *anchor* mean and it stands
@@ -919,11 +1009,29 @@ arms *every* method could prescribe for, recomputed per draw), so all of it is
 
 ### Calibration (`src/methods/calibrate.py`, `cv_calibrate.py`)
 
-**The calibration target is rho\*, not each method's knob.** `run_rho_sweep.py`
-sweeps the shared rho with tau/alpha fixed and reports **rho\*(method)** — the
-largest rho meeting the target. D is shared at **every point of the sweep**, and
-that curve is where the shared-D comparison is read. rho is never *fitted*; tau and
-alpha become ablations at one rho (`--ablate`).
+**Two axes, and since 2026-08-25 the DIAL one is primary.**
+
+**Primary — the dial sweep** (`run_dial_sweep.py`). rho is **fixed** at one of two
+columns per problem and each method walks its own dial. The reported object is the
+**curve in objective x held-out feasibility**, and the derived one is each
+series' **protocol point**: among cells meeting the target on enough solved
+contexts, the one with the **best objective** in the problem's own sense
+(`{problem}_dial_star{cell}.csv`, `dial_star` / `bound`). That rule needs no
+monotonicity — unlike rho, a dial has no direction that is automatically "more"
+(alpha and tau run the opposite way round from `m`) — and it is the decision a
+user would actually take from the series. `bound` is `interior`, `grid_end` (the
+dial grid may be the limit rather than the method) or `none`.
+
+**Supporting — the rho sweep** (`run_rho_sweep.py`). Sweeps the shared rho with
+tau/alpha fixed and reports **rho\*(method)** — the largest rho meeting the
+target. D is shared at **every point of the sweep**, and that curve is where the
+shared-D comparison is read. rho is never *fitted*; tau and alpha become ablations
+at one rho (`--ablate`).
+
+**Neither table is the comparison.** `rho*` is a capacity, `m*` a price, and a
+`dial*` is a point on a frontier; the thing they are all read off — objective at
+equal feasibility — is the curve, which is why the curve is the primary output in
+both files.
 
 **The sweep is per-method parameter, so the star table is too.** Each method
 walks its own dial (`SWEEP_PARAM`) and the same rule below is applied to it, with
@@ -1038,10 +1146,27 @@ re-run; the other rows are unaffected.
 - Outputs are scoped by cell (`_coh`/`_incoh`, `_matchbank`). CP samples D with
   B=200 against the wrapper's P=20, so a rho\* gap between them is confounded with
   sampling density — `--match-bank` removes it.
-- **CP is exempt from `uncertainty.alpha`.** Its `cp_alpha` is **pinned at 0 at
-  every call site**: a cut breaking the protected anchor set is rolled back and its
-  draw permanently rejected. `run_chemo_robust.py` still *passes* `settings["alpha"]`
-  into `cp_alpha`, but the body hard-codes `0.0` — the argument is **dead**.
+- **CP is exempt from `uncertainty.alpha`, and `cp_alpha` is pinned at 0 for
+  every result** — a cut breaking the protected anchor set is rolled back and its
+  draw permanently rejected, so tau is the only robustness knob.
+  `run_chemo_robust.py` still *passes* `settings["alpha"]` into `cp_alpha` and the
+  body ignores it; that argument stays dead.
+  **It is no longer dead in `cp.py`, though** (2026-08-25). It used to be:
+  `_protected_still_feasible` returned on the first broken anchor whatever alpha
+  said, so the only place `self.alpha` appeared was a print. It is now a real
+  **count budget** — `max_broken = floor(alpha * n_anchors) - (anchors nominal
+  already failed)`, floored at 0 — threaded into all three call sites, so the
+  **coverage-cap ablation** (`run_dial_sweep.py --cp-alpha-ablate`) can hold tau at
+  tau* and walk it. At `max_broken = 0` the loop still returns on the first break,
+  so **every existing call is bit-identical** and no committed number moves.
+  Permanence survives the change: the protected set and the budget are both fixed
+  and the master only tightens, so the broken count is monotone in the cut set and
+  a candidate that exceeds the budget once exceeds it always. What alpha > 0 buys
+  is exactly what the set-wise test forbade — CP trading one patient's
+  feasibility for another's — which is the property the ablation exists to price.
+  **Structurally inert on synthetic and the reactor**: both take the basic
+  separation path, which has no protected-anchor test; the runner says so and
+  skips rather than emitting a flat curve that reads as a measurement.
 - **Legacy paths.** `calibrate_strength` (strongest knob with training infeasible
   fraction <= `uncertainty.alpha`) runs only under `calibration.method: "alpha"`,
   a key that left `config.yaml` on 2026-08-21 and now needs adding back (live
@@ -1217,6 +1342,40 @@ Stated limitations of the current numbers, not bugs to fix silently.
    so `m*` comes off the main curve and its `--ablate` pass was removed as
    redundant. That also stopped `nominal`/`cmicl` being re-solved once per grid
    point for an identical answer.
+   **NEW (2026-08-25): the comparison now has a place to be read** —
+   `run_dial_sweep.py` puts margin on the same objective-x-feasibility axes as CP
+   and the wrapper, with `margin` in the default `METHODS` of
+   `submit_dial_sweep.sh`, so (c) is closed there. **(b) is still open**: the
+   machinery exists and no dial sweep has been *run* on any problem, so the
+   question the baseline exists to ask remains unanswered.
+
+10. **NEW (2026-08-25). Everything in the dial sweep is machinery, not results.**
+    `run_dial_sweep.py`, `plot_dial_sweep.py`, `submit_dial_sweep.sh`, the shared
+    bank, the per-context records, the tau probe and the coverage-cap budget are
+    all in place and smoke-tested on synthetic; **no gastric or reactor dial sweep
+    has been run.** Everything above about what the figure will show is a design
+    statement. Specifically unmeasured: whether CP's curve sits above the margin's
+    at equal feasibility on either instance; where gastric C-MICL first solves;
+    whether the reactor needs rho=3; and whether relaxing CP's coverage cap lifts
+    its feasibility ceiling.
+    Three things are **asserted rather than shown** even once it is run:
+    (a) the tau grid is placed from **one fold**'s iteration-0 distance by default
+    (`--tau-probe-folds`), which is a placement heuristic and not a measurement;
+    (b) the protocol point is "best objective among the cells that deliver", which
+    is a *reporting* rule chosen here and not derived from anything;
+    (c) the coverage cap above 0 lets CP drop one patient to serve another, and
+    **which** patient is an artefact of the anchor ordering — the ablation prices
+    that trade, it does not make it principled.
+
+11. **NEW (2026-08-25). The recorded gastric clip fractions did not reproduce.**
+    CLAUDE.md carried 45-49% of shifted labels leaving `[0,1]` at rho=1 and a
+    roughly halved realizable shift; re-measuring on current code gives **19-23%**
+    and a reach of 0.83-0.86, in either coherence cell, and `box_l1` at `eps_0=1`
+    gives 12-16% — so the old numbers do not come back under any switch tried.
+    They predate the `IterativeImputer` label correction and `derive_linked_labels`
+    and are treated as superseded. **The cause has not been isolated**, which is
+    the open part: if some other pre-2026-08-21 measurement in this file was made
+    the same way, it is suspect for the same reason.
 
 ## Presentations (`presentations/`)
 

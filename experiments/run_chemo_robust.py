@@ -305,9 +305,12 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
     else:
         raise ValueError(f"Unknown method for knob map: {method}")
 
+    # `cp_alpha` reaches CP only and is None -- the pinned 0 -- for every runner
+    # except the coverage-cap ablation, which sets settings["cp_alpha"] to walk it.
     build = lambda knob: build_method(
         method, knob, model_type, model_params, settings,
         bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
+        cp_alpha=settings.get("cp_alpha"),
     )
     return build, strength_to_knob
 

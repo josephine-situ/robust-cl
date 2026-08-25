@@ -321,11 +321,87 @@ def _fold_instance(base: ProblemInstance, train_idx: np.ndarray,
     )
 
 
+class FoldCache:
+    """Per-fold work shared across a DIAL grid: the fold instance and its bank.
+
+    A dial sweep holds rho fixed and walks one method's own knob -- CP's tau, the
+    wrapper's alpha -- so everything upstream of that knob is recomputed
+    identically at every grid point. Two things there are expensive:
+
+    - the **fold instance**, cheap but not free (``_fold_instance`` +
+      ``filter_constraints``);
+    - the **scenario bank**, which costs B model fits per fold. Gastric at B=200
+      over 6 outcomes is 1200 fits, and a 6-value tau grid beside a 5-value alpha
+      grid paid for that eleven times over at ONE rho.
+
+    Sharing is exact, not an approximation, and for two separate reasons:
+
+    - The fold instance is a ``dataclasses.replace`` chain over frozen data and no
+      solver mutates it, so one object reused across knobs is the same input as a
+      fresh one per knob.
+    - The bank is a pure function of ``(instance, D, seed, B)``. Neither tau nor
+      alpha reaches it: tau is a tolerance applied to distances computed from the
+      bank, alpha a count over the models it hands out. The wrapper's P draws are
+      a prefix of CP's B, so ONE bank serves both methods' whole grids.
+
+    What the cache is keyed on is only the fold index, so it must not outlive the
+    cell it was built for. ``key`` records what that cell was and
+    :meth:`for_cell` returns a fresh cache whenever it changes -- rho moves D, the
+    seed moves the draws, the coherence flag moves both the draws and CP's
+    adversary. Getting that wrong is silent (a bank from the wrong rho), which is
+    why the key is carried rather than left to the caller's discipline.
+
+    Memory: the cache holds every fold's bank at once, where the un-cached path
+    held one at a time. That is len(folds) x the models, which on gastric is the
+    reason to build one cache per rho column and drop it before the next.
+    """
+
+    def __init__(self, bank_factory: Optional[Callable] = None, key=None):
+        self.bank_factory = bank_factory
+        self.key = key
+        self._instances: dict = {}
+        self._banks: dict = {}
+
+    @classmethod
+    def for_cell(cls, current: Optional["FoldCache"], key,
+                 bank_factory: Optional[Callable] = None) -> "FoldCache":
+        """``current`` if it was built for ``key``, else a fresh cache."""
+        if current is not None and current.key == key:
+            return current
+        return cls(bank_factory=bank_factory, key=key)
+
+    def instance(self, k: int, base: ProblemInstance, train_idx, val_rows,
+                 constraint_names: Optional[List[str]]) -> ProblemInstance:
+        fi = self._instances.get(k)
+        if fi is None:
+            fi = _fold_instance(base, train_idx, val_rows)
+            if constraint_names is not None:
+                fi = filter_constraints(fi, constraint_names)
+            self._instances[k] = fi
+        return fi
+
+    def bank(self, k: int, fold_instance: ProblemInstance):
+        """The bank for fold ``k``, built on first use. ``None`` when the cache
+        carries no factory (methods that face no D)."""
+        if self.bank_factory is None:
+            return None
+        if k not in self._banks:
+            self._banks[k] = self.bank_factory(fold_instance)
+        return self._banks[k]
+
+    def clear(self) -> None:
+        self._instances.clear()
+        self._banks.clear()
+
+
 def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
                   folds, oracle, base: ProblemInstance,
                   constraint_names: Optional[List[str]] = None,
                   contextual: bool = True,
-                  return_details: bool = False):
+                  return_details: bool = False,
+                  fold_cache: Optional[FoldCache] = None,
+                  bank_kwarg: Optional[str] = None,
+                  return_contexts: bool = False):
     """Mean held-out ``(feasibility, objective, solved_frac)`` for one knob.
 
     With ``return_details=True`` returns a dict instead, adding the solver
@@ -351,6 +427,26 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
     perverse incentive: a knob that renders most contexts unsolvable and gets the
     survivors right scores 1.0. Callers must report it, and treat a high
     feasibility at a low solved fraction as the artefact it is.
+
+    ``return_contexts`` adds a ``"contexts"`` list of ``(fold, context_idx,
+    solved, feasible, objective)`` -- one record per held-out context on a
+    contextual problem, one per fold on a single-decision one. The CELL scoring
+    above is unchanged and stays primary: it is conditional on each cell's OWN
+    solved contexts, and that independence is load-bearing (no cell's score may
+    depend on what another cell could solve). The records exist because the
+    objective is now a reported AXIS rather than a side column, and a
+    conditional-on-solved mean of it flatters whichever cell solved least. With
+    per-context rows the same-cohort comparison -- restrict every cell to the
+    contexts ALL of them solved -- is derivable afterwards, without making it the
+    primary statistic. ``context_idx`` is the row's index into ``base.X_train``,
+    so it identifies the same patient across cells, methods and rho columns.
+    ``feasible``/``objective`` are ``nan`` on an unsolved context.
+
+    ``fold_cache`` shares the fold instance and its scenario bank across the
+    dial grid (see :class:`FoldCache`); ``bank_kwarg`` names the keyword the
+    solver takes that bank under (``"cp_bank"`` for CP, ``"bank"`` for the
+    wrapper, ``None`` for a method that faces no D). Both default off, so every
+    existing caller is untouched.
     """
     import time as _time
     solver_fn = build_solver(knob)
@@ -358,15 +454,27 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
     # Detail channels, reported only when return_details is set. Kept out of the
     # 3-tuple so existing callers are untouched.
     statuses, master_times, test_times, test_points = [], [], [], []
-    for train_idx, val_idx in folds:
+    contexts = []          # (fold, context_idx, solved, feasible, objective)
+    for k, (train_idx, val_idx) in enumerate(folds):
         val_rows = base.X_train[val_idx] if (contextual and base.X_train is not None) else None
-        fi = _fold_instance(base, train_idx, val_rows)
-        if constraint_names is not None:
-            fi = filter_constraints(fi, constraint_names)
+        if fold_cache is not None:
+            fi = fold_cache.instance(k, base, train_idx, val_rows, constraint_names)
+        else:
+            fi = _fold_instance(base, train_idx, val_rows)
+            if constraint_names is not None:
+                fi = filter_constraints(fi, constraint_names)
+        # The shared bank, when the caller asked for one. Handed to the solver as a
+        # keyword rather than baked into the partial because the bank is per FOLD
+        # while the partial is per knob.
+        extra = {}
+        if fold_cache is not None and bank_kwarg:
+            shared_bank = fold_cache.bank(k, fi)
+            if shared_bank is not None:
+                extra[bank_kwarg] = shared_bank
         # MASTER phase: train + build + solve to the final master. For CP this is
         # the whole cut loop, which is why it is timed separately from prescribing.
         _t0 = _time.time()
-        result = solver_fn(fi)
+        result = solver_fn(fi, **extra)
         master_times.append(_time.time() - _t0)
         # solve_cp returns (SolutionResult, history); the baselines return a bare
         # SolutionResult. Unwrap as calibrate.infeasible_fraction does -- otherwise
@@ -379,13 +487,21 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
             feas_vals, obj_vals, n_total = [], [], 0
             # TEST-POINT phase: one prescribe solve per held-out context.
             _t1 = _time.time()
-            for row in val_rows:
+            for ci, row in enumerate(val_rows):
                 n_total += 1
                 _, x_opt = solve_for_test_cohort(result, fi, row)
+                # The row's index in base.X_train, NOT its position in the fold --
+                # it is what makes a context the same patient across cells.
+                ctx_id = int(val_idx[ci])
                 if x_opt is None:
-                    continue           # unsolvable: excluded, counted in solved_frac
-                feas_vals.append(1.0 if oracle.feasible(x_opt) else 0.0)
-                obj_vals.append(oracle.objective(x_opt))
+                    # Unsolvable: excluded from both means, counted in solved_frac.
+                    contexts.append((k, ctx_id, 0.0, float("nan"), float("nan")))
+                    continue
+                f = 1.0 if oracle.feasible(x_opt) else 0.0
+                o = float(oracle.objective(x_opt))
+                feas_vals.append(f)
+                obj_vals.append(o)
+                contexts.append((k, ctx_id, 1.0, f, o))
             test_times.append(_time.time() - _t1)
             test_points.append(n_total)
             if feas_vals:
@@ -403,9 +519,16 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
             x_opt = getattr(result, "x_opt", None)
             solved = x_opt is not None and np.all(np.isfinite(x_opt))
             if solved:
-                fold_feas.append(1.0 if oracle.feasible(x_opt) else 0.0)
-                fold_obj.append(oracle.objective(x_opt))
+                f = 1.0 if oracle.feasible(x_opt) else 0.0
+                o = float(oracle.objective(x_opt))
+                fold_feas.append(f)
+                fold_obj.append(o)
+            else:
+                f = o = float("nan")
             fold_solved.append(1.0 if solved else 0.0)
+            # One record per fold: the fold IS the decision here, so context_idx is
+            # -1 rather than a row -- there is no cohort to line cells up on.
+            contexts.append((k, -1, 1.0 if solved else 0.0, f, o))
     feas = float(np.mean(fold_feas)) if fold_feas else float("nan")
     obj = float(np.mean(fold_obj)) if fold_obj else float("nan")
     solved = float(np.mean(fold_solved)) if fold_solved else float("nan")
@@ -424,6 +547,7 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
         # Per-point, so gastric's 96 contexts and synthetic's single decision are
         # comparable numbers rather than a fold total dominated by cohort size.
         "test_time_per_point_s": float(np.sum(test_times)) / n_pts,
+        **({"contexts": contexts} if return_contexts else {}),
     }
 
 
@@ -574,6 +698,43 @@ def append_score(path: str, method: str, knob: float, feas: float, obj: float,
             w.writerow(header)
         w.writerow([method, knob, feas, obj, solved,
                     *(d.get(c, "") for c in DETAIL_COLS)])
+
+
+CONTEXT_COLS = ("method", "knob", "fold", "context_idx", "solved",
+                "feasible", "objective")
+
+
+def append_contexts(path: str, method: str, knob: float, contexts) -> None:
+    """Append one cell's per-context records to the context CSV.
+
+    One row per held-out context (per fold on a single-decision problem), keyed by
+    the same ``(method, knob)`` the score checkpoint uses, so the two files line up
+    cell for cell. Written alongside the scores rather than into them because the
+    shapes differ by three orders of magnitude: gastric is ~96 contexts x 5 folds
+    per cell.
+
+    These rows are DERIVED data, never the primary score. The cell means in
+    ``append_score`` stay conditional on that cell's own solved contexts -- see
+    ``cv_score_knob`` for why that independence is load-bearing. What these buy is
+    the ability to re-cut the objective on a common cohort afterwards, which
+    matters now that the objective is a reported axis: a mean over only the
+    contexts a cell could solve rewards a cell for solving few.
+
+    Appended only when the cell is actually scored, so a cell resumed from the
+    score checkpoint contributes no rows. A curve whose context file is short is
+    a resumed run, not a lost measurement -- ``--refresh`` clears both.
+    """
+    import csv
+    if not contexts:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    new = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(list(CONTEXT_COLS))
+        for fold, ctx, solved, feas, obj in contexts:
+            w.writerow([method, knob, fold, ctx, solved, feas, obj])
 
 
 def _migrate_score_header(path: str, header: list) -> None:

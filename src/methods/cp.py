@@ -66,6 +66,17 @@ class CPHistory:
     violations: List[float] = field(default_factory=list)
     objectives: List[float] = field(default_factory=list)
     x_solutions: List[np.ndarray] = field(default_factory=list)
+    # The tau at which THIS run would have stopped at iteration 0, i.e. the
+    # iteration-0 separation statistic expressed in tau's own units. Reported so a
+    # tau grid can be PLACED rather than guessed: tau's numeric scale tracks D (it
+    # moves with rho) and differs by ~C between the coherent and incoherent paths,
+    # so one absolute grid does not transfer across rho columns or separation
+    # paths. A tau at or above this value stops before any cut -- that endpoint IS
+    # nominal -- and fractions of it span the useful range below.
+    #
+    # It is a placement statistic, not a result: it is read once per (rho column,
+    # fold) from a probe run and never enters a scored cell.
+    iter0_tau: Optional[float] = None
 
 
 @dataclass
@@ -660,8 +671,9 @@ def _solve_all_anchors(master, instance, anchors, obj_bounds=None,
     return feasible, p_infeas, n_bound_blocked
 
 
-def _protected_still_feasible(master, instance, anchors, protected, order=None):
-    """Do all ``protected`` anchors remain feasible after the cuts just added?
+def _protected_still_feasible(master, instance, anchors, protected, order=None,
+                              max_broken: int = 0):
+    """May the cuts just added stand, given the ``protected`` anchors they break?
 
     ``protected`` is the **fixed** set of anchors the NOMINAL fit could serve,
     measured once before any cut. Pinning the reference there, rather than
@@ -670,18 +682,30 @@ def _protected_still_feasible(master, instance, anchors, protected, order=None):
     - It is the meaningful requirement: "CP may not break an anchor the nominal
       model already served". A per-iteration baseline is a ratchet -- once one
       anchor drops out the cap loosens, legitimising the next drop.
-    - It is **set-wise**, not count-wise. A count would let CP trade one
-      patient's feasibility for another's, which is arbitrary and unstable.
-    - It makes rejections **permanent**: the cap no longer moves and the master
-      only tightens, so a cut that breaks a protected anchor once breaks it
-      always. That is what lets the caller cache rejected scenarios instead of
-      re-deriving them every iteration.
+    - At ``max_broken = 0`` it is **set-wise**, not count-wise: no protected
+      anchor may be traded for another. That is the production setting and the
+      only one any committed result was produced under.
+    - It makes rejections **permanent** at any budget: the protected set and the
+      budget are both fixed, and nothing is removed from the master, so the
+      number of broken protected anchors is monotone non-decreasing in the cut
+      set. A candidate that exceeds the budget once exceeds it always, which is
+      what lets the caller cache rejected scenarios instead of re-deriving them.
+
+    ``max_broken`` is the coverage cap ``cp_alpha`` expressed as a COUNT, and it
+    is the one thing here that is not free: above 0 CP may trade one patient's
+    feasibility for another's, and which patient it drops is an artefact of the
+    anchor ordering. It exists so the cap can be *ablated* -- "does relaxing it
+    lift CP's feasibility ceiling, and at what solved-fraction cost" -- and
+    defaults to 0 so every existing call is bit-identical: the loop still returns
+    on the first break, since ``1 > 0``.
 
     ``order`` optionally sorts the anchors most-likely-to-fail first (anchors
     that achieved a higher objective sit closer to the boundary), maximising the
-    chance of an early exit. Returns ``(n_broken, fits)``.
+    chance of an early exit. Returns ``(n_broken, fits)``, where ``n_broken`` is
+    the count seen before the budget was exceeded -- exact when it ``fits``.
     """
     seq = [a for a in (order or sorted(protected)) if a in protected]
+    n_broken = 0
     for a_idx in seq:
         _fix_anchor_context(master, instance, anchors[a_idx])
         # Warm-started: this check is dominated by anchors that come back FEASIBLE
@@ -690,8 +714,10 @@ def _protected_still_feasible(master, instance, anchors, protected, order=None):
         # first solution. It cannot help the decisive infeasible solve -- proving no
         # solution exists means exhausting the search regardless.
         if master.solve(start_key=a_idx)[0] is None:
-            return 1, False        # one broken protected anchor is enough
-    return 0, True
+            n_broken += 1
+            if n_broken > max_broken:
+                return n_broken, False
+    return n_broken, True
 
 
 def _resolve_distance(cp_distance, instance):
@@ -974,6 +1000,8 @@ class _BasicSeparation:
         # violation > 1e-6, i.e. it had no robustness lever at all.
         self.dist_tol_rel = dist_tol_rel
         self._tol = None
+        # Placement statistic, not a result -- see CPHistory.iter0_tau.
+        self._tau_equiv = None
         self.cut_draws: dict = {}   # scenario id -> bank draw (see _CoherentSeparation)
 
     def step(self, env: _SepEnv, iteration: int) -> _StepResult:
@@ -1042,6 +1070,10 @@ class _BasicSeparation:
         if self._tol is None:
             if self.dist_tol_rel is not None and np.isfinite(max_violation):
                 self._tol = max(float(self.dist_tol_rel) * float(max_violation), 1e-6)
+                # d0 IS the max here and the filter is strict, so tau=1 is exactly
+                # the value that stops at iteration 0 -- the one path where the
+                # tau-equivalent is a constant.
+                self._tau_equiv = 1.0
                 print(
                     f"    [cp] d0={max_violation:.4f} (iter-0 worst violation); "
                     f"tau={self.dist_tol_rel:g} -> tol={self._tol:.6f}",
@@ -1177,6 +1209,15 @@ class _BasicSeparation:
                 else:
                     d0 = _resolve_d0(all_viol, env.d0_quantile)
                     raw = float(self.dist_tol_rel) * d0
+                # The tau that would stop THIS run at iteration 0. Violations stay
+                # raw on this path and the stopping statistic is their max, so the
+                # tau-equivalent is that max divided by whatever tau multiplies --
+                # scale(y_c) under basis="scale", d0 under the legacy basis. Read
+                # by the dial sweep to place a tau grid per rho column; it never
+                # enters a scored cell.
+                _denom = s_c if scale_basis else d0
+                if _denom:
+                    self._tau_equiv = float(max_violation) / float(_denom)
                 # Never separate below what the master is solved to: the solver
                 # returns any incumbent within `mip_gap` of optimal, so a cut whose
                 # effect is smaller leaves x* unmoved. 1e-6 is the absolute backstop
@@ -1327,6 +1368,8 @@ class _CoherentSeparation:
         # see config.yaml's d0_quantile for the full statement and the alternatives.
         self.dist_tol_rel = dist_tol_rel
         self._tol = None                 # effective absolute tolerance (set at iter 0)
+        # Placement statistic, not a result -- see CPHistory.iter0_tau.
+        self._tau_equiv = None
         self.k_neighbors_min = k_neighbors_min
         # "evict_slack": on infeasibility keep the (relevant) new cut and evict the
         # most-slack ACTIVE non-base scenario until feasible; "reject": drop the new
@@ -1427,6 +1470,30 @@ class _CoherentSeparation:
         # _protected_still_feasible. Disabled under eviction (non-monotone master).
         self.rejected_draws: set = set()
         self.n_rejections = 0
+
+
+    def _max_broken(self, env) -> int:
+        """The coverage cap ``alpha`` as a COUNT of protected anchors that a cut
+        may break.
+
+        ``alpha`` bounds the fraction of the optimal solves allowed to be
+        infeasible, and the anchors the NOMINAL fit already failed are counted
+        against it -- they are infeasible whatever CP does. So the budget for NEW
+        breaks is ``floor(alpha * n_anchors)`` minus that pre-existing shortfall,
+        floored at 0.
+
+        The floor is what makes ``alpha = 0`` mean "break nothing new" rather than
+        "admit nothing at all": nominal already fails some anchors on gastric
+        (8/10 protected), so a literal ``p_infeas <= 0`` would reject every cut and
+        CP would return nominal. Clamping keeps the production setting exactly what
+        every committed result was produced under, while ``alpha > 0`` buys new
+        breaks one anchor at a time.
+        """
+        n = len(env.anchors)
+        if not n or self.single_point:
+            return 0
+        already = n - len(self.protected_anchors or ())
+        return max(0, int(self.alpha * n) - already)
 
     def _evict_to_fit(self, master, inst, anchors, added_ids, min_slack, baseline_infeas):
         """Evict the most-slack ACTIVE non-base scenario (keeping the just-added,
@@ -1529,7 +1596,8 @@ class _CoherentSeparation:
             master.add_scenario(rec["c_idx"], rec["models"], rec["rhs"], rho=env.rho)
             sid = master.n_models - 1
             _, fits = _protected_still_feasible(
-                master, inst, env.anchors, self.protected_anchors, order
+                master, inst, env.anchors, self.protected_anchors, order,
+                max_broken=self._max_broken(env),
             )
             if fits:
                 return sid
@@ -1546,7 +1614,8 @@ class _CoherentSeparation:
                 added.append((master.n_models - 1, rec))
             while added:
                 _, fits = _protected_still_feasible(
-                    master, inst, env.anchors, self.protected_anchors, order
+                    master, inst, env.anchors, self.protected_anchors, order,
+                    max_broken=self._max_broken(env),
                 )
                 if fits:
                     break
@@ -1986,6 +2055,16 @@ class _CoherentSeparation:
                 else:
                     d0 = _resolve_d0(all_dists, env.d0_quantile)
                     raw = float(self.dist_tol_rel) * d0
+                # The tau that would stop THIS run at iteration 0. Under
+                # basis="scale" tau IS the tolerance and the stopping statistic is
+                # best_dist, so the two are the same number; under the legacy d0
+                # basis it is the ratio. Path-dependent by construction -- the
+                # incoherent path does not average over the outcomes, so its
+                # statistic runs about C x the coherent one, which is exactly why
+                # a tau grid has to be placed per cell rather than reused.
+                _denom = 1.0 if scale_basis else d0
+                if _denom:
+                    self._tau_equiv = float(best_dist) / float(_denom)
                 # Never separate below what the master is solved to. The solver
                 # returns any incumbent within `mip_gap` of optimal, so a cut whose
                 # effect is smaller than that leaves x* unmoved and the iteration
@@ -2095,7 +2174,8 @@ class _CoherentSeparation:
                 master.add_scenario(c_idx, models, rhs, rho=env.rho)
                 added_ids.append(master.n_models - 1)
             n_broken, fits = _protected_still_feasible(
-                master, inst, env.anchors, self.protected_anchors, order
+                master, inst, env.anchors, self.protected_anchors, order,
+                max_broken=self._max_broken(env),
             )
             p_infeas_after = (
                 len(env.anchors) - len(self.protected_anchors) + n_broken
@@ -2379,6 +2459,10 @@ def _run_cp_loop(instance: ProblemInstance,
     # (gastric) never sets an incumbent.
     incumbent_x = best_x if (is_basic and status != "optimal") else None
     incumbent_obj = best_obj if incumbent_x is not None else np.inf
+    # The tau this run would have stopped at iteration 0 under, resolved once by
+    # whichever strategy ran. Carried on the history rather than threaded through
+    # _StepResult because it is a property of the RUN, not of an iteration.
+    history.iter0_tau = getattr(strategy, "_tau_equiv", None)
     return _finalize(
         instance, master, ctx_bounds, history, status,
         total_start, cp_trace_path, last_x, last_obj, anchors=anchors,

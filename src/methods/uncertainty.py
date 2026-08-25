@@ -974,3 +974,39 @@ def _clip_to_bounds(model_data, delta: np.ndarray) -> np.ndarray:
     lo, hi = bounds
     y = np.asarray(model_data.y_train, dtype=float)
     return np.clip(y + delta, lo, hi) - y
+
+
+def build_bank_for_instance(instance, model_type, model_params, uset,
+                            n_scenarios: int, seed: int, verbose: bool = True
+                            ) -> ScenarioBank:
+    """One :class:`ScenarioBank` for ``instance``, built OUTSIDE a solver.
+
+    Both consumers already accept a prebuilt bank (``solve_cp(cp_bank=...)``,
+    ``solve_wrapper(bank=...)``) and both otherwise build their own -- from the
+    same ``resolve_constraint_config`` enumeration, in the same order, at the same
+    seed. This is that construction, hoisted, so a caller sweeping a DIAL at fixed
+    rho pays for the B model fits once instead of once per dial value.
+
+    Why that is exact rather than an optimisation with a caveat: a bank is a pure
+    function of ``(instance, D, seed, B)``. None of CP's tau and none of the
+    wrapper's alpha reach it -- tau is a stopping tolerance applied to distances
+    computed FROM the bank, and alpha is a count over the models the bank hands
+    over. The wrapper's P models are the first P draws of CP's B (draw ``b`` is a
+    pure function of ``(seed, b)``), so one bank of ``max(B, P)`` serves both
+    methods' whole grids at that rho.
+
+    What it is NOT shared across: rho (D itself moves), the fold (the bank trains
+    on the fold's rows and is keyed by ``id(model_data)``, which ``_fold_instance``
+    makes fresh), the seed, and the coherence flag. Those are the sweep's cells,
+    and each gets its own bank.
+    """
+    from src.methods.nominal import resolve_constraint_config
+
+    model_config_map = {
+        id(md): resolve_constraint_config(instance, i, model_type, model_params)
+        for i, md in enumerate(
+            md for c in instance.constraints for md in c.models_data)
+    }
+    return ScenarioBank(instance, model_config_map, uset,
+                        n_scenarios=int(n_scenarios), seed=int(seed),
+                        verbose=verbose)

@@ -187,6 +187,30 @@ def sweep_param(method):
 # ---------------------------------------------------------------------------
 # Per-problem setup: instance, folds, oracle, and build(knob) -> solver
 # ---------------------------------------------------------------------------
+@dataclasses.dataclass
+class Setup:
+    """What a ``_setup_*`` hands back: everything a sweep needs that is
+    problem-specific, in one object rather than a positional tuple.
+
+    ``run_dial_sweep.py`` reads the SAME setups -- there is one place per problem
+    where an instance, its folds and its oracle are built, and neither sweep may
+    drift from the other on any of the three, or a dial curve and a rho curve
+    would not be readable against each other.
+
+    ``model_spec`` is the ``(model_type, model_params)`` DEFAULT pair, the one
+    ``resolve_constraint_config`` falls back to per constraint. It is here so a
+    caller can build the scenario bank OUTSIDE the solvers and share it across a
+    dial grid (:func:`src.methods.uncertainty.build_bank_for_instance`); the rho
+    sweep does not use it, because each of its cells has its own D anyway.
+    """
+    instance: object
+    folds: object
+    oracle: object
+    make_build: object
+    constraint_names: object
+    contextual: bool
+    model_spec: tuple = (None, None)
+    config: object = None
 def _bank_seed(config, args):
     """Seed for the METHODS' own randomness, holding the data and the folds fixed.
 
@@ -247,7 +271,7 @@ def _setup_synthetic(config, args):
     # approximation error with the thing it judged.
     oracle = make_cv_oracle(inst)
 
-    def make_build(method, uset):
+    def make_build(method, uset, cp_alpha=None):
         # _synth_build reads the uncertainty set off the config dict, so the swept
         # rho is injected there rather than passed.
         cfg = json.loads(json.dumps(config))          # deep copy, config is plain data
@@ -259,9 +283,11 @@ def _setup_synthetic(config, args):
         if args.match_bank:
             cfg.setdefault("methods", {}).setdefault("cp", {})["n_scenarios"] = \
                 int(cfg["uncertainty"].get("n_bootstrap", 20))
-        return _synth_build(method, cfg, model_type, model_params, bank_seed)
+        return _synth_build(method, cfg, model_type, model_params, bank_seed,
+                            cp_alpha=cp_alpha)
 
-    return inst, folds, oracle, make_build, None, False
+    return Setup(inst, folds, oracle, make_build, None, False,
+                 (model_type, model_params), config)
 
 
 def _setup_reactor(config, args):
@@ -289,7 +315,7 @@ def _setup_reactor(config, args):
     folds = make_folds(inst, "kfold", n_kfold=_synth_n_folds(config, args), seed=seed)
     oracle = make_cv_oracle(inst)
 
-    def make_build(method, uset):
+    def make_build(method, uset, cp_alpha=None):
         cfg = json.loads(json.dumps(config))          # deep copy, config is plain data
         cfg["uncertainty"].update(
             geometry=uset.geometry, rho=uset.rho,
@@ -299,9 +325,11 @@ def _setup_reactor(config, args):
         if args.match_bank:
             cfg.setdefault("methods", {}).setdefault("cp", {})["n_scenarios"] = \
                 int(cfg["uncertainty"].get("n_bootstrap", 20))
-        return _synth_build(method, cfg, model_type, model_params, bank_seed)
+        return _synth_build(method, cfg, model_type, model_params, bank_seed,
+                            cp_alpha=cp_alpha)
 
-    return inst, folds, oracle, make_build, None, False
+    return Setup(inst, folds, oracle, make_build, None, False,
+                 (model_type, model_params), config)
 
 
 def _setup_gastric(config, args):
@@ -323,7 +351,7 @@ def _setup_gastric(config, args):
 
     bank_seed = _bank_seed(config, args)
 
-    def make_build(method, uset):
+    def make_build(method, uset, cp_alpha=None):
         cell = dict(settings)
         cell["uncertainty_set"] = uset
         # Bank seed only: `folds` above were already built from the config seed
@@ -333,12 +361,17 @@ def _setup_gastric(config, args):
             cell["cp_separation"] = args.separation
         if args.match_bank:
             cell["cp_n_scenarios"] = int(config["uncertainty"].get("n_bootstrap", 20))
+        # None -> the pinned 0. Only the coverage-cap ablation ever sets it.
+        cell["cp_alpha"] = cp_alpha
         build, _ = _method_build_map(method, cell, ranges,
                                      config["default_model"]["type"],
                                      config["default_model"]["params"], None, None)
         return build
 
-    return inst, folds, oracle, make_build, ALL_CONSTRAINTS, bool(inst.context_var_indices)
+    return Setup(inst, folds, oracle, make_build, ALL_CONSTRAINTS,
+                 bool(inst.context_var_indices),
+                 (config["default_model"]["type"],
+                  config["default_model"]["params"]), config)
 
 
 def _chemo_args():
@@ -447,7 +480,9 @@ def run_sweep(config, args):
     problem = args.problem
     setup = {"synthetic": _setup_synthetic, "reactor": _setup_reactor,
              "gastric": _setup_gastric}[problem]
-    inst, folds, oracle, make_build, cnames, contextual = setup(config, args)
+    su = setup(config, args)
+    inst, folds, oracle, make_build = su.instance, su.folds, su.oracle, su.make_build
+    cnames, contextual = su.constraint_names, su.contextual
 
     base_uset = dataclasses.replace(
         uncertainty_set_from_config(config),

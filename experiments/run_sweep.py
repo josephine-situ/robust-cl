@@ -20,7 +20,7 @@ from experiments.run_all import load_config, run_experiment
 # ---------------------------------------------------------------------------
 # Synthetic robustness-parameter CV + CV-centered Pareto
 # ---------------------------------------------------------------------------
-def _synth_build(method, config, model_type, model_params, seed):
+def _synth_build(method, config, model_type, model_params, seed, cp_alpha=None):
     """Return ``build(knob) -> solver_fn`` for a non-contextual problem (synthetic,
     reactor). Single knob per method (CP tau, robust_reg label_eps, wrapper alpha);
     nominal ignores it. CP is single-lever (cp_alpha=0) like gastric.
@@ -36,8 +36,12 @@ def _synth_build(method, config, model_type, model_params, seed):
     """
     from experiments.method_builders import build_method, synth_settings
     settings = synth_settings(config, seed)
+    # cp_alpha stays None (the pinned 0) here: the coverage cap lives in the
+    # protected-anchor test on the CONTEXTUAL separation path, and these problems
+    # take the basic path, which has no such test. Threaded anyway so the two
+    # builders keep the same shape.
     return lambda knob: build_method(method, knob, model_type, model_params,
-                                     settings)
+                                     settings, cp_alpha=cp_alpha)
 
 
 # Written by `run_cv.py --problem synthetic`; the CV-selected embedded model.

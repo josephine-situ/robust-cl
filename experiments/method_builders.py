@@ -54,13 +54,24 @@ from src.methods.margin import solve_margin
 from src.methods.uncertainty import uncertainty_set_from_config
 
 
-def cp_solver(settings, model_type, model_params, cp_dist_tol_rel=None):
+def cp_solver(settings, model_type, model_params, cp_dist_tol_rel=None,
+              cp_alpha=None):
     """Build the CP solver partial -- the ONE place CP's argument list is written.
 
-    Single-lever CP: ``cp_alpha`` is pinned at 0 here (the coverage cap is not a
-    tunable) -- cuts that would break a training anchor are evicted/rolled back
-    (``cut_eviction``), keeping the training set feasible, so the distance
-    tolerance is the ONLY robustness knob.
+    Single-lever CP: ``cp_alpha`` is 0 for every result -- cuts that would break a
+    protected training anchor are rolled back, keeping the training set feasible,
+    so the distance tolerance is the ONLY robustness knob. It is no longer
+    hard-coded here, because there is now one experiment that has to move it: the
+    coverage-cap ABLATION, which holds tau at tau* and walks cp_alpha to ask
+    whether relaxing the cap lifts CP's feasibility ceiling and what that costs in
+    solved fraction. ``None`` (the default, and what every runner passes) keeps the
+    pinned 0, so no other call site changes.
+
+    Above 0 the cap admits a cut that breaks up to ``alpha`` of the anchors -- CP
+    trading one patient's feasibility for another's, which is exactly the property
+    the ablation exists to price. It is structurally inert on the single-decision
+    problems (synthetic, reactor): those take the basic separation path, which has
+    no protected-anchor test to relax.
 
     ``cp_dist_tol_rel`` (tau) is that knob: the tolerance becomes tau * d0, where
     d0 is the problem's own iteration-0 distance quantile, so ONE tau grid
@@ -74,7 +85,9 @@ def cp_solver(settings, model_type, model_params, cp_dist_tol_rel=None):
         cp_k_neighbors_frac=settings["cp_k_neighbors_frac"],
         cp_k_neighbors_min=settings["cp_k_neighbors_min"],
         cp_n_candidates=settings["cp_n_candidates"],
-        seed=settings["bootstrap_seed"], cp_alpha=0.0,  # single-lever: pinned
+        seed=settings["bootstrap_seed"],
+        # Pinned at 0 unless a caller deliberately ablates the coverage cap.
+        cp_alpha=0.0 if cp_alpha is None else float(cp_alpha),
         cp_dist_tol=settings["cp_dist_tol"],
         cp_dist_tol_rel=cp_dist_tol_rel,
         cp_anchor_source=settings["cp_anchor_source"],
@@ -100,7 +113,7 @@ def cp_solver(settings, model_type, model_params, cp_dist_tol_rel=None):
 
 
 def build_method(method, knob, model_type, model_params, settings,
-                 bootstrap_cache=None, ensembles_cache=None):
+                 bootstrap_cache=None, ensembles_cache=None, cp_alpha=None):
     """Return the solver ``partial`` for ``method`` at its single knob value.
 
     One knob per method, in its own native units: CP ``tau``
@@ -113,6 +126,9 @@ def build_method(method, knob, model_type, model_params, settings,
     ``mip_gap`` is ``settings["mip_gap"]`` for all of them: the methods are
     compared on their objective, so a per-method gap would confound that
     comparison (see CLAUDE.md, Conventions).
+
+    ``cp_alpha`` reaches CP only, and only the coverage-cap ablation passes it.
+    Everywhere else it is ``None`` -> the pinned 0; see :func:`cp_solver`.
     """
     seed = settings["bootstrap_seed"]
     em = settings["embedding_mode"]
@@ -186,7 +202,7 @@ def build_method(method, knob, model_type, model_params, settings,
         )
     if method == "cp":
         return cp_solver(settings, model_type, model_params,
-                         cp_dist_tol_rel=knob)
+                         cp_dist_tol_rel=knob, cp_alpha=cp_alpha)
     raise ValueError(f"Unknown method for the build map: {method}")
 
 
