@@ -331,6 +331,14 @@ def run(config, args):
             seed=bank_seed, cp_alpha=(np.nan if cp_alpha is None else float(cp_alpha)),
             phase=phase, note=note,
         ))
+        # Rewrite the curve after EVERY cell, not once at the end. A gastric run
+        # is |rho columns| x |dial grid| cells against a 12h wall clock, so it may
+        # well be requeued; the score checkpoint already made that cheap, but a
+        # curve written only on the final line meant a timed-out job left nothing
+        # to plot even though every cell it finished was on disk. Rewriting a
+        # few-dozen-row CSV per cell costs nothing next to a master solve.
+        pd.DataFrame(rows).to_csv(
+            os.path.join(OUT_DIR, f"{problem}_dial_curve{var}.csv"), index=False)
         return d
 
     # ---- the D-facing methods, one rho column at a time --------------------
