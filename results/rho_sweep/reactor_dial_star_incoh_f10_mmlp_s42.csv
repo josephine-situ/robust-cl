@@ -1,8 +1,8 @@
-feas_target,min_solved,objective_sense,method,rho,dial_name,dial_star,feasibility,objective,solved_frac,n_capped,master_time_s,test_time_per_point_s,bound,note
-0.9,0.5,min,cmicl,,alpha,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5
-0.9,0.5,min,cp,1.0,tau,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5
-0.9,0.5,min,cp,2.0,tau,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5
-0.9,0.5,min,margin,,margin,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5
-0.9,0.5,min,wrapper,1.0,alpha,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5
-0.9,0.5,min,wrapper,2.0,alpha,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5
-0.9,0.5,min,nominal,,none,,0.0,2942.0474546181977,1.0,0,0.5330875158309937,0.0,no_dial,"reference level, nothing to move"
+feas_target,min_solved,objective_sense,method,rho,dial_name,dial_star,feasibility,objective,solved_frac,n_capped,master_time_s,test_time_per_point_s,bound,note,search,n_grid,n_evaluated,n_pruned,n_unreached,monotone_note,feas_wobble,best_feasibility,best_feas_dial,best_feas_objective,best_feas_solved_frac
+0.9,0.5,min,cmicl,,alpha,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.400 at alpha=0.03,adaptive,10,6,3,1,,"feasibility dips 0.400->0.375 (0 fold(s)) between alpha=0.03 and 0.02, both below the target",0.4,0.03,3190.6561676542433,1.0
+0.9,0.5,min,cp,1.0,tau,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.000 at tau=0.001,adaptive,7,3,4,0,,,0.0,0.001,3105.2466636361555,1.0
+0.9,0.5,min,cp,2.0,tau,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.700 at tau=0.001,adaptive,7,5,0,2,,,0.7,0.001,3190.605329747046,1.0
+0.9,0.5,min,margin,,margin,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.100 at margin=1.5,adaptive,12,4,8,0,,,0.1,1.5,3113.5923914996783,1.0
+0.9,0.5,min,wrapper,1.0,alpha,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.000 at alpha=0,adaptive,8,4,4,0,,,0.0,0.0,3047.1582508994666,1.0
+0.9,0.5,min,wrapper,2.0,alpha,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.100 at alpha=0,adaptive,8,4,4,0,,,0.1,0.0,3099.629546264198,1.0
+0.9,0.5,min,nominal,,none,,0.0,2942.0474546181977,1.0,0,0.4322138547897339,0.0,no_dial,"reference level, nothing to move",none,1,1,0,0,,,0.0,,2942.0474546181977,1.0
