@@ -621,21 +621,21 @@
 
 % ===========================================================================
 \begin{frame}{Calibration: primary axis is each method's own dial}
-  Held-out CV, after model selection. $\rho$ \textbf{fixed} at two columns per
-  problem (gastric $0.5,1$; reactor $1,2$); each method walks \emph{its own} dial.
+  Held-out CV, after model selection. $\rho$ \textbf{fixed} at two columns
+  (gastric $0.5,1$; reactor $1,2$); each walks \emph{its own} dial.
   \begin{itemize}
     \item Reported object: the curve in \textbf{objective $\times$ feasibility}.
       ``At equal feasibility, whose decisions are better'' is a two-axis claim.
     \item Dials: CP $\tau$, wrapper $\alpha$, margin $m$, C-MICL $\alpha$
-      (protocol point $1-$target), nominal none. \textbf{Robust~Reg.\ is absent}:
-      its dial \emph{is} $\rho$.
-    \item Derived per series: \textbf{best objective} among cells meeting the
-      target on enough solved contexts. No monotonicity assumed.
-    \item $\tau$'s grid is \textbf{fixed before the run} --- one absolute grid
-      $\{1,10^{-1},10^{-2},10^{-3}\}$ in unexplained-sd units, the same at every
-      $\rho$. $\tau$ is a \emph{parameter}, never read back off the run.
-    \item \mc{One bank per $(\rho$ column, fold$)$ serves both grids: a bank is a
-      pure function of $(\text{inst},\mathcal D,\text{seed},B)$.}
+      ($1-$target), nominal none. \textbf{Robust~Reg.\ absent}: its dial \emph{is} $\rho$.
+    \item Derived: \textbf{best objective} among delivering cells; assumes nothing.
+    \item $\tau$'s grid \textbf{fixed before the run}: 7 half-decades $1\!\to\!10^{-3}$,
+      same at every $\rho$. A \emph{parameter}, never read back off the run.
+    \item \textbf{Searched, not walked}: ordered by robustness --- feasibility $0$
+      prunes everything less robust, the solved floor everything more. Objective and
+      solvability are monotone \emph{structurally}: each dial nests the feasible set.
+      \mc{Feasibility is not: replaying 11 committed series, 6 dips, none across
+      the target, $\text{dial}^\ast$ unchanged 11/11.}
   \end{itemize}
 \end{frame}
 
@@ -652,7 +652,8 @@
       held-out feasibility, not a matched $\mathcal D$.
     \item $\tau,\alpha$: ablations at one $\rho$.
   \end{itemize}
-  Both axes: train-only; folds temporal \mc{(gastric)} / KFold; scores
+  Both axes: train-only; \mc{one bank per $(\rho$ column, fold$)$ serves every
+  dial grid;} folds temporal \mc{(gastric)} / KFold; scores
   \textbf{conditional} on a solve with \texttt{solved\_frac} beside them; capped
   cells flagged. \mc{Per-context records $(\text{fold},\text{context},\text{solved},
   \text{feasible},\text{objective})$ are written too, so a same-cohort objective is

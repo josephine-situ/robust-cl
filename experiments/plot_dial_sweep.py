@@ -230,6 +230,27 @@ def frontier(problem, suffix, min_solved, target, out_name=None):
         ax.text(0.0, -0.155, "no solution on any fold: " + "; ".join(parts),
                 transform=ax.transAxes, fontsize=9.5, color="#7A2E2E")
 
+    # Cells the adaptive search never scored. A gap in a curve is otherwise
+    # indistinguishable from a cell that produced nothing, and those are opposite
+    # claims: one says "not measured", the other says "no solution exists here".
+    # The dead cells above already have their own line, in red; this one is grey
+    # and says how many were pruned on the rules (a feasibility of 0 below, an
+    # unsolvable cell above) versus how many the eval budget simply did not
+    # reach. Absent when the whole grid was walked.
+    skip = _load(problem, "dial_skipped", suffix)
+    if skip is not None and not skip.empty:
+        why = skip["reason"].astype(str)
+        n_pruned = int(why.str.startswith("pruned").sum())
+        bits = []
+        for method, g in skip.groupby("method"):
+            vals = ", ".join(f"{v:g}" for v in sorted(g["dial"].unique()))
+            bits.append(f"{LABEL.get(method, method).split(' (')[0]} = {vals}")
+        ax.text(0.0, -0.195,
+                f"not scored ({n_pruned} pruned on the search rules, "
+                f"{len(skip) - n_pruned} outside the eval budget): "
+                + "; ".join(bits),
+                transform=ax.transAxes, fontsize=9.0, color="#6B6B6B")
+
     # The Pareto set, over the cells that clear the solved floor. Ringed rather
     # than recoloured, so a point keeps its method identity.
     elig = main[main["solved_frac"] >= min_solved]

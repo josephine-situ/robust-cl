@@ -70,6 +70,7 @@ uv run python experiments/run_dial_sweep.py --problem gastric               # th
 uv run python experiments/run_dial_sweep.py --problem reactor --rho-columns 1 2 3
 uv run python experiments/run_dial_sweep.py --problem gastric --coherent    # the ablation cell
 uv run python experiments/run_dial_sweep.py --problem gastric --cp-alpha-ablate
+uv run python experiments/run_dial_sweep.py --problem reactor --search grid   # no monotonicity assumed
 uv run python experiments/run_dial_test.py --problem reactor                # the TEST stage at each dial*
 uv run python experiments/run_dial_test.py --problem gastric --phases full  # OOS: the 96 X_test arms
 uv run python experiments/plot_dial_sweep.py --all --suffix _incoh          # -> fig_dial_frontier_*.pdf
@@ -103,6 +104,26 @@ Outputs: `{problem}_dial_test{cell}.csv` (summary per (method, phase)) and
 `dial*` is **skipped with the reason printed** — there is no tuned dial to test.
 `RUN_TEST=0` / `TEST_PHASES=full` narrow it in `submit_dial_sweep.sh`.
 
+**An infeasible master is no longer scored as a decision at the origin**
+(2026-08-26, `cv_calibrate.cv_score_knob`). Every solver returns
+`x_opt = np.zeros(n_features), obj_value = inf, status = "infeasible"` when the
+MIP has no solution, and zeros are finite — so the **single-decision** branch
+counted the fold solved and scored the origin, which on synthetic and the reactor
+is comfortably inside every constraint. Measured on synthetic at margin `m=16`
+and `m=32`, where the tightened RHS admits nothing: `feas=1.000 obj=+0.0000
+solved=1.000 [infeasible]`, now `feas=nan solved=0.000`. Consequences: `solved_frac`
+was **structurally 1.0** on both single-decision problems — they had no dial at
+which they could report an unsolvable cell, so the dial search's "don't go more
+robust" rule could never fire there — and every such cell put a **free feasible
+point at the conservative end of a curve**. The contextual path never had this
+(`solve_for_test_cohort` returns `None` and the context is counted unsolved).
+CP's `max_iterations` / `coverage_cap` / `cycle_detected` are **incumbents**, real
+decisions, still scored, still flagged by `n_capped`. **Affected committed cells**:
+`reactor_dial_curve_incoh_f10_mmlp_s42.csv` has one — `cmicl` at alpha=0.02,
+`status="infeasible|optimal"`, reported feasibility 0.3 at `solved_frac` 1.0 —
+which that run being void for the probe-placed tau grid already covers. Nothing
+gastric moves.
+
 **Neither single-decision instance has a row-level train/test split, and that is
 structural**: `synthetic_nonlinear` and `reactor_micl` set `X_test` empty (there
 are no contexts to hold out), so the CV folds are the only row structure and the
@@ -120,14 +141,112 @@ The grid:
 | `nominal` | none | — | single reference point |
 | `robust_reg` | — | — | **dropped**: its dial IS rho, so at fixed rho it has none |
 
+- **The grid is SEARCHED, not walked** (`--search adaptive`, the default since
+  2026-08-26). A dial grid is ordered by robustness (tau down, wrapper alpha
+  down, C-MICL alpha down, margin m **up** — `ROBUSTNESS_SIGN`), and two answers
+  say where not to look: a cell scoring **feasibility 0** means nothing *less*
+  robust can deliver, and one **below `--min-solved`** means nothing *more*
+  robust can solve. The delivering cells are therefore an interval of that order
+  and its **least-robust end is the protocol point**, since robustness is what
+  the objective pays for. So: bisect to bracket that end, then spend what is left
+  of `--max-evals` (default `ceil(log2 n) + 2`, floored at 4) filling the band
+  around it — the deliverable is a **curve**, so a bare bisection leaving three
+  points per series would answer the wrong question, and the fill puts resolution
+  where the frontier bends and none in the two dead tails. Cells already on the
+  score checkpoint are **free** and do not count against the budget; they are
+  replayed first, so a resume starts with the window already narrowed (and a
+  repeated resume will eventually cover the whole grid, which is bounded and then
+  costs nothing). C-MICL's protocol point `1 - feas_target` is a `must_visit`:
+  asserted, not chosen, so it is scored even when the search would skip it and
+  even when it does not solve.
+  - **Two of the three signals are monotone STRUCTURALLY, not empirically.**
+    Every dial nests the optimizer's feasible set: the margin's RHS shift is
+    monotone in `m`; the wrapper requiring more of `P` models to hold is a
+    strictly tighter chance constraint; C-MICL's `q = s_(k)`,
+    `k = ceil((n_cal+1)(1-alpha))`, is monotone in alpha, so the embedded bound
+    tightens; and CP on the **basic path** adds exactly one cut per iteration
+    (`_step_bank`: `add_cut = max_violation > self._tol`, the argmax) with tau
+    entering *only* as that threshold — so the `(x*, cut)` sequence is
+    tau-independent and a smaller tau just continues further, making the cut set
+    a **prefix-superset**. Nested feasible sets give **monotone objective** and
+    **monotone solvability** (once empty, always empty) for free. So
+    **rule 3 — "unsolvable, so stop going more robust" — rests on nesting, not on
+    an empirical hope.** The one gap: on the **incoherent (gastric) path** tau
+    also gates *which units* get a cut in a given iteration
+    (`cands[0]["dist"] > self._tol`), so trajectories diverge with tau and the
+    nesting there is approximate.
+  - **Held-out feasibility monotonicity is empirical only** — nesting says
+    nothing about where `x*` lands against the *true* constraint — and it does
+    wobble. Replayed offline over the two committed dial curves (11 series,
+    `gastric_dial_curve_incoh_s42` + `reactor_dial_curve_incoh_f10_mmlp_s42`;
+    those runs are void for other reasons but their *shape* is not):
+
+    | signal | monotone in |
+    |---|---|
+    | objective | **11/11** (the one exception, reactor `cmicl` alpha=0.02 jumping 3150 -> 2543, is the phantom-origin cell fixed above) |
+    | solved fraction | **11/11** |
+    | held-out feasibility | 5/11 clean; **6 series dip**, gastric by 0.002-0.014, reactor by exactly one fold (0.800 -> 0.700) |
+
+    **Every one of those six dips leaves both cells on the same side of the 0.9
+    target**, so no verdict changes and no prune is affected. Driving the search
+    against those curves as a lookup table reproduces the exhaustive `dial*` in
+    **11/11 series** while scoring 24/29 gastric cells and 21/35 reactor cells.
+  - **So the check reports two different things and must not conflate them.** A
+    **violation** is a *verdict* inversion — a delivering cell below a
+    non-delivering one, or a solvable cell above an unsolvable one — which is
+    exactly what falsifies a prune; it prints `[search] NON-MONOTONE`, lands in
+    the star table's `monotone_note` and in that row's `note`, and is the signal
+    to re-run that series with `--search grid`. A **wobble** is a numeric dip
+    that changes no verdict; it prints as `[search] wobble`, lands in
+    `feas_wobble`, and is recorded rather than acted on. Flagging wobbles as
+    violations would have fired on 6 of the 11 series above, none of which the
+    search gets wrong. On a single-decision problem a wobble is quoted in
+    **folds** (`feas_resolution = 1/len(folds)`), because "0.800 -> 0.700" on the
+    10-fold reactor *is* one fold.
+  - Every unscored cell goes to **`{problem}_dial_skipped{cell}.csv`** with the
+    reason, **never** into the curve as a row of NaNs — the plot reads a
+    non-finite feasibility as "no solution on any fold", which is a *result*, and
+    the two claims are opposites. The plot prints a grey footer counting pruned
+    vs budget-limited cells. `--search grid` walks everything and **still runs
+    the order check** — a full grid is where a violation is most worth knowing,
+    since nothing was pruned on the assumption.
+  - `_dial_star`'s rule is **unchanged and still assumes no monotonicity** — it
+    takes the best objective among whatever delivered. What changed is that it
+    has fewer cells to apply itself to, and that `bound="grid_end"` is now read
+    off the **full configured grid** (`grids`), not off the evaluated subset, or
+    a pruned tail would report `grid_end` every time. New columns: `search`,
+    `n_grid`, `n_evaluated`, `n_pruned`, `n_unreached`, `monotone_note`.
+  - **The coverage-cap ablation is walked whole, never searched.** Its question is
+    the *shape* of both columns against `cp_alpha`; pruning on a feasibility
+    target would discard the half of the answer it exists for.
+- **`--refresh` clears EVERY output of the cell** (2026-08-26): scores,
+  contexts, curve, star and skipped. It used to clear only the first two — and
+  `{problem}_dial_star{cell}.csv` is written once at the *end* of the sweep, so a
+  refreshed run that timed out left the **previous** run's star on disk, which is
+  exactly the file `run_dial_test.py` reads to decide where to hold each method.
+  **Pass it whenever a previous run of the same cell is not comparable** — a
+  changed grid, a changed scoring rule — because otherwise the checkpoint resumes
+  those cells silently. Both committed dial cells need it: the 2026-08-26 gastric
+  and reactor runs are void (probe-placed tau; the gastric one crashed), and the
+  reactor's `cmicl` alpha=0.02 cell additionally carries the phantom-origin score
+  the fix above corrects.
+- **The grids got FINER because the search made length cheap** (2026-08-26), and
+  each is a strict **superset** of its pre-2026-08-26 values, so an existing
+  checkpoint resumes into it rather than being orphaned:
+  tau `[1.0, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001]` (7 half-decades, was 4
+  decades), wrapper alpha `[0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]`, margin
+  `[0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.625, 0.75, 0.875, 1.0, 1.25, 1.5]`, C-MICL
+  alpha `[0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]`. tau is still
+  **fixed before the run**, absolute, and the same on every rho column and
+  problem — a finer grid is not a placed one.
 - **Both rho columns share one output CSV.** The `rho` column tells them apart and
   one file per (problem, coherence, seed) is what the plot reads. The checkpoint
   key is `(method@rho, dial)`, so resume is unchanged.
-- **tau is FIXED BEFORE THE RUN.** One absolute grid, `TAU_GRID` =
-  `[1.0, 0.1, 0.01, 0.001]`, the same on every rho column and every problem, in
-  unexplained-sd units (`--tau-grid` to change it). **tau is a parameter of the
-  method**, set in advance exactly as rho and the margin's `m` are — it is never
-  read back off the run.
+- **tau is FIXED BEFORE THE RUN.** One absolute grid, `TAU_GRID`
+  (7 half-decades from 1.0 to 0.001 since 2026-08-26), the same on
+  every rho column and every problem, in unexplained-sd units (`--tau-grid` to
+  change it). **tau is a parameter of the method**, set in advance exactly as rho
+  and the margin's `m` are — it is never read back off the run.
   **Placing the grid from the iteration-0 separation distance was tried and is
   removed (2026-08-26); do not reintroduce it.** It made tau a function of the
   bank, of `B` and of which folds were probed, so the same nominal tau meant a
@@ -1087,6 +1206,25 @@ arms *every* method could prescribe for, recomputed per draw), so all of it is
 
 **Two axes, and since 2026-08-25 the DIAL one is primary.**
 
+**Cell scores are fold means, and the folds are the SAME in every cell.**
+`cv_score_knob` returns `mean(fold_feas)`, `mean(fold_obj)`, `mean(fold_solved)`,
+but the noise that survives that mean is completely different by problem:
+**gastric** is 4 temporal folds x ~96 held-out contexts, so feasibility is a mean
+over hundreds of (fold, patient) cells and resolves to ~0.003; **synthetic (5
+folds)** and **the reactor (10 folds)** have one decision per fold, so
+feasibility is a **binomial proportion over 5 or 10 binary outcomes** — quantized
+to 0.2 / 0.1, with a binomial sd of ~0.13 at `p=0.8, n=10`. Averaging over folds
+does **not** resolve 0.8 from 0.9 there; one fold flipping is the whole
+difference, which is why `run_dial_sweep` prints the quantization warning and why
+Known gap #3 says to read the curve rather than the protocol point on those.
+What rescues the *ordering* is that the comparison is **paired**: `su.folds` is
+built once and handed to every cell, and `FoldCache` shares the fold instance and
+its bank across the whole dial grid — so for CP two tau cells differ only in
+where the cut loop stopped, on the same data, the same models and the same bank.
+The fold-to-fold variance is a common effect that cancels in the ordering even
+though it survives in the level, which is why the gastric dial curves are as
+smooth as they are and why the dial search reads them correctly.
+
 **Primary — the dial sweep** (`run_dial_sweep.py`). rho is **fixed** at one of two
 columns per problem and each method walks its own dial. The reported object is the
 **curve in objective x held-out feasibility**, and the derived one is each
@@ -1450,6 +1588,21 @@ Stated limitations of the current numbers, not bugs to fix silently.
     (b) the coverage cap above 0 lets CP drop one patient to serve another, and
     **which** patient is an artefact of the anchor ordering — the ablation prices
     that trade, it does not make it principled.
+    **NEW (2026-08-26): the dial grids are SEARCHED, not walked**
+    (`--search adaptive`). Cheaper and finer at once, and untested on a real
+    instance — no gastric or reactor run has used it. What is **asserted**: the
+    dial is monotone (feasibility rising with robustness, solved fraction
+    falling), which is what licenses pruning the two tails. It is false on the
+    rho axis. **Partly measured on the dials** by replaying the two committed
+    dial curves as lookup tables (11 series): objective monotone 11/11, solved
+    fraction 11/11, feasibility dipping in 6/11 but never across the target, and
+    the search reproducing the exhaustive `dial*` in **11/11**. What that does
+    **not** settle: those curves are from runs void for other reasons, the
+    replay re-uses cells the *exhaustive* run scored rather than re-solving, and
+    the order check can only see inversions **between cells the search chose to
+    score** — it cannot rule out one hiding inside a pruned tail. The direct
+    check is still one `--search grid` run per problem against the adaptive one,
+    on current code, and that is **unmeasured**.
     **REMOVED (2026-08-26): tau is no longer placed from the iteration-0
     distance.** The probe was a mistake and is deleted, not merely defaulted
     differently — tau is a parameter of the method, fixed before the run, one grid

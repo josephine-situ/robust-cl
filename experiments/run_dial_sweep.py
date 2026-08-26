@@ -27,7 +27,7 @@ walks. Asking for it here is an error rather than a silent flat line.
 apart, and one file per (problem, coherence, seed) is what the plot reads. The
 checkpoint cell key is ``(method@rho, dial)``, so resume is unchanged.
 
-Three things this file exists to get right, in the order they had to be fixed:
+Four things this file exists to get right, in the order they had to be fixed:
 
 1. **Per-context records.** ``{problem}_dial_contexts{cell}.csv`` carries
    ``(fold, context_idx, solved, feasible, objective)`` for every cell. Primary
@@ -54,6 +54,28 @@ Three things this file exists to get right, in the order they had to be fixed:
    PROPERTY OF THE RUN, reported by the ``[cp] ... max iter-0 dist=`` line, not
    something the grid is bent to guarantee.
 
+4. **The grid is SEARCHED, not walked** (``--search adaptive``, the default).
+   A dial grid is ordered by robustness, and two of its answers say where NOT to
+   look: a cell scoring feasibility 0 means nothing LESS robust can deliver, and
+   a cell below ``--min-solved`` means nothing MORE robust can solve. So the
+   cells that deliver the target at an acceptable solved fraction are an interval
+   of that order, and its least-robust end is the protocol point (robustness is
+   what the objective pays for). The search bisects to bracket that end, then
+   spends the rest of ``--max-evals`` filling the band around it -- the
+   deliverable is a CURVE, so resolution goes where the frontier bends and none
+   of it into the two dead tails. That let the grids get FINER at lower cost:
+   ``TAU_GRID`` is 7 half-decades where it was 4 decades, and every old value is
+   still in it, so an existing checkpoint resumes rather than being orphaned.
+
+   This ASSUMES the dial is monotone, which the rho axis is not always (CP's dip
+   at rho=0.5 on gastric; robust_reg's feasibility falling with rho) and which
+   has never been tested on the dials. So: violations among the cells actually
+   scored are printed and land in the star table's ``monotone_note``; every
+   unscored cell is written to ``{problem}_dial_skipped{cell}.csv`` with the
+   reason, never into the curve as a row of NaNs (the plot reads a non-finite
+   feasibility as "no solution on any fold", which is a RESULT); and
+   ``--search grid`` walks the whole grid, assuming nothing.
+
 Ablation (``--cp-alpha-ablate``): sweep tau, read tau* at the target, hold tau*
 and walk ``cp_alpha``. It asks whether relaxing the coverage cap lifts CP's
 feasibility ceiling and what that costs in solved fraction. One rho column only
@@ -69,6 +91,7 @@ Outputs, all scoped by the same cell suffix ``run_rho_sweep`` uses
   ``{problem}_dial_contexts{cell}.csv`` per-context records
   ``{problem}_dial_curve{cell}.csv``    THE primary output; what the plot reads
   ``{problem}_dial_star{cell}.csv``     derived: each series' protocol point
+  ``{problem}_dial_skipped{cell}.csv``  cells the search did not score, and why
   ``{problem}_cp_alpha{cell}.csv``      the coverage-cap ablation
 
 Usage::
@@ -77,6 +100,7 @@ Usage::
     python experiments/run_dial_sweep.py --problem reactor --rho-columns 1 2 3
     python experiments/run_dial_sweep.py --problem gastric --coherent
     python experiments/run_dial_sweep.py --problem gastric --cp-alpha-ablate
+    python experiments/run_dial_sweep.py --problem reactor --search grid
     python experiments/plot_dial_sweep.py --problem gastric --suffix _incoh
 """
 
@@ -150,19 +174,295 @@ DEFAULT_RHO_COLUMNS = {"gastric": [0.5, 1.0], "reactor": [1.0, 2.0],
 # Whether the top of it stops before any cut is a PROPERTY OF THE RUN, reported
 # by the `[cp] ... max iter-0 dist=` line and by `status`, not something the grid
 # is bent to guarantee.
-TAU_GRID = [1.0, 0.1, 0.01, 0.001]
+# HALF-decade since 2026-08-26, and a strict SUPERSET of the old
+# ``[1.0, 0.1, 0.01, 0.001]`` -- every previously scored cell keeps its dial
+# value, so a checkpoint from an earlier run resumes into this grid instead of
+# being orphaned. The grid got finer because the ADAPTIVE search (below) no
+# longer pays for its length: it walks O(log n) cells to bracket the target and
+# spends what is left filling the band around it, so resolution near the knee of
+# the frontier is now nearly free while the dead tails cost nothing at all.
+TAU_GRID = [1.0, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001]
 
-DEFAULT_ALPHA_GRID = [0.0, 0.1, 0.2, 0.3, 0.5]
+# All three below are supersets of their pre-2026-08-26 values, for the same
+# resume reason.
+DEFAULT_ALPHA_GRID = [0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]
 # m=0 is bit-identical to nominal (same fit, same MIP, same x*), so the baseline's
 # curve starts AT the nominal point rather than near it.
-DEFAULT_MARGIN_GRID = [0.0, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]
+DEFAULT_MARGIN_GRID = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.625, 0.75, 0.875, 1.0,
+                       1.25, 1.5]
 # Extended UPWARD on purpose. C-MICL is measured infeasible on gastric at
 # alpha=0.1 under both multiplicity settings, and n_cal=80 means alpha >= 0.02 is
 # needed for a finite conformal quantile at all. Where it FIRST solves is the
 # result; 0.1 is the protocol point whether or not it solves there.
-DEFAULT_CMICL_ALPHA_GRID = [0.02, 0.05, 0.1, 0.2, 0.3, 0.5]
+DEFAULT_CMICL_ALPHA_GRID = [0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3,
+                            0.4, 0.5]
 # The coverage cap, as a fraction of the anchors a cut may newly break.
 DEFAULT_CP_ALPHA_GRID = [0.0, 0.1, 0.2, 0.3]
+
+
+# ---------------------------------------------------------------------------
+# Adaptive dial search
+# ---------------------------------------------------------------------------
+# Sorting a grid by ``ROBUSTNESS_SIGN[method] * dial`` ascending puts the LEAST
+# robust cell first. tau, the wrapper's alpha and C-MICL's alpha all run
+# backwards (smaller = fewer decisions admitted); the margin's m runs forwards.
+#
+#   cp        smaller tau   -> CP keeps cutting for longer        -> more robust
+#   wrapper   smaller alpha -> more of the P models must hold     -> more robust
+#   margin    larger m      -> the RHS is moved further in        -> more robust
+#   cmicl     smaller alpha -> a higher conformal quantile        -> more robust
+ROBUSTNESS_SIGN = {"cp": -1.0, "wrapper": -1.0, "margin": 1.0, "cmicl": -1.0}
+
+# What one scored cell says about where to look next.
+#
+#   dead        feasibility 0 at an acceptable solved fraction. Nothing LESS
+#               robust can deliver, so that whole tail is pruned outright.
+#   under       0 < feasibility < target. Only more robust cells can help -- but
+#               the cell itself is a real point of the frontier, and its
+#               neighbours are worth filling in.
+#   delivers    feasibility >= target at solved_frac >= min_solved. A candidate
+#               protocol point; what is left to ask is whether a LESS robust cell
+#               also delivers, since that one has the better objective.
+#   unsolvable  solved_frac < min_solved -- the same floor _dial_star applies, so
+#               a cell here can never be a protocol point anyway. Nothing MORE
+#               robust can solve, so that tail is pruned outright.
+
+
+def _series_key(method, rho):
+    """One series is one (method, rho column); the flat methods have no rho."""
+    return (method, "" if not np.isfinite(rho) else f"{float(rho):g}")
+
+
+def _verdict(d, target, min_solved):
+    feas = float(d.get("feas", np.nan))
+    solved = float(d.get("solved", 0.0) or 0.0)
+    if not np.isfinite(feas) or solved < min_solved:
+        return "unsolvable"
+    if feas >= target:
+        return "delivers"
+    return "dead" if feas <= 0.0 else "under"
+
+
+def _order_check(dname, dial_at, seq, seen, detail, target, min_solved,
+                 feas_resolution=0.0):
+    """Did the order the pruning rests on hold, among the cells actually scored?
+
+    Returns ``(violations, wobbles)`` -- TWO different things, kept apart on
+    purpose, because only the first can mislead the search.
+
+    A **violation** is a VERDICT inversion. The two prune rules claim "nothing
+    less robust delivers" and "nothing more robust solves", so what falsifies
+    them is a delivering cell sitting BELOW a non-delivering one, or a solvable
+    cell sitting ABOVE an unsolvable one. Those, and only those, mean a pruned
+    tail might have held the answer.
+
+    A **wobble** is a numeric dip in feasibility that leaves both cells on the
+    SAME side of the target. It is real and worth recording -- the committed
+    gastric dial curve has several, between -0.003 and -0.014 -- but it changes
+    no verdict, so it invalidates no prune. Reporting it as a reason to re-run
+    the whole grid would be crying wolf: on that curve it would fire on 6 of 11
+    series, none of which the search would have got wrong.
+
+    ``feas_resolution`` is the smallest feasibility difference that is not one
+    fold flipping (``1/n_folds`` on a single-decision problem, where each fold
+    contributes ONE binary outcome; 0 on a contextual one, where a fold is a mean
+    over its held-out cohort). Wobbles are quoted in folds where it is known,
+    because "0.800 -> 0.700" on the 10-fold reactor is one fold and reads as far
+    more than that in decimals.
+    """
+    viol, wobble = [], []
+    solv, deliv = {}, {}
+    for p in seq:
+        sv = float(detail[p].get("solved", np.nan) or np.nan)
+        solv[p] = bool(np.isfinite(sv) and sv >= min_solved)
+        deliv[p] = seen[p] == "delivers"
+    for i, x in enumerate(seq):
+        for y in seq[i + 1:]:                      # y is strictly MORE robust
+            if not solv[x] and solv[y]:
+                viol.append(f"{dname}={dial_at(y):.5g} clears the solved floor "
+                            f"while the less robust {dname}={dial_at(x):.5g} "
+                            f"does not")
+            if deliv[x] and solv[y] and not deliv[y]:
+                viol.append(f"{dname}={dial_at(x):.5g} reaches the target "
+                            f"({float(detail[x]['feas']):.3f}) while the more "
+                            f"robust {dname}={dial_at(y):.5g} does not "
+                            f"({float(detail[y]['feas']):.3f})")
+    for x, y in zip(seq, seq[1:]):
+        fx = float(detail[x].get("feas", np.nan))
+        fy = float(detail[y].get("feas", np.nan))
+        if not (np.isfinite(fx) and np.isfinite(fy)) or fy >= fx - 1e-9:
+            continue
+        if deliv[x] and not deliv[y]:
+            continue                                # already a violation above
+        how = (f"{(fx - fy) / feas_resolution:.0f} fold(s)"
+               if feas_resolution > 0 else f"{fx - fy:.3f}")
+        side = "above" if deliv[x] else "below"
+        wobble.append(f"feasibility dips {fx:.3f}->{fy:.3f} ({how}) between "
+                      f"{dname}={dial_at(x):.5g} and {dial_at(y):.5g}, both "
+                      f"{side} the target")
+    return viol, wobble
+
+
+def _search_dials(method, grid, evaluate, known, target, min_solved,
+                  max_evals=None, must_visit=(), label="",
+                  feas_resolution=0.0):
+    """Walk one series' dial grid in the order the answers actually decide.
+
+    **This assumes the dial is monotone**, in both directions at once: held-out
+    feasibility rises with robustness and the solved fraction falls with it. The
+    cells that both deliver the target and stay solvable are then an INTERVAL of
+    the robustness-ordered grid, and the protocol point ``_dial_star`` picks --
+    best objective among the delivering cells -- is that interval's LEAST robust
+    end, because the objective is what robustness is paid for with.
+
+    That assumption is not free, and this repo has counterexamples on the rho
+    axis (CP's dip at rho=0.5 on gastric; robust_reg's feasibility FALLING with
+    rho). It has never been tested on the dials. Two things are done about that
+    rather than nothing: every cell actually evaluated is checked for order
+    violations afterwards, and any is printed and carried into the star table's
+    ``monotone_note``; and ``--search grid`` still walks the whole grid, which is
+    the fallback whenever a violation shows up.
+
+    Phase 1 BRACKETS by bisection: ``under``/``dead`` sends the window to the
+    more-robust half, ``delivers``/``unsolvable`` to the less-robust half. O(log
+    n) cells, landing on the transition.
+
+    Phase 2 FILLS what is left of the eval budget outwards from the transition,
+    inside the two hard prune bounds. The deliverable here is a CURVE, not a
+    single number, so a bare bisection leaving three points per series would
+    answer the wrong question. Filling puts the resolution where the frontier
+    bends and buys none of it in the two dead tails.
+
+    Cells already on the score checkpoint are FREE: they are replayed first, so a
+    resumed run both re-reads its own answers and starts with the window already
+    narrowed.
+
+    ``must_visit`` names dial values scored whatever the search thinks -- C-MICL's
+    protocol point ``1 - target``, which is asserted rather than chosen and has to
+    be on the record even when it does not solve.
+
+    Returns ``(seen, detail, info)``: verdict and scored dict per grid position,
+    plus a summary carrying ``skipped`` (a reason per unscored cell) and
+    ``violations``.
+    """
+    grid = [float(v) for v in grid]
+    order = sorted(range(len(grid)),
+                   key=lambda i: ROBUSTNESS_SIGN[method] * grid[i])
+    n = len(order)
+    dname = DIAL[method] or "dial"
+
+    def dial_at(pos):
+        return grid[order[pos]]
+
+    budget = (int(max_evals) if max_evals is not None
+              else max(4, int(np.ceil(np.log2(max(n, 2)))) + 2))
+
+    seen, detail = {}, {}
+    spent = 0
+    # The HARD prune bounds: the two rules that exclude a cell outright rather
+    # than merely deprioritise it. Nothing outside them is ever scored.
+    keep_lo, keep_hi = 0, n - 1
+
+    def visit(pos):
+        nonlocal spent, keep_lo, keep_hi
+        dial = dial_at(pos)
+        free = known(dial)
+        d = evaluate(dial)
+        if not free:
+            spent += 1
+        v = _verdict(d, target, min_solved)
+        seen[pos], detail[pos] = v, d
+        if v == "dead":
+            keep_lo = max(keep_lo, pos + 1)
+        elif v == "unsolvable":
+            keep_hi = min(keep_hi, pos - 1)
+        return v
+
+    def window():
+        """The bisection window implied by EVERY verdict seen so far."""
+        a, b = keep_lo, keep_hi
+        for pos, v in seen.items():
+            if v in ("dead", "under"):
+                a = max(a, pos + 1)
+            else:
+                b = min(b, pos - 1)
+        return a, b
+
+    # 0. Replay the checkpoint, then anything the protocol demands.
+    for pos in range(n):
+        if known(dial_at(pos)):
+            visit(pos)
+    for dial in must_visit:
+        pos = next((p for p in range(n) if np.isclose(dial_at(p), float(dial))),
+                   None)
+        if pos is not None and pos not in seen:
+            visit(pos)
+
+    # 1. Bracket.
+    while spent < budget:
+        a, b = window()
+        cand = [p for p in range(a, b + 1) if p not in seen]
+        if not cand:
+            break
+        mid = (a + b) // 2
+        visit(min(cand, key=lambda p: (abs(p - mid), p)))
+
+    # 2. Fill outwards from the transition; less-robust side first on a tie,
+    #    which is the side the better objective is on.
+    #
+    # The prune bounds are re-read on every step, not just used to build the
+    # order: filling can itself discover the end of the solvable range, and a
+    # materialised order would then walk straight past it (measured -- with the
+    # order fixed up front, m=16 scoring unsolvable did not stop m=32 being
+    # scored too).
+    notunder = [p for p, v in seen.items() if v in ("delivers", "unsolvable")]
+    trans = min(notunder) if notunder else (keep_lo + keep_hi) // 2
+    while spent < budget:
+        cand = [q for q in range(keep_lo, keep_hi + 1) if q not in seen]
+        if not cand:
+            break
+        visit(min(cand, key=lambda q: (abs(q - trans), q)))
+
+    # ---- what was skipped, and why ----------------------------------------
+    skipped = []
+    for pos in range(n):
+        if pos in seen:
+            continue
+        if pos < keep_lo:
+            why = (f"pruned: less robust than {dname}={dial_at(keep_lo - 1):.5g}, "
+                   f"which scored feasibility 0")
+        elif pos > keep_hi:
+            why = (f"pruned: more robust than {dname}={dial_at(keep_hi + 1):.5g}, "
+                   f"which fell below the solved floor")
+        else:
+            why = f"not reached: eval budget {budget} spent"
+        skipped.append(dict(dial=dial_at(pos), robustness_rank=pos, reason=why))
+
+    # ---- did the order the pruning rests on hold? -------------------------
+    viol, wobble = _order_check(dname, dial_at, sorted(seen), seen, detail,
+                                target, min_solved, feas_resolution)
+
+    pruned = sum(1 for r in skipped if r["reason"].startswith("pruned"))
+    info = dict(n_grid=n, n_evaluated=len(seen), spent=spent, budget=budget,
+                skipped=skipped, n_pruned=pruned,
+                n_unreached=len(skipped) - pruned, violations=viol,
+                wobbles=wobble, keep_lo=keep_lo, keep_hi=keep_hi)
+    print(f"[search] {label or method}: evaluated {len(seen)}/{n} cells "
+          f"({spent} solved, {len(seen) - spent} resumed; budget {budget}); "
+          f"pruned {pruned}, not reached {len(skipped) - pruned}", flush=True)
+    _report_order(label or method, viol, wobble)
+    return seen, detail, info
+
+
+def _report_order(label, viol, wobble):
+    """Violations are a reason to re-run; wobbles are a note. Never swap them."""
+    for v in viol:
+        print(f"[search] NON-MONOTONE {label}: {v} -- the pruning rests on that "
+              f"order, so a pruned tail may hold the answer. Re-run this series "
+              f"with --search grid before reading its protocol point", flush=True)
+    for w in wobble:
+        print(f"[search] wobble {label}: {w} -- no verdict changes, so no prune "
+              f"is affected; recorded, not acted on", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -224,9 +524,21 @@ def run(config, args):
     scores_path = os.path.join(OUT_DIR, f"{problem}_dial_scores{var}.csv")
     ctx_path = os.path.join(OUT_DIR, f"{problem}_dial_contexts{var}.csv")
     if args.refresh:
-        for p in (scores_path, ctx_path):
-            if os.path.exists(p):
-                os.remove(p)
+        # EVERY output of this cell, not just the two that feed the resume. A
+        # --refresh that left the curve and the star behind is a trap: the curve
+        # is rewritten after each cell, so it recovers, but `{problem}_dial_star`
+        # is written only at the END of the sweep -- so a refreshed run that
+        # times out leaves the PREVIOUS run's star on disk, and
+        # `run_dial_test.py` reads exactly that file to decide where to hold each
+        # method. Deleting it up front makes a missing star an obvious failure
+        # rather than a silently stale one.
+        for pth in (scores_path, ctx_path,
+                    os.path.join(OUT_DIR, f"{problem}_dial_curve{var}.csv"),
+                    os.path.join(OUT_DIR, f"{problem}_dial_star{var}.csv"),
+                    os.path.join(OUT_DIR, f"{problem}_dial_skipped{var}.csv")):
+            if os.path.exists(pth):
+                os.remove(pth)
+                print(f"[dial-sweep] --refresh: removed {pth}", flush=True)
     ckpt = load_detail_checkpoint(scores_path) if not args.refresh else {}
     # A stale `{problem}_tau_probe{cell}.json` from the removed grid-placement
     # probe is deleted rather than ignored: leaving it implies the grid still
@@ -322,6 +634,64 @@ def run(config, args):
             os.path.join(OUT_DIR, f"{problem}_dial_curve{var}.csv"), index=False)
         return d
 
+    # The full configured grid, the search summary and the unscored cells, per
+    # series. All three exist because the curve CSV can no longer be read as "the
+    # grid": under --search adaptive it is a SUBSET of it, and which subset --
+    # and why the rest is missing -- is part of the result.
+    grids, search_info, skipped_rows = {}, {}, []
+    # The smallest feasibility difference that is not one fold flipping. On a
+    # single-decision problem each fold contributes ONE binary outcome, so the
+    # cell score is a binomial proportion over len(folds) draws and 1/len(folds)
+    # is the resolution limit -- 0.1 on the 10-fold reactor, where "0.800 ->
+    # 0.700" is one fold. On a contextual problem a fold is a mean over its own
+    # held-out cohort, so there is no such quantum.
+    feas_res = 0.0 if su.contextual else 1.0 / max(len(su.folds), 1)
+
+    def walk(tag, method, grid, uset, rho=np.nan, cache=None, must_visit=(),
+             note_fn=None):
+        """Score one series' grid: adaptively by default, whole on --search grid."""
+        key = _series_key(method, rho)
+        grids[key] = [float(v) for v in grid]
+
+        def ev(dial):
+            return score(tag, method, uset, dial, cache=cache, rho=rho,
+                         note=(note_fn(dial) if note_fn else ""))
+
+        if args.search == "grid":
+            # Walked whole -- but still ORDER-CHECKED. A full grid is where a
+            # violation is most worth knowing about: nothing was pruned on the
+            # assumption, so what comes out is a clean statement about the dial
+            # itself rather than a warning about this run.
+            order = sorted(grids[key], key=lambda v: ROBUSTNESS_SIGN[method] * v)
+            seen, detail = {}, {}
+            for pos, dial in enumerate(order):
+                d = ev(dial)
+                seen[pos] = _verdict(d, float(args.feas_target),
+                                     float(args.min_solved))
+                detail[pos] = d
+            viol, wob = _order_check(
+                DIAL[method] or "dial", lambda q: order[q], sorted(seen), seen,
+                detail, float(args.feas_target), float(args.min_solved),
+                feas_res)
+            _report_order(tag, viol, wob)
+            search_info[key] = dict(search="grid", n_grid=len(grid),
+                                    n_evaluated=len(grid), spent=len(grid),
+                                    budget=len(grid), skipped=[], n_pruned=0,
+                                    n_unreached=0, violations=viol, wobbles=wob)
+            return
+        _, _, info = _search_dials(
+            method, grids[key], ev,
+            known=lambda d, _t=tag: (_t, float(d)) in ckpt,
+            target=float(args.feas_target), min_solved=float(args.min_solved),
+            max_evals=args.max_evals, must_visit=must_visit, label=tag,
+            feas_resolution=feas_res)
+        info["search"] = "adaptive"
+        search_info[key] = info
+        for r in info["skipped"]:
+            skipped_rows.append(dict(problem=problem, method=method, rho=rho,
+                                     dial_name=DIAL[method] or "none",
+                                     search="adaptive", **r))
+
     # ---- the D-facing methods, one rho column at a time --------------------
     cache = None
     for rho in rho_cols:
@@ -353,9 +723,8 @@ def run(config, args):
                     else [float(a) for a in (args.alpha_grid or DEFAULT_ALPHA_GRID)])
             if grid is None:
                 continue
-            for dial in grid:
-                score(f"{method}@rho={rho:g}", method, uset, dial, cache=cache,
-                      rho=rho)
+            walk(f"{method}@rho={rho:g}", method, grid, uset, rho=rho,
+                 cache=cache)
 
     # ---- the methods that face no D: scored ONCE -------------------------
     # No rho column: neither reads any uncertainty.* key that a column moves, so a
@@ -381,16 +750,32 @@ def run(config, args):
                   f"asserted, not chosen. The rest of the grid is here to find "
                   f"where it first SOLVES; on gastric it is measured infeasible "
                   f"at 0.1 under either multiplicity setting.", flush=True)
-        for dial in [float(v) for v in grid]:
-            protocol = (method == "cmicl"
-                        and np.isclose(dial, 1 - float(args.feas_target)))
-            score(method, method, base_uset, dial, rho=np.nan,
-                  note="protocol point" if protocol else "")
+        # C-MICL's protocol point is ASSERTED, not chosen, so it is scored
+        # whatever the search would have done with it -- including when it does
+        # not solve, which on gastric is the measured expectation.
+        prot = 1 - float(args.feas_target)
+        must = [prot] if method == "cmicl" else []
+        note_fn = ((lambda d: "protocol point" if np.isclose(d, prot) else "")
+                   if method == "cmicl" else None)
+        walk(method, method, [float(v) for v in grid], base_uset, rho=np.nan,
+             must_visit=must, note_fn=note_fn)
 
     curve = os.path.join(OUT_DIR, f"{problem}_dial_curve{var}.csv")
+    # A cell the search never scored is NOT a cell that produced no solution --
+    # the plot reads a non-finite feasibility as "infeasible on every fold",
+    # which is a result. So skipped cells go to their own file with the reason
+    # each, and never into the curve as a row of NaNs. A stale file is deleted
+    # rather than left, or the next --search grid run would still look pruned.
+    skip_path = os.path.join(OUT_DIR, f"{problem}_dial_skipped{var}.csv")
+    if skipped_rows:
+        pd.DataFrame(skipped_rows).to_csv(skip_path, index=False)
+        print(f"\n[dial-sweep] wrote {skip_path}: {len(skipped_rows)} cells "
+              f"not scored, with the reason for each", flush=True)
+    elif os.path.exists(skip_path):
+        os.remove(skip_path)
     star = _dial_star(pd.DataFrame(rows), problem, float(args.feas_target),
                       su.oracle.objective_sense, float(args.min_solved),
-                      out_suffix=var)
+                      out_suffix=var, grids=grids, search_info=search_info)
 
     # ---- the coverage-cap ablation ---------------------------------------
     # Runs AFTER the protocol table, because it holds tau at the tau* that table
@@ -449,6 +834,10 @@ def _cp_alpha_ablation(su, config, args, base_uset, star, score, problem,
           f"anchors. It buys a stronger adversary by dropping patients, so read "
           f"feasibility and solved_frac together -- neither alone is the result.",
           flush=True)
+    # Walked WHOLE, never searched. The question here is the SHAPE of both
+    # columns against alpha -- "what does relaxing the cap buy, and what does it
+    # cost in solved fraction" -- so pruning on a feasibility target would throw
+    # away the half of the answer the ablation exists for.
     for a in [float(v) for v in (args.cp_alpha_grid or DEFAULT_CP_ALPHA_GRID)]:
         score(f"cp@rho={rho_a:g}@cpalpha={a:g}", "cp", uset, tau_star,
               cache=cache, cp_alpha=a, phase="cp_alpha_ablation", rho=rho_a,
@@ -456,7 +845,8 @@ def _cp_alpha_ablation(su, config, args, base_uset, star, score, problem,
     cache.clear()
 
 
-def _dial_star(df, problem, target, sense, min_solved, out_suffix=""):
+def _dial_star(df, problem, target, sense, min_solved, out_suffix="",
+               grids=None, search_info=None):
     """The PROTOCOL POINT of each series: the best objective that still delivers.
 
     A series here is one (method, rho column). Unlike ``rho*`` -- "the largest
@@ -476,6 +866,14 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix=""):
     things: ``grid_end`` (the winning cell sits at an end of the dial grid, so the
     grid may be the limit rather than the method), ``interior`` (a genuine
     optimum), ``none`` (the series never reaches the target at all).
+
+    Under ``--search adaptive`` the rows in ``df`` are a SUBSET of the grid, so
+    ``grids`` carries the full configured grid per series (``bound`` is a claim
+    about the grid, not about what was scored) and ``search_info`` carries how
+    many cells were evaluated, how many were pruned, and any monotonicity
+    violation the search found in what it did measure. The rule below is
+    unchanged and still assumes no monotonicity itself -- it just has fewer cells
+    to apply itself to, and ``monotone_note`` is what says when that matters.
     """
     rows = []
     main = df[df["phase"] == "dial"] if "phase" in df else df
@@ -484,7 +882,22 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix=""):
 
     for (method, rho), g_all in main.groupby(["method", "rho"], dropna=False):
         g_all = g_all.sort_values("dial")
-        ends = {float(g_all["dial"].min()), float(g_all["dial"].max())}
+        # Ends come from the FULL CONFIGURED grid, not from the cells scored. The
+        # two differ under an adaptive search, and reading `grid_end` off the
+        # evaluated subset would report it every time a tail was pruned -- which
+        # is the opposite of what the flag means.
+        key = _series_key(method, rho)
+        full = (grids or {}).get(key)
+        ends = ({float(min(full)), float(max(full))} if full
+                else {float(g_all["dial"].min()), float(g_all["dial"].max())})
+        si = (search_info or {}).get(key) or {}
+        prov = dict(search=str(si.get("search", "grid")),
+                    n_grid=int(si.get("n_grid", len(g_all))),
+                    n_evaluated=int(si.get("n_evaluated", len(g_all))),
+                    n_pruned=int(si.get("n_pruned", 0)),
+                    n_unreached=int(si.get("n_unreached", 0)),
+                    monotone_note="; ".join(si.get("violations", []) or []),
+                    feas_wobble="; ".join(si.get("wobbles", []) or []))
         g = g_all[g_all["solved_frac"] >= min_solved]
         # How close the series got, whether or not it delivered. A series that
         # misses the target used to leave a row of NaNs, which says only "no" --
@@ -517,13 +930,19 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix=""):
                              test_time_per_point_s=np.nan, bound="none",
                              note=f"never reaches feas>={target:g} at "
                                   f"solved_frac>={min_solved:g}; {reached}",
-                             **close))
+                             **prov, **close))
             continue
         best = ok.iloc[0]
         for _, r in ok.iterrows():
             if better(float(r["objective"]), float(best["objective"])):
                 best = r
         notes = []
+        if prov["monotone_note"]:
+            # The search prunes on monotonicity. If the cells it DID score are
+            # not ordered, the pruned ones are not evidence and this point is
+            # provisional -- say so on the row, not only in the log.
+            notes.append("NON-MONOTONE among the scored cells -- re-run this "
+                         "series with --search grid")
         if float(best["dial"]) in ends:
             notes.append("at a grid end -- the dial grid may be the limit, "
                          "not the method")
@@ -539,7 +958,7 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix=""):
                          test_time_per_point_s=float(best["test_time_per_point_s"]),
                          bound=("grid_end" if float(best["dial"]) in ends
                                 else "interior"),
-                         note="; ".join(notes), **close))
+                         note="; ".join(notes), **prov, **close))
     for _, r in ref.iterrows():
         # nominal: no dial, so no protocol point -- carried as the reference level
         # the whole plot is read against.
@@ -551,6 +970,8 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix=""):
                          master_time_s=float(r["master_time_s"]),
                          test_time_per_point_s=float(r["test_time_per_point_s"]),
                          bound="no_dial", note="reference level, nothing to move",
+                         search="none", n_grid=1, n_evaluated=1, n_pruned=0,
+                         n_unreached=0, monotone_note="", feas_wobble="",
                          best_feasibility=float(r["feasibility"]),
                          best_feas_dial=np.nan,
                          best_feas_objective=float(r["objective"]),
@@ -606,6 +1027,21 @@ def main():
     p.add_argument("--cp-alpha-grid", type=float, nargs="+", default=None,
                    help=f"coverage-cap values (default {DEFAULT_CP_ALPHA_GRID}); "
                         "0 is the production pin")
+    p.add_argument("--search", choices=("adaptive", "grid"), default="adaptive",
+                   help="how each series' dial grid is walked. adaptive "
+                        "(default): bisect on the robustness order to bracket "
+                        "the feasibility target, then spend what is left of "
+                        "--max-evals filling the band around it; a cell scoring "
+                        "feasibility 0 prunes everything LESS robust, and one "
+                        "below --min-solved prunes everything MORE robust. That "
+                        "ASSUMES the dial is monotone -- violations among the "
+                        "cells actually scored are printed and land in the star "
+                        "table's monotone_note. grid: walk the whole grid, which "
+                        "assumes nothing and is the fallback when it does")
+    p.add_argument("--max-evals", type=int, default=None,
+                   help="cells scored per series under --search adaptive "
+                        "(default ceil(log2 n) + 2, floored at 4). Cells already "
+                        "on the score checkpoint are free and do not count")
     p.add_argument("--feas-target", type=float, default=0.9,
                    help="held-out feasibility target (default 0.9). Also fixes "
                         "C-MICL's protocol point at 1 - target")
@@ -627,7 +1063,11 @@ def main():
                    help="seed for the DRAWS FROM D only; the data and the folds "
                         "keep the config seed. Scopes every output with _s<seed>")
     p.add_argument("--refresh", action="store_true",
-                   help="discard the score cache and the context records")
+                   help="discard EVERY output of this cell first -- scores, "
+                        "contexts, curve, star and skipped. Needed whenever a "
+                        "previous run of the same cell is not comparable "
+                        "(changed grid, changed scoring); without it the "
+                        "checkpoint resumes those cells silently")
     p.add_argument("--config", default="config.yaml")
     p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json")
     args = p.parse_args()

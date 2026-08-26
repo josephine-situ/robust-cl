@@ -429,6 +429,15 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
     survivors right scores 1.0. Callers must report it, and treat a high
     feasibility at a low solved fraction as the artefact it is.
 
+    On a **single-decision** problem the master IS the prescription, so a fold
+    counts as solved only when that master actually solved: ``status ==
+    "infeasible"`` (or a non-finite objective) scores the fold unsolved rather
+    than scoring the ``np.zeros`` placeholder every solver returns in that case.
+    Before 2026-08-26 it scored the placeholder, which sits at the origin -- well
+    inside every constraint on both single-decision instances -- so those
+    problems reported ``solved_frac = 1.0`` at every dial and handed the
+    conservative end of each curve a free feasible point.
+
     ``return_contexts`` adds a ``"contexts"`` list of ``(fold, context_idx,
     solved, feasible, objective)`` -- one record per held-out context on a
     contextual problem, one per fold on a single-decision one. The CELL scoring
@@ -530,7 +539,27 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
             test_times.append(0.0)
             test_points.append(1)
             x_opt = getattr(result, "x_opt", None)
-            solved = x_opt is not None and np.all(np.isfinite(x_opt))
+            # An infeasible master is NOT a decision. Every solver returns
+            # `x_opt=np.zeros(n_features), obj_value=inf, status="infeasible"`
+            # when the MIP has no solution, and zeros are finite -- so this used
+            # to score a phantom decision AT THE ORIGIN, which on synthetic and
+            # the reactor is comfortably inside every constraint. Measured on
+            # synthetic at margin m=16 and m=32, where the tightened RHS admits
+            # nothing: `feas=1.000 obj=+0.0000 solved=1.000 [infeasible]`. It
+            # made `solved_frac` structurally 1.0 on the single-decision problems
+            # -- there was no dial at which they reported an unsolvable cell --
+            # and it put a free feasible point at the conservative end of every
+            # curve. The contextual path never had this (solve_for_test_cohort
+            # returns None and the context is counted unsolved).
+            #
+            # `max_iterations`, `coverage_cap` and `cycle_detected` are CP
+            # returning an INCUMBENT: a real decision, correctly scored, and
+            # flagged separately by `n_capped`.
+            status_k = statuses[-1]
+            obj_v = getattr(result, "obj_value", None)
+            solved = (x_opt is not None and np.all(np.isfinite(x_opt))
+                      and status_k != "infeasible"
+                      and obj_v is not None and np.isfinite(float(obj_v)))
             if solved:
                 f = 1.0 if oracle.feasible(x_opt) else 0.0
                 o = float(oracle.objective(x_opt))

@@ -79,6 +79,17 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 #    figure's axis stopped being one quantity. Whether the top of the grid stops
 #    before any cut is a PROPERTY OF THE RUN, reported by the
 #    `[cp] ... max iter-0 dist=` line -- not something the grid is bent to give.
+#
+# 4. THE GRID IS SEARCHED, NOT WALKED (SEARCH=adaptive, the default). A dial grid
+#    is ordered by robustness, and two answers say where NOT to look: a cell
+#    scoring feasibility 0 means nothing LESS robust can deliver, and one below
+#    MIN_SOLVED means nothing MORE robust can solve. The delivering cells are
+#    therefore an interval of that order, whose least-robust end is the protocol
+#    point -- robustness is what the objective is paid with. The search bisects to
+#    that end, then fills the band around it with what is left of MAX_EVALS. This
+#    is why the grids below could get FINER while a run got CHEAPER. It ASSUMES
+#    monotonicity; violations among the scored cells are printed and land in the
+#    star table, and SEARCH=grid is the fallback that assumes nothing.
 # ---------------------------------------------------------------------------
 #
 # EXPECTATIONS worth pre-registering, so a surprise is a result and not a bug:
@@ -105,6 +116,7 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 #   {problem}_dial_curve<cell>.csv    PRIMARY -- what plot_dial_sweep.py reads
 #   {problem}_dial_contexts<cell>.csv per-context records
 #   {problem}_dial_star<cell>.csv     DERIVED -- each series' protocol point
+#   {problem}_dial_skipped<cell>.csv  cells the search did not score, and why
 #   {problem}_dial_scores<cell>.csv   resume checkpoint, keyed (method@rho, dial)
 #
 # Then:
@@ -121,10 +133,35 @@ RHO_COLUMNS_GASTRIC="${RHO_COLUMNS_GASTRIC:-0.5 1.0}"
 RHO_COLUMNS_REACTOR="${RHO_COLUMNS_REACTOR:-1 2}"
 RHO_COLUMNS_SYNTHETIC="${RHO_COLUMNS_SYNTHETIC:-0.5 1.0}"
 # Absolute, fixed, the same on every rho column. See (3) above.
-TAU_GRID="${TAU_GRID:-1.0 0.1 0.01 0.001}"
-ALPHA_GRID="${ALPHA_GRID:-0.0 0.1 0.2 0.3 0.5}"
-MARGIN_GRID="${MARGIN_GRID:-0.0 0.1 0.2 0.3 0.5 0.75 1.0}"
-CMICL_ALPHA_GRID="${CMICL_ALPHA_GRID:-0.02 0.05 0.1 0.2 0.3 0.5}"
+#
+# All four are FINER than they were before 2026-08-26, and each is a strict
+# SUPERSET of its old values, so a checkpoint written under the old grids resumes
+# into these instead of being orphaned. The length is affordable because SEARCH
+# (below) does not walk them: it brackets the feasibility target and fills the
+# band around it, so the resolution lands where the frontier bends and the dead
+# tails cost nothing.
+TAU_GRID="${TAU_GRID:-1.0 0.3 0.1 0.03 0.01 0.003 0.001}"
+ALPHA_GRID="${ALPHA_GRID:-0.0 0.05 0.1 0.15 0.2 0.3 0.4 0.5}"
+MARGIN_GRID="${MARGIN_GRID:-0.0 0.1 0.2 0.3 0.4 0.5 0.625 0.75 0.875 1.0 1.25 1.5}"
+CMICL_ALPHA_GRID="${CMICL_ALPHA_GRID:-0.02 0.03 0.05 0.075 0.1 0.15 0.2 0.3 0.4 0.5}"
+# How each series' grid is walked.
+#
+#   adaptive (default)  Order the grid by robustness, bisect to bracket the
+#                       feasibility target, then spend what is left of MAX_EVALS
+#                       filling the band around it. A cell scoring feasibility 0
+#                       prunes everything LESS robust; one below MIN_SOLVED prunes
+#                       everything MORE robust. Cells already on the checkpoint
+#                       are free. Unscored cells go to {problem}_dial_skipped*.csv
+#                       with the reason, never into the curve as NaN rows.
+#   grid                Walk the whole grid.
+#
+# adaptive ASSUMES the dial is monotone -- feasibility rising with robustness, the
+# solved fraction falling. Violations among the cells actually scored are printed
+# as `[search] NON-MONOTONE` and land in the star table's `monotone_note`; that is
+# the signal to re-run that series with SEARCH=grid, which assumes nothing.
+SEARCH="${SEARCH:-adaptive}"
+# Cells scored per series under adaptive. Empty = ceil(log2 n) + 2, floored at 4.
+MAX_EVALS="${MAX_EVALS:-}"
 FEAS_TARGET="${FEAS_TARGET:-0.9}"
 MIN_SOLVED="${MIN_SOLVED:-0.5}"
 SEED="${SEED:-42}"
@@ -190,6 +227,8 @@ python -u experiments/run_dial_sweep.py \
     --alpha-grid ${ALPHA_GRID} \
     --margin-grid ${MARGIN_GRID} \
     --cmicl-alpha-grid ${CMICL_ALPHA_GRID} \
+    --search "${SEARCH}" \
+    ${MAX_EVALS:+--max-evals ${MAX_EVALS}} \
     --feas-target "${FEAS_TARGET}" \
     --min-solved "${MIN_SOLVED}" \
     --seed "${SEED}" \
