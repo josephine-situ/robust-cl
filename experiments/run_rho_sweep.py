@@ -447,6 +447,11 @@ The single-decision problems (``--problem synthetic``, ``--problem reactor``)
     # cut different adversaries and measure tau on different statistics (mean over
     # units vs per unit), and the resume key carries neither, so a shared
     # checkpoint would hand the forced run the auto run's rows.
+    #
+    # The only way to force one now is `methods.cp.separation` in config.yaml --
+    # the `--separation` CLI flag is removed -- so this token guards a CONFIG
+    # mismatch. It is kept for exactly that: config.yaml is read by the sweep and
+    # by run_dial_test.py alike, so both stages reach the same suffix.
     sep = getattr(args, "separation", None)
     auto_sep = "coherent" if getattr(args, "coherent", False) else "incoherent"
     sep_token = f"_sep{sep[:5]}" if (sep and sep != "auto" and sep != auto_sep) else ""
@@ -948,14 +953,6 @@ def main():
     p.add_argument("--incoherent", dest="coherent", action="store_false",
                    default=False)
     p.add_argument("--coherent", dest="coherent", action="store_true")
-    p.add_argument("--separation", dest="separation", default=None,
-                   choices=("auto", "coherent", "incoherent"),
-                   help="CP separation path. Default 'auto' follows the bank: a "
-                        "coherent bank cuts one shared draw per iteration (where "
-                        "the alpha=0 == tau->0 wrapper equivalence lives), an "
-                        "incoherent one ranks the draws per constraint and admits "
-                        "a model for each. Forcing a mismatch is legal, reported, "
-                        "and gets its own cell. Gastric-only in effect.")
     p.add_argument("--match-bank", action="store_true",
                    help="set CP's bank B to the wrapper's P, removing the B!=P "
                         "confound from the rho* comparison")
@@ -1019,13 +1016,19 @@ def main():
     # a re-derivation reads back the curve the sweep wrote. Gastric is untouched:
     # its folds are temporal (n_kfold is inert there) and its models come from
     # --cv-configs, so adding either token would only make its filenames lie.
-    # Settle CP's separation path before anything reads a cell name: --rho-star-only
-    # re-derives rho* from the curve the sweep wrote, so it has to resolve the
-    # same suffix a solving run would.
-    if args.separation is None:
-        args.separation = (
-            config.get("methods", {}).get("cp", {}).get("separation", "auto")
-        )
+    # CP's separation path is CONFIG-ONLY (`methods.cp.separation`, default
+    # "auto" = follow the bank). The `--separation` flag that used to force it
+    # from the command line is REMOVED: it reached a solve on gastric alone, and
+    # a forced path is not a run anyone should reach for -- the two paths score
+    # tau on different statistics (mean over units vs per unit), so a forced cell
+    # is not comparable to the matched pair it would be read against, and
+    # run_dial_test.py has no such flag, so a forced sweep wrote a `_sep*` cell
+    # its own test stage could not find. Resolved here rather than at the call
+    # sites because --rho-star-only re-derives rho* from the curve the sweep
+    # wrote and has to reach the same suffix a solving run would.
+    args.separation = (
+        config.get("methods", {}).get("cp", {}).get("separation", "auto")
+    )
 
     if args.problem in ("synthetic", "reactor"):
         args.n_folds = _synth_n_folds(config, args)

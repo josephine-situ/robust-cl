@@ -65,7 +65,7 @@ export NUMEXPR_NUM_THREADS="${NTHREADS}"
 #
 #   method      dial      rho columns                       notes
 #   -------------------------------------------------------------------------
-#   cp          tau       gastric {0.5,1.0}, reactor {1,2}  ONE fixed tau grid
+#   cp          tau       gastric {0.5,1.0}, reactor {3,4}  ONE fixed tau grid
 #   wrapper     alpha     same                              P is a bank prefix
 #   margin      m         --                                faces no D
 #   cmicl       alpha     --                                alpha=0.1 = protocol
@@ -165,7 +165,7 @@ PROBLEMS="${PROBLEMS:-${PROBLEM:-gastric reactor}}"
 METHODS="${METHODS:-nominal cp wrapper margin cmicl}"
 # rho columns, per problem. Empty means run_dial_sweep's own defaults.
 RHO_COLUMNS_GASTRIC="${RHO_COLUMNS_GASTRIC:-0.5 1.0}"
-RHO_COLUMNS_REACTOR="${RHO_COLUMNS_REACTOR:-1 2}"
+RHO_COLUMNS_REACTOR="${RHO_COLUMNS_REACTOR:-3 4}"
 RHO_COLUMNS_SYNTHETIC="${RHO_COLUMNS_SYNTHETIC:-0.5 1.0}"
 # Absolute, fixed, the same on every rho column. See (3) above.
 #
@@ -219,7 +219,7 @@ MATCH_BANK="${MATCH_BANK:-}"
 # record in the reactor's log.
 CP_ALPHA_ABLATE="${CP_ALPHA_ABLATE:---cp-alpha-ablate}"
 CP_ALPHA_RHO_GASTRIC="${CP_ALPHA_RHO_GASTRIC:-1.0}"
-CP_ALPHA_RHO_REACTOR="${CP_ALPHA_RHO_REACTOR:-2}"
+CP_ALPHA_RHO_REACTOR="${CP_ALPHA_RHO_REACTOR:-3}"
 CP_ALPHA_GRID="${CP_ALPHA_GRID:-0.0 0.1 0.2 0.3}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 

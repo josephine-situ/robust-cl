@@ -390,7 +390,11 @@ def main():
                         "once (the deployed procedure, one bit of feasibility). "
                         "Default: both")
     # Cell flags -- these must match the sweep run whose star file is being read.
-    p.add_argument("--coherent", action="store_true")
+    # --incoherent is the production cell and the default; both spellings exist
+    # so submit_dial_sweep.sh's one COHERENCE variable reaches both stages.
+    p.add_argument("--incoherent", dest="coherent", action="store_false",
+                   default=False)
+    p.add_argument("--coherent", dest="coherent", action="store_true")
     p.add_argument("--match-bank", action="store_true")
     p.add_argument("--n-folds", type=int, default=None)
     p.add_argument("--seed", type=int, default=None)

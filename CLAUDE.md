@@ -320,8 +320,13 @@ alpha `[0.0, 0.1, 0.2, 0.3, 0.5]`. Runs resume from a checkpoint keyed
 second cell resumes the first's rows and overwrites its curve. The cell is
 `_coh`/`_incoh` + `_matchbank` + `_f<n>` (`--n-folds`) + `_m<model>` + `_s<seed>`
 (`--seed`). CP's separation path follows the coherence the cell is already named
-for, so it needs no token of its own; only a **forced** `--separation` mismatch
-adds one (`_sepcoher`/`_sepincoh`).
+for, so it needs no token of its own; only a **forced** mismatch adds one
+(`_sepcoher`/`_sepincoh`), and since 2026-08-26 the only way to force one is
+`methods.cp.separation` in `config.yaml` — **the `--separation` CLI flag is
+removed** from both sweep runners. It reached a solve on gastric alone, a forced
+cell is not comparable to the matched pair it would be read against, and
+`run_dial_test.py` never had the flag, so a forced sweep wrote a `_sep*` cell its
+own test stage could not find.
 
 **`--seed` is the bank axis** (since 2026-08-21). D is *sampled*: CP cuts against
 B=200 draws, the wrapper embeds P=20, so one curve cannot separate the method from

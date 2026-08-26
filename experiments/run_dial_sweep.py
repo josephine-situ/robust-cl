@@ -1051,8 +1051,6 @@ def main():
     p.add_argument("--incoherent", dest="coherent", action="store_false",
                    default=False)
     p.add_argument("--coherent", dest="coherent", action="store_true")
-    p.add_argument("--separation", dest="separation", default=None,
-                   choices=("auto", "coherent", "incoherent"))
     p.add_argument("--match-bank", action="store_true",
                    help="set CP's bank B to the wrapper's P, removing the B!=P "
                         "confound")
@@ -1075,9 +1073,11 @@ def main():
     import yaml
     config = yaml.safe_load(open(args.config))
 
-    if args.separation is None:
-        args.separation = (
-            config.get("methods", {}).get("cp", {}).get("separation", "auto"))
+    # Config-only, exactly as run_dial_test.py resolves it -- there is no
+    # `--separation` flag on either, so the two stages cannot disagree about the
+    # cell name. See run_rho_sweep.main for why the flag was removed.
+    args.separation = (
+        config.get("methods", {}).get("cp", {}).get("separation", "auto"))
     if args.problem in ("synthetic", "reactor"):
         args.n_folds = _synth_n_folds(config, args)
         from experiments.run_sweep import synth_model_spec, reactor_model_spec
