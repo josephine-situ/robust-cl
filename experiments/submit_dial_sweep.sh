@@ -2,7 +2,15 @@
 #SBATCH --job-name=dial-sweep
 #SBATCH --partition=mit_normal
 #SBATCH --time=12:00:00
-#SBATCH --mem=128G
+# 16G is 5x the measured peak. seff/sacct on job 21224636 (2026-08-26):
+# MaxRSS 3.13G gastric, 0.95G reactor -- 2.4% and 0.7% of the 128G this used to
+# ask for. Memory is NOT billed on mit_normal (its TRES line reads
+# billing=cpu=5120, i.e. TRESBillingWeights is CPU-only), so the old request cost
+# no fair-share -- it cost PACKING. Nodes here are ~102 cores / ~459G, about 4.5G
+# per core; 128G against 16 cpus asked 8G/core, nearly double the node ratio, so
+# the task blocked memory worth ~28 cores while using 16 and could only land in a
+# large-memory gap. At 16G/16cpu it is 1G/core and fits wherever the cores do.
+#SBATCH --mem=16G
 #SBATCH --cpus-per-task=16
 #SBATCH --array=0-1%2
 #SBATCH --output=logs/dial_sweep_%A_%a.out
@@ -20,7 +28,31 @@ echo "Working directory: $PWD"
 # nodes of mit_normal (it killed 2 of 6 rho-sweep array tasks on 2026-08-25).
 source experiments/_activate_env.sh
 
-export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
+# Thread caps the libraries ACTUALLY read.
+#
+# `export GRB_THREADS=...` stood here and was DEAD: no Python in this repo reads
+# it, there is no gurobi.env, and Gurobi does not pick up arbitrary GRB_<PARAM>
+# environment variables. The cores were nonetheless being used -- measured 13.4
+# of 16 on the reactor (seff 21224636_1: CPU 10:46:14 over 48:21 wall, 83.5%) and
+# 10.9 on gastric (2-07:40:17 over 05:07:38, 67.9%) -- but by LIBRARY DEFAULTS
+# sized off the physical machine, not off this allocation. On a ~102-core node
+# that lets a 4-cpu task spawn ~102 BLAS threads inside a 4-core cgroup and
+# thrash, which would make any --cpus-per-task comparison meaningless.
+#
+# CAVEAT, deliberately taken: BLAS reductions reassociate with thread count, so
+# changing --cpus-per-task can move results in the last bits. That was ALREADY
+# true and worse -- the count came from whichever node the task landed on
+# (node3305 vs node3308), so it was not even a function of the job script. This
+# makes it a function of SLURM_CPUS_PER_TASK, which is recorded. Compare
+# WALLTIME across core counts; treat float-noise differences as expected.
+#
+# Gurobi is NOT covered here: src/methods/cp.py sets Params.Threads = 0 (= the
+# machine) and following SLURM_CPUS_PER_TASK needs a code change, not an export.
+NTHREADS="${SLURM_CPUS_PER_TASK:-8}"
+export OMP_NUM_THREADS="${NTHREADS}"
+export OPENBLAS_NUM_THREADS="${NTHREADS}"
+export MKL_NUM_THREADS="${NTHREADS}"
+export NUMEXPR_NUM_THREADS="${NTHREADS}"
 
 # ---------------------------------------------------------------------------
 # THE PRIMARY AXIS: every method along its OWN dial, at a FIXED rho.
@@ -66,8 +98,11 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 #    across 5 solves, and CP at the smallest tau still equals the wrapper at
 #    alpha=0 to the last digit.
 #    COST: the cache holds every fold's bank at once, where the un-cached path
-#    held one at a time. That is len(folds) x the models -- the reason MEM is 128G
-#    and the reason the cache is dropped between rho columns.
+#    held one at a time. That is len(folds) x the models, and it is why the cache
+#    is dropped between rho columns. It is NOT why MEM is what it is: measured
+#    peak is 3.13G on gastric (4 folds x 200 draws x 6 small XGB/ElasticNet) and
+#    0.95G on the reactor, so the 128G this script used to request was over by
+#    more than an order of magnitude. See the --mem note in the header.
 #
 # 3. TAU IS FIXED BEFORE THE RUN. ONE absolute grid (TAU_GRID below), the same on
 #    every rho column and every problem, in unexplained-sd units. tau is a
