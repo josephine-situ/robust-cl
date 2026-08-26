@@ -130,7 +130,17 @@ def solve_for_context(result, instance: ProblemInstance, context_row: np.ndarray
     the solve is optimal (Gurobi status 2), else ``None``. Shared by the
     prescription evaluation and the baseline calibration so both measure
     feasibility the same way.
+
+    A method may fail BEFORE any MIP exists -- C-MICL returns
+    ``status="infeasible"`` with no model when a constraint's conformal quantile
+    is not finite (``ceil((n_cal+1)(1-alpha)) > n_cal``). There is then no
+    ``result.x`` to pin a context onto, and no context is solvable. That is the
+    same outcome as a built master no context can satisfy (a large ``margin``),
+    so it is reported the same way -- ``x_opt=None``, counted in
+    ``solved_frac`` -- rather than raising and killing the sweep.
     """
+    if result is None or getattr(result, "x", None) is None:
+        return str(getattr(result, "status", "no_model")), None
     for c_idx in instance.context_var_indices:
         val = float(context_row[c_idx])
         result.x[c_idx].lb = val

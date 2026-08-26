@@ -70,16 +70,50 @@ uv run python experiments/run_dial_sweep.py --problem gastric               # th
 uv run python experiments/run_dial_sweep.py --problem reactor --rho-columns 1 2 3
 uv run python experiments/run_dial_sweep.py --problem gastric --coherent    # the ablation cell
 uv run python experiments/run_dial_sweep.py --problem gastric --cp-alpha-ablate
+uv run python experiments/run_dial_test.py --problem reactor                # the TEST stage at each dial*
+uv run python experiments/run_dial_test.py --problem gastric --phases full  # OOS: the 96 X_test arms
 uv run python experiments/plot_dial_sweep.py --all --suffix _incoh          # -> fig_dial_frontier_*.pdf
 uv run python experiments/measure_clip_fraction.py       # how much of D the label bounds remove, per rho
-sbatch experiments/submit_dial_sweep.sh                  # one array task per problem
+sbatch experiments/submit_dial_sweep.sh                  # one array task per problem; runs the test stage after
 ```
+
+**The sweep TUNES; `run_dial_test.py` TESTS** (2026-08-26). Every number in the
+sweep is a fold score under the judge that instance tunes against, and `dial*` is
+fitted to exactly that column — so quoting a tuned dial's own tuning score as the
+result is the error the test stage exists to avoid. It reads
+`{problem}_dial_star{cell}.csv`, holds each method at its own `dial*`, and scores
+again under a judge the dial never faced. Two phases, not interchangeable:
+
+| phase | what it is | what it is not |
+|---|---|---|
+| `folds` | the sweep's own folds re-solved at `dial*`, truth-judged. A rate, with a spread over folds | **not held out** — `dial*` was chosen on these folds |
+| `full` | one refit on **all** rows, one decision per method | one **bit** of feasibility per method; no spread |
+
+The judge per problem: **synthetic** the analytic `f_true` (`gt_constraints[0]`),
+**reactor** the **ODE** (`make_gt_oracle`) — never the proxy that tuned `dial*`,
+whose own boundary error is Known gap #8 — and **gastric** the **full-cohort GT
+ensemble, fit on all 416 arms** (`instance.eval_outcomes[*].gt_fn`, the fixed
+evaluation oracle every Table 6 number is against), prescribing for the **96
+`X_test` arms**. That is **not** `make_cv_oracle`'s train-only 320-arm ensemble,
+which is the tuning proxy the sweep scores `dial*` against — the two are separate
+objects and confusing them is the easy mistake here. So on gastric both the judge
+and the cohort change between tuning and test.
+Outputs: `{problem}_dial_test{cell}.csv` (summary per (method, phase)) and
+`{problem}_dial_test_points{cell}.csv` (per fold/context). A series with no
+`dial*` is **skipped with the reason printed** — there is no tuned dial to test.
+`RUN_TEST=0` / `TEST_PHASES=full` narrow it in `submit_dial_sweep.sh`.
+
+**Neither single-decision instance has a row-level train/test split, and that is
+structural**: `synthetic_nonlinear` and `reactor_micl` set `X_test` empty (there
+are no contexts to hold out), so the CV folds are the only row structure and the
+test stage's separation is the *judge*, not the rows. Gastric is the one instance
+where a held-out cohort exists.
 
 The grid:
 
 | method | dial | rho columns | notes |
 |---|---|---|---|
-| `cp` | tau | gastric {0.5, 1.0}, reactor {1, 2} | grid **re-read per rho column** |
+| `cp` | tau | gastric {0.5, 1.0}, reactor {1, 2} | **one fixed tau grid**, same on every column |
 | `wrapper` | alpha | same | its P models are a prefix of CP's bank |
 | `margin` | m | — | scored once; faces no D |
 | `cmicl` | alpha | — | scored once; alpha=0.1 flagged as the protocol point |
@@ -89,16 +123,26 @@ The grid:
 - **Both rho columns share one output CSV.** The `rho` column tells them apart and
   one file per (problem, coherence, seed) is what the plot reads. The checkpoint
   key is `(method@rho, dial)`, so resume is unchanged.
-- **The tau grid is placed per rho column, not reused.** tau's scale tracks D, so
-  one absolute grid separates far harder at rho=0.5 than at rho=1.0 and more cells
-  collapse to nominal. Each column is **probed** — one CP run at a tau above every
-  distance, reading the new `CPHistory.iter0_tau` — and its grid is fractions of
-  that (`--tau-frac-grid`, default `[1.0, 0.5, 0.25, 0.1, 0.05, 0.02]`). **Fixing
-  rho is what makes this legitimate rather than circular**: the grid is placed
-  from a statistic of the *assumed set*, never from the feasibility it is about to
-  be scored on. `tau_frac = 1` stops before any cut, so that endpoint **is**
-  nominal — verified on synthetic, tau=0.5205 returns the nominal objective to the
-  last digit. The probe is cached in `{problem}_tau_probe{cell}.json`.
+- **tau is FIXED BEFORE THE RUN.** One absolute grid, `TAU_GRID` =
+  `[1.0, 0.1, 0.01, 0.001]`, the same on every rho column and every problem, in
+  unexplained-sd units (`--tau-grid` to change it). **tau is a parameter of the
+  method**, set in advance exactly as rho and the margin's `m` are — it is never
+  read back off the run.
+  **Placing the grid from the iteration-0 separation distance was tried and is
+  removed (2026-08-26); do not reintroduce it.** It made tau a function of the
+  bank, of `B` and of which folds were probed, so the same nominal tau meant a
+  different tolerance in every cell and the primary figure's x-axis stopped being
+  one quantity. It also cost an extra CP run per (rho column, fold), and it
+  silently misplaced the grid whenever the probed fold was not the fold with the
+  largest distance — measured on the 2026-08-26 run, the `tau_frac=1` endpoint
+  cut on **5/10** reactor folds at rho=1, **6/10** at rho=2 and **3/4** gastric
+  folds at rho=1.0 (there, objective **10.87 against nominal's 11.30**). Whether
+  the top of the fixed grid happens to stop before any cut is a **property of the
+  run**, reported by `[cp] ... max iter-0 dist=` and by `status` — not something
+  the grid is bent to guarantee. `{problem}_tau_probe{cell}.json` is gone, and a
+  stale one is deleted on the next run.
+  **Every dial curve produced before 2026-08-26 was scored on a probe-placed
+  grid** and its tau axis is not comparable across rho columns — re-run.
 - **One shared bank per (rho column, fold)** (`cv_calibrate.FoldCache`,
   `uncertainty.build_bank_for_instance`). A bank is a pure function of
   `(instance, D, seed, B)` — neither tau nor alpha reaches it — so one B=200 bank
@@ -776,23 +820,22 @@ basis keeps `tol_scale` untouched, since reproducing prior runs is its only job.
   breadth is information. Read `[cp] basis=scale ... max iter-0 dist=` off a real
   run before assuming the grid brackets a **new** problem **or the other separation
   path**: the same gastric bank reads 0.0623 coherent and 0.2441 incoherent.
-- **Do not pin the grid from measured distances while rho is moving**: those
-  scale with D, so a grid fitted across a rho sweep needs refitting after every
-  rho and is circular. On the rho sweep the order stays (1) rho sweep at fixed
-  tau, (2) tau ablation at the chosen rho.
-  **At a FIXED rho the circularity is gone and the grid IS placed from the
-  distances** — that is what `run_dial_sweep.py` does, one probe per rho column.
-  The distinction is which quantity the grid is fitted against: a statistic of the
-  *assumed set* (legitimate, and the only way tau transfers across rho columns and
-  across the two separation paths) versus the *feasibility* the grid is about to
-  be scored on (circular, and never done).
-- **`CPHistory.iter0_tau`** is that statistic: the iteration-0 separation
-  distance expressed in tau's own units, set by whichever strategy ran, so it
-  reads the same off the basic path (max raw violation / `scale(y_c)`) and the
-  contextual ones (the distance itself under `basis="scale"`). Read it from a
-  probe run at a tau above every distance — the loop separates once, reports, and
-  stops at iteration 0. It is a **placement statistic and never enters a scored
-  cell**.
+- **NEVER pin the grid from measured distances.** tau is **fixed before the run**
+  and is a parameter of the method, on the rho sweep and on the dial sweep alike:
+  one grid, the same at every rho, on every problem, on both separation paths.
+  A grid read back off the run makes tau a function of the bank, of `B` and of
+  which folds were looked at, so the same nominal tau means a different tolerance
+  in every cell and the axis stops being one quantity. This holds **whether or not
+  rho is moving** — a fixed rho does not license it. `run_dial_sweep.py` did place
+  the grid from each column's iteration-0 distance between 2026-08-25 and
+  2026-08-26; that is removed and must not come back. On the rho sweep the order
+  stays (1) rho sweep at fixed tau, (2) tau ablation at the chosen rho.
+- **`CPHistory.iter0_tau`** is the iteration-0 separation distance expressed in
+  tau's own units, set by whichever strategy ran, so it reads the same off the
+  basic path (max raw violation / `scale(y_c)`) and the contextual ones (the
+  distance itself under `basis="scale"`). It is a **diagnostic**: it says whether
+  the fixed grid brackets the problem, which is a fact about the run to be
+  reported. It **must not be fed back into the grid** — see the bullet above.
 - **The mean is the right statistic and is anchor-count stable.** A scenario
   breaking 2 of 20 anchors badly is less dangerous than one breaking all 20
   moderately; a max ranks those backwards. This is the *anchor* mean and it stands
@@ -1054,6 +1097,16 @@ monotonicity — unlike rho, a dial has no direction that is automatically "more
 (alpha and tau run the opposite way round from `m`) — and it is the decision a
 user would actually take from the series. `bound` is `interior`, `grid_end` (the
 dial grid may be the limit rather than the method) or `none`.
+**A `none` row is not a row of NaNs** (since 2026-08-26): every row also carries
+`best_feasibility` / `best_feas_dial` / `best_feas_objective` /
+`best_feas_solved_frac` — how close the series got at `solved_frac >= min_solved`,
+whether or not it delivered. "0.88 at every dial" and "0.00 at every dial" are
+different results and the table could not previously tell them apart; on the
+2026-08-26 reactor run, where nothing reached 0.9, this is the difference between
+reading CP at rho=2 (**0.80**) against C-MICL (0.30) and margin (0.00), and
+reading seven blanks. Per-cell feasibility itself was always saved — it is in
+`{problem}_dial_curve{cell}.csv` and `{problem}_dial_scores{cell}.csv`; only the
+*derived* star table dropped it.
 
 **Supporting — the rho sweep** (`run_rho_sweep.py`). Sweeps the shared rho with
 tau/alpha fixed and reports **rho\*(method)** — the largest rho meeting the
@@ -1391,14 +1444,34 @@ Stated limitations of the current numbers, not bugs to fix silently.
     at equal feasibility on either instance; where gastric C-MICL first solves;
     whether the reactor needs rho=3; and whether relaxing CP's coverage cap lifts
     its feasibility ceiling.
-    Three things are **asserted rather than shown** even once it is run:
-    (a) the tau grid is placed from **one fold**'s iteration-0 distance by default
-    (`--tau-probe-folds`), which is a placement heuristic and not a measurement;
-    (b) the protocol point is "best objective among the cells that deliver", which
+    Two things are **asserted rather than shown** even once it is run:
+    (a) the protocol point is "best objective among the cells that deliver", which
     is a *reporting* rule chosen here and not derived from anything;
-    (c) the coverage cap above 0 lets CP drop one patient to serve another, and
+    (b) the coverage cap above 0 lets CP drop one patient to serve another, and
     **which** patient is an artefact of the anchor ordering — the ablation prices
     that trade, it does not make it principled.
+    **REMOVED (2026-08-26): tau is no longer placed from the iteration-0
+    distance.** The probe was a mistake and is deleted, not merely defaulted
+    differently — tau is a parameter of the method, fixed before the run, one grid
+    for every rho column. See the dial-sweep section for what it cost.
+    **The 2026-08-26 run is void on both counts.** The gastric task **crashed**
+    at `cmicl` alpha=0.02 (`solve_for_context` dereferenced `result.x` on a
+    C-MICL result that returns `status="infeasible"` with no MIP when
+    `ceil((n_cal+1)(1-alpha)) > n_cal`) — fixed, it now scores as unsolvable like
+    any other infeasible cell — and the reactor task ran on a probe-placed tau
+    grid. Re-run both.
+
+12. **NEW (2026-08-26). The test stage exists and has not been run.**
+    `run_dial_test.py` and the `RUN_TEST` block of `submit_dial_sweep.sh` are in
+    place and smoke-tested on the reactor (nominal: ODE-infeasible on 10/10 folds
+    *and* on the full-data refit, objective 2947.7 / 2941.5). **No method has a
+    `dial*` to test yet** — the reactor sweep reached 0.9 feasibility nowhere and
+    the gastric sweep crashed — so every test-stage number is still unmeasured.
+    Two things are **asserted**: (a) the `folds` phase re-solves the folds
+    `dial*` was chosen on, so it is a truth-judged rate and **not** a held-out
+    estimate, and the file says so rather than fixing it; (b) on gastric the judge
+    is the same GT ensemble that tuned `dial*`, so only the **cohort** (the 96
+    `X_test` arms) is held out — there is no ground truth there to appeal to.
 
 11. **NEW (2026-08-25). The recorded gastric clip fractions did not reproduce.**
     CLAUDE.md carried 45-49% of shifted labels leaving `[0,1]` at rho=1 and a

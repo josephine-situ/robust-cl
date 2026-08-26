@@ -401,7 +401,8 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
                   return_details: bool = False,
                   fold_cache: Optional[FoldCache] = None,
                   bank_kwarg: Optional[str] = None,
-                  return_contexts: bool = False):
+                  return_contexts: bool = False,
+                  label: Optional[str] = None):
     """Mean held-out ``(feasibility, objective, solved_frac)`` for one knob.
 
     With ``return_details=True`` returns a dict instead, adding the solver
@@ -447,6 +448,15 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
     solver takes that bank under (``"cp_bank"`` for CP, ``"bank"`` for the
     wrapper, ``None`` for a method that faces no D). Both default off, so every
     existing caller is untouched.
+
+    ``label`` names the cell in the log. A sweep cell is many hundreds of lines
+    of solver output with no structure in it -- bank builds, cut loops and
+    prescribe solves from every fold run together, and the only marker is the
+    one-line summary printed AFTER the cell finishes. With a label, each fold
+    opens with a ``[fold k/n]`` banner carrying the cell's name, so ``grep
+    -F '[fold'`` gives the whole run's structure and any line in the middle can be
+    attributed by scrolling up to the nearest banner. Off by default, so callers
+    that do their own logging are unchanged.
     """
     import time as _time
     solver_fn = build_solver(knob)
@@ -456,6 +466,9 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
     statuses, master_times, test_times, test_points = [], [], [], []
     contexts = []          # (fold, context_idx, solved, feasible, objective)
     for k, (train_idx, val_idx) in enumerate(folds):
+        if label:
+            print(f"  [fold {k + 1}/{len(folds)}] {label} "
+                  f"(n_train={len(train_idx)}, n_val={len(val_idx)})", flush=True)
         val_rows = base.X_train[val_idx] if (contextual and base.X_train is not None) else None
         if fold_cache is not None:
             fi = fold_cache.instance(k, base, train_idx, val_rows, constraint_names)

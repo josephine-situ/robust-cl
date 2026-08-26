@@ -631,9 +631,9 @@
       its dial \emph{is} $\rho$.
     \item Derived per series: \textbf{best objective} among cells meeting the
       target on enough solved contexts. No monotonicity assumed.
-    \item \mc{$\tau$'s grid is placed per $\rho$ column from that column's own
-      iteration-$0$ distance. Fixing $\rho$ makes this non-circular: it is fitted
-      to the \emph{assumed set}, not to the feasibility it will be scored on.}
+    \item $\tau$'s grid is \textbf{fixed before the run} --- one absolute grid
+      $\{1,10^{-1},10^{-2},10^{-3}\}$ in unexplained-sd units, the same at every
+      $\rho$. $\tau$ is a \emph{parameter}, never read back off the run.
     \item \mc{One bank per $(\rho$ column, fold$)$ serves both grids: a bank is a
       pure function of $(\text{inst},\mathcal D,\text{seed},B)$.}
   \end{itemize}
@@ -683,19 +683,34 @@
     \item GT is fit on a \emph{superset} of the constraint rows $\Rightarrow$ a
       single full-data draw favours nominal. Hence subsampling.
     \item Common random numbers across methods; \texttt{all\_constraints} only.
-    \item \textbf{A fitted judge cannot score a boundary optimum.} Gastric and
-      synthetic both judge with a fitted model, whose error decides the verdict
-      exactly where the optimum sits. Reactor is where this is measurable: the
-      proxy agrees with the ODE on $5/5$ nominal decisions (margins $4$--$7$ vs
-      judge sd $1.6$) yet still flips $25.9\%$ of verdicts inside its own
-      $|F-50|<5$ band.
   \end{itemize}
-  \smallskip
   \footnotesize
-  \textbf{Samestore cohort} (gastric): every number, feasibility and OS alike, is a
-  mean over the test arms \textbf{every} method could prescribe
-  for, recomputed per draw $\Rightarrow$ feasibility is \textbf{conditional on
-  solvability}, reported separately.
+  \textbf{Samestore cohort} (gastric): every number is a mean over the test arms
+  \textbf{every} method could prescribe for, recomputed per draw $\Rightarrow$
+  feasibility is \textbf{conditional on solvability}, reported separately.
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{The test stage: the sweep tunes, this tests}
+  \small
+  Each method held at its own $\text{dial}^\ast$, re-scored under a judge that dial
+  never faced.
+  \begin{itemize}
+    \item Judge: analytic $f_{\text{true}}$ (synthetic); the \textbf{ODE}
+      (reactor); the \textbf{full-cohort ($416$-arm) GT ensemble} on the $96$
+      held-out arms (gastric) --- \emph{not} the train-only $320$-arm proxy that
+      tuned $\text{dial}^\ast$. Both judge and cohort change there.
+    \item \textbf{folds}: the sweep's folds re-solved at $\text{dial}^\ast$. A rate
+      with spread, but \emph{not} held out --- $\text{dial}^\ast$ was chosen on them.
+    \item \textbf{full}: one refit on all rows --- the deployed procedure, and the
+      only place objectives compare directly. One \emph{bit} of feasibility each.
+    \item \mc{No row-level split exists on synthetic/reactor: single-decision,
+      $X_{\text{test}}$ empty, folds the only row structure.}
+    \item \textbf{A fitted judge cannot score a boundary optimum.} Its error
+      decides the verdict exactly where the optimum sits. Measurable only on the
+      reactor: the proxy agrees with the ODE on $5/5$ nominal decisions yet flips
+      $25.9\%$ of verdicts inside its own $|F-50|<5$ band.
+  \end{itemize}
 \end{frame}
 
 % ===========================================================================

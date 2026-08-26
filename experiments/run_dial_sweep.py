@@ -12,7 +12,7 @@ The grid::
 
     method      dial      rho columns                       notes
     ---------------------------------------------------------------------------
-    cp          tau       gastric {0.5, 1.0}, reactor {1,2}  grid re-read per rho
+    cp          tau       gastric {0.5, 1.0}, reactor {1,2}  ONE fixed tau grid
     wrapper     alpha     same                               P is a bank prefix
     margin      m         --                                 faces no D
     cmicl       alpha     --                                 alpha=0.1 = protocol
@@ -43,15 +43,16 @@ Three things this file exists to get right, in the order they had to be fixed:
    wrapper's P models are a prefix of CP's B. Gastric drops from ~14 bank builds
    per rho column to 1 per fold. See :class:`src.methods.cv_calibrate.FoldCache`.
 
-3. **The tau grid is re-read per rho column.** tau's scale tracks D. The same
-   absolute grid separates far harder at rho=0.5 than at rho=1.0, and more cells
-   collapse to nominal. Each column is therefore PROBED -- one CP run at a tau so
-   large it stops at iteration 0, reading ``CPHistory.iter0_tau`` -- and its grid
-   is set as fractions of that. ``tau_frac = 1`` is exactly the value that stops
-   before any cut, so that endpoint IS nominal and anchors the curve.
-   **Fixing rho is what makes this legitimate rather than circular**: the grid is
-   placed from a statistic of the ASSUMED set, not from the feasibility the grid
-   is about to be scored on.
+3. **tau is FIXED BEFORE THE RUN.** One absolute grid (``TAU_GRID``), the same on
+   every rho column and every problem, in unexplained-sd units. tau is a
+   PARAMETER OF THE METHOD, set in advance like rho and like the margin's m -- it
+   is never read back off the run, and in particular never placed from an
+   iteration-0 separation distance. Doing that made tau a function of the bank,
+   of B and of which folds were probed, so the same nominal tau meant a different
+   tolerance in every cell and the primary figure's axis stopped being one
+   quantity. Whether the top of the grid happens to stop before any cut is a
+   PROPERTY OF THE RUN, reported by the ``[cp] ... max iter-0 dist=`` line, not
+   something the grid is bent to guarantee.
 
 Ablation (``--cp-alpha-ablate``): sweep tau, read tau* at the target, hold tau*
 and walk ``cp_alpha``. It asks whether relaxing the coverage cap lifts CP's
@@ -68,7 +69,6 @@ Outputs, all scoped by the same cell suffix ``run_rho_sweep`` uses
   ``{problem}_dial_contexts{cell}.csv`` per-context records
   ``{problem}_dial_curve{cell}.csv``    THE primary output; what the plot reads
   ``{problem}_dial_star{cell}.csv``     derived: each series' protocol point
-  ``{problem}_tau_probe{cell}.json``    the placement statistic per rho column
   ``{problem}_cp_alpha{cell}.csv``      the coverage-cap ablation
 
 Usage::
@@ -82,7 +82,6 @@ Usage::
 
 import argparse
 import dataclasses
-import json
 import os
 import sys
 
@@ -131,14 +130,27 @@ BANK_KWARG = {"cp": "cp_bank", "wrapper": "bank"}
 DEFAULT_RHO_COLUMNS = {"gastric": [0.5, 1.0], "reactor": [1.0, 2.0],
                        "synthetic": [0.5, 1.0]}
 
-# CP's tau grid is RELATIVE: these are fractions of the column's own iteration-0
-# distance (CPHistory.iter0_tau). 1.0 stops before any cut and is therefore
-# nominal, which anchors the curve at a known point; 0.02 cuts essentially
-# everything the bank offers.
-DEFAULT_TAU_FRACS = [1.0, 0.5, 0.25, 0.1, 0.05, 0.02]
-# A tau far above any iteration-0 distance: the probe run stops at iteration 0 and
-# reports the statistic instead of separating.
-PROBE_TAU = 1e9
+# CP's tau grid. ABSOLUTE, FIXED BEFORE THE RUN, and the SAME on every rho column.
+#
+# tau is a stopping tolerance in unexplained-sd units (cp.py, `tolerance_basis:
+# "scale"`), which is what makes it commensurable with rho and with the margin's
+# m. It is a parameter of the method, set in advance -- NOT a quantity read back
+# off the run. An earlier version placed this grid as fractions of each column's
+# own iteration-0 separation distance; that is gone, and it must stay gone:
+#
+#   - it makes tau depend on the bank, on B, and on which folds were probed, so
+#     the same nominal "tau" means a different tolerance in every cell and the
+#     axis of the primary figure stops being one quantity;
+#   - it cost an extra CP run per (rho column, fold) purely to place a grid;
+#   - and it silently misplaced the grid whenever the probed fold was not the
+#     fold with the largest distance (measured 2026-08-26: the endpoint cut on
+#     5/10 and 6/10 reactor folds and 3/4 gastric folds at rho=1.0).
+#
+# One decade grid, wide range, the same one the rho sweep's tau ablation uses.
+# Whether the top of it stops before any cut is a PROPERTY OF THE RUN, reported
+# by the `[cp] ... max iter-0 dist=` line and by `status`, not something the grid
+# is bent to guarantee.
+TAU_GRID = [1.0, 0.1, 0.01, 0.001]
 
 DEFAULT_ALPHA_GRID = [0.0, 0.1, 0.2, 0.3, 0.5]
 # m=0 is bit-identical to nominal (same fit, same MIP, same x*), so the baseline's
@@ -194,55 +206,6 @@ def _make_bank_factory(config, args, uset, model_spec, seed):
 
 
 # ---------------------------------------------------------------------------
-# The tau probe: place CP's grid from THIS rho column's own distances
-# ---------------------------------------------------------------------------
-def _probe_iter0_tau(su, uset, cache, args, n_probe_folds):
-    """The tau at which CP would stop before cutting, on this rho column.
-
-    One CP run per probed fold at ``PROBE_TAU`` -- far above any distance, so the
-    loop separates once, reports, and stops at iteration 0. What comes back is
-    ``CPHistory.iter0_tau``: the iteration-0 separation statistic expressed in
-    tau's own units, whatever units the path being taken logs in. Taking it from
-    the history rather than parsing the log is what makes this work on the basic
-    and the contextual paths alike, which measure different statistics.
-
-    The MAX over probed folds is used, not the mean: the grid has to bracket the
-    largest iteration-0 distance any fold shows, or ``tau_frac = 1`` stops before
-    any cut on some folds and cuts on others, and the endpoint stops being
-    nominal. Probing one fold (the default) is a placement heuristic and is
-    labelled as one; it never enters a scored cell.
-    """
-    build = su.make_build("cp", uset)
-    solver = build(PROBE_TAU)
-    vals = []
-    for k, (train_idx, val_idx) in enumerate(su.folds):
-        if k >= n_probe_folds:
-            break
-        val_rows = (su.instance.X_train[val_idx]
-                    if (su.contextual and su.instance.X_train is not None) else None)
-        fi = cache.instance(k, su.instance, train_idx, val_rows,
-                            su.constraint_names)
-        extra = {}
-        bank = cache.bank(k, fi)
-        if bank is not None:
-            extra["cp_bank"] = bank
-        out = solver(fi, **extra)
-        hist = out[1] if isinstance(out, tuple) else None
-        v = getattr(hist, "iter0_tau", None)
-        if v is not None and np.isfinite(v):
-            vals.append(float(v))
-    return max(vals) if vals else None
-
-
-def _tau_grid(iter0_tau, fracs):
-    """Absolute tau values from the probe, deduplicated and sorted descending."""
-    if iter0_tau is None:
-        return None
-    out = sorted({float(f) * float(iter0_tau) for f in fracs}, reverse=True)
-    return out
-
-
-# ---------------------------------------------------------------------------
 # Sweep
 # ---------------------------------------------------------------------------
 def run(config, args):
@@ -260,13 +223,19 @@ def run(config, args):
 
     scores_path = os.path.join(OUT_DIR, f"{problem}_dial_scores{var}.csv")
     ctx_path = os.path.join(OUT_DIR, f"{problem}_dial_contexts{var}.csv")
-    probe_path = os.path.join(OUT_DIR, f"{problem}_tau_probe{var}.json")
     if args.refresh:
-        for p in (scores_path, ctx_path, probe_path):
+        for p in (scores_path, ctx_path):
             if os.path.exists(p):
                 os.remove(p)
     ckpt = load_detail_checkpoint(scores_path) if not args.refresh else {}
-    probes = json.load(open(probe_path)) if os.path.exists(probe_path) else {}
+    # A stale `{problem}_tau_probe{cell}.json` from the removed grid-placement
+    # probe is deleted rather than ignored: leaving it implies the grid still
+    # comes from an iteration-0 distance, and it does not.
+    stale = os.path.join(OUT_DIR, f"{problem}_tau_probe{var}.json")
+    if os.path.exists(stale):
+        os.remove(stale)
+        print(f"[dial-sweep] removed {stale}: tau is fixed before the run and is "
+              f"no longer placed from an iteration-0 distance", flush=True)
 
     methods = list(args.methods or ["nominal", "cp", "wrapper", "margin", "cmicl"])
     bad = [m for m in methods if m not in DIAL]
@@ -301,20 +270,32 @@ def run(config, args):
               rho=np.nan, note=""):
         """One scored cell, resumable, with per-context records."""
         ckey = (tag, float(dial))
+        cell = f"{tag} {DIAL[method] or 'dial'}={dial:.6g}"
         if ckey not in ckpt:
+            # Open the cell BEFORE solving. The one-line summary below is printed
+            # after the fact, so without this the hundreds of solver lines a cell
+            # emits belong to nothing until it ends -- and a job killed mid-cell
+            # left no marker at all for which cell it died in.
+            print(f"\n[cell] BEGIN {cell}"
+                  + (f"  (cp_alpha={cp_alpha:g})" if cp_alpha else "")
+                  + f"  [{len(su.folds)} folds]", flush=True)
             build = su.make_build(method, uset, cp_alpha=cp_alpha)
             d = cv_score_knob(
                 build, dial, su.folds, su.oracle, su.instance,
                 constraint_names=su.constraint_names, contextual=su.contextual,
                 return_details=True, return_contexts=True,
                 fold_cache=cache, bank_kwarg=BANK_KWARG.get(method),
+                label=cell,
             )
             append_score(scores_path, tag, dial, d["feas"], d["obj"], d["solved"], d)
             append_contexts(ctx_path, tag, dial, d.pop("contexts", []))
             ckpt[ckey] = d
+        else:
+            print(f"\n[cell] RESUMED {cell} (from the score checkpoint)",
+                  flush=True)
         d = ckpt[ckey]
         cap = f" CAPPED({d['n_capped']}/{len(su.folds)})" if d.get("n_capped") else ""
-        print(f"  {tag:<28s} {DIAL[method] or 'dial'}={dial:<10.5g} "
+        print(f"[cell] END   {tag:<28s} {DIAL[method] or 'dial'}={dial:<10.5g} "
               f"feas={d['feas']:.3f} obj={d['obj']:+.4f} solved={d['solved']:.3f} "
               f"master={d['master_time_s']:.1f}s "
               f"test/pt={d['test_time_per_point_s']:.2f}s "
@@ -360,30 +341,12 @@ def run(config, args):
 
         tau_vals = None
         if "cp" in d_methods:
-            if args.tau_grid:
-                tau_vals = [float(t) for t in args.tau_grid]
-                print(f"[dial-sweep] tau grid FORCED (absolute): {tau_vals} -- "
-                      f"not placed from this column's distances", flush=True)
-            else:
-                key = f"{rho:g}"
-                if key not in probes:
-                    probes[key] = _probe_iter0_tau(
-                        su, uset, cache, args, int(args.tau_probe_folds))
-                    json.dump(probes, open(probe_path, "w"), indent=1)
-                iter0 = probes[key]
-                tau_vals = _tau_grid(iter0, args.tau_frac_grid or DEFAULT_TAU_FRACS)
-                if tau_vals is None:
-                    print(f"[dial-sweep] WARNING: probe returned no iteration-0 "
-                          f"statistic at rho={rho:g}; skipping cp on this column",
-                          flush=True)
-                else:
-                    print(f"[dial-sweep] tau probe at rho={rho:g}: "
-                          f"iter0_tau={iter0:.5g} over "
-                          f"{int(args.tau_probe_folds)} fold(s); grid="
-                          f"{[round(t, 6) for t in tau_vals]} "
-                          f"(fracs {args.tau_frac_grid or DEFAULT_TAU_FRACS}; "
-                          f"the largest stops before any cut = nominal)",
-                          flush=True)
+            # tau is FIXED BEFORE THE RUN and is the same on every rho column.
+            # It is not read off any iteration-0 distance -- see TAU_GRID.
+            tau_vals = [float(t) for t in (args.tau_grid or TAU_GRID)]
+            print(f"[dial-sweep] tau grid (fixed, same on every rho column): "
+                  f"{tau_vals} -- unexplained-sd units, set before the run",
+                  flush=True)
 
         for method in d_methods:
             grid = (tau_vals if method == "cp"
@@ -523,14 +486,38 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix=""):
         g_all = g_all.sort_values("dial")
         ends = {float(g_all["dial"].min()), float(g_all["dial"].max())}
         g = g_all[g_all["solved_frac"] >= min_solved]
+        # How close the series got, whether or not it delivered. A series that
+        # misses the target used to leave a row of NaNs, which says only "no" --
+        # 0.88 at every dial and 0.00 at every dial are different results and the
+        # table could not tell them apart. Reported on EVERY row (it is the
+        # series' own best, not the protocol point) so the two never get confused.
+        elig = g[np.isfinite(g["feasibility"])]
+        best_feas = (elig.loc[elig["feasibility"].idxmax()]
+                     if not elig.empty else None)
+        close = dict(
+            best_feasibility=(float(best_feas["feasibility"])
+                              if best_feas is not None else np.nan),
+            best_feas_dial=(float(best_feas["dial"])
+                            if best_feas is not None else np.nan),
+            best_feas_objective=(float(best_feas["objective"])
+                                 if best_feas is not None else np.nan),
+            best_feas_solved_frac=(float(best_feas["solved_frac"])
+                                   if best_feas is not None else np.nan),
+        )
         ok = g[g["feasibility"] >= target]
         if ok.empty:
+            reached = ("no cell scored a feasibility at all "
+                       f"(solved_frac>={min_solved:g} everywhere unmet)"
+                       if best_feas is None else
+                       f"best was {close['best_feasibility']:.3f} at "
+                       f"{g_all['dial_name'].iloc[0]}={close['best_feas_dial']:.5g}")
             rows.append(dict(method=method, rho=rho, dial_name=g_all["dial_name"].iloc[0],
                              dial_star=np.nan, feasibility=np.nan, objective=np.nan,
                              solved_frac=np.nan, n_capped=0, master_time_s=np.nan,
                              test_time_per_point_s=np.nan, bound="none",
                              note=f"never reaches feas>={target:g} at "
-                                  f"solved_frac>={min_solved:g}"))
+                                  f"solved_frac>={min_solved:g}; {reached}",
+                             **close))
             continue
         best = ok.iloc[0]
         for _, r in ok.iterrows():
@@ -552,7 +539,7 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix=""):
                          test_time_per_point_s=float(best["test_time_per_point_s"]),
                          bound=("grid_end" if float(best["dial"]) in ends
                                 else "interior"),
-                         note="; ".join(notes)))
+                         note="; ".join(notes), **close))
     for _, r in ref.iterrows():
         # nominal: no dial, so no protocol point -- carried as the reference level
         # the whole plot is read against.
@@ -563,7 +550,11 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix=""):
                          n_capped=int(r.get("n_capped", 0) or 0),
                          master_time_s=float(r["master_time_s"]),
                          test_time_per_point_s=float(r["test_time_per_point_s"]),
-                         bound="no_dial", note="reference level, nothing to move"))
+                         bound="no_dial", note="reference level, nothing to move",
+                         best_feasibility=float(r["feasibility"]),
+                         best_feas_dial=np.nan,
+                         best_feas_objective=float(r["objective"]),
+                         best_feas_solved_frac=float(r["solved_frac"])))
     out = pd.DataFrame(rows)
     out.insert(0, "feas_target", target)
     out.insert(1, "min_solved", min_solved)
@@ -591,18 +582,11 @@ def main():
                    help=f"rho values to run the D-facing methods at "
                         f"(default {DEFAULT_RHO_COLUMNS}). Both columns share one "
                         f"output CSV; the rho column tells them apart")
-    p.add_argument("--tau-frac-grid", type=float, nargs="+", default=None,
-                   help=f"CP's tau grid as FRACTIONS of each rho column's own "
-                        f"iteration-0 distance (default {DEFAULT_TAU_FRACS}). 1.0 "
-                        f"stops before any cut and is therefore nominal")
     p.add_argument("--tau-grid", type=float, nargs="+", default=None,
-                   help="absolute tau values, overriding the probe. Legal, but "
-                        "one absolute grid does not transfer across rho columns "
-                        "-- tau's scale tracks D")
-    p.add_argument("--tau-probe-folds", type=int, default=1,
-                   help="folds to probe for the iteration-0 statistic (default 1). "
-                        "The max over them places the grid; it never enters a "
-                        "scored cell")
+                   help=f"CP's tau grid, absolute, in unexplained-sd units "
+                        f"(default {TAU_GRID}). FIXED BEFORE THE RUN and the same "
+                        f"on every rho column: tau is a parameter of the method, "
+                        f"not a statistic read back off it")
     p.add_argument("--alpha-grid", type=float, nargs="+", default=None,
                    help=f"wrapper alpha grid (default {DEFAULT_ALPHA_GRID}); "
                         "0/0.1/0.2/0.5 are OptiCL's published WFP values")
@@ -643,8 +627,7 @@ def main():
                    help="seed for the DRAWS FROM D only; the data and the folds "
                         "keep the config seed. Scopes every output with _s<seed>")
     p.add_argument("--refresh", action="store_true",
-                   help="discard the score cache, the context records and the tau "
-                        "probe")
+                   help="discard the score cache and the context records")
     p.add_argument("--config", default="config.yaml")
     p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json")
     args = p.parse_args()

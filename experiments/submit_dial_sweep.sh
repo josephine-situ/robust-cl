@@ -33,7 +33,7 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 #
 #   method      dial      rho columns                       notes
 #   -------------------------------------------------------------------------
-#   cp          tau       gastric {0.5,1.0}, reactor {1,2}  grid re-read per rho
+#   cp          tau       gastric {0.5,1.0}, reactor {1,2}  ONE fixed tau grid
 #   wrapper     alpha     same                              P is a bank prefix
 #   margin      m         --                                faces no D
 #   cmicl       alpha     --                                alpha=0.1 = protocol
@@ -69,16 +69,16 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 #    held one at a time. That is len(folds) x the models -- the reason MEM is 128G
 #    and the reason the cache is dropped between rho columns.
 #
-# 3. THE TAU GRID IS RE-READ PER RHO COLUMN. tau's scale tracks D. At rho=0.5 the
-#    same absolute grid separates harder and more cells collapse to nominal, so
-#    each column is PROBED (one CP run at a tau above every distance, reading
-#    CPHistory.iter0_tau) and its grid set as fractions of that. tau_frac=1 is
-#    exactly the value that stops before any cut, so that endpoint IS nominal and
-#    anchors the curve -- measured on synthetic: tau=0.5205 returns the nominal
-#    objective to the last digit. FIXING RHO is what makes this legitimate rather
-#    than circular: the grid is placed from a statistic of the ASSUMED set, never
-#    from the feasibility it is about to be scored on. The probe is cached in
-#    {problem}_tau_probe<cell>.json, so a requeued task does not repay it.
+# 3. TAU IS FIXED BEFORE THE RUN. ONE absolute grid (TAU_GRID below), the same on
+#    every rho column and every problem, in unexplained-sd units. tau is a
+#    PARAMETER OF THE METHOD, set in advance like rho and like the margin's m --
+#    it is never read back off the run, and in particular NEVER placed from an
+#    iteration-0 separation distance. That was tried and removed: it made tau a
+#    function of the bank, of B and of which folds were probed, so the same
+#    nominal tau meant a different tolerance in every cell and the primary
+#    figure's axis stopped being one quantity. Whether the top of the grid stops
+#    before any cut is a PROPERTY OF THE RUN, reported by the
+#    `[cp] ... max iter-0 dist=` line -- not something the grid is bent to give.
 # ---------------------------------------------------------------------------
 #
 # EXPECTATIONS worth pre-registering, so a surprise is a result and not a bug:
@@ -106,7 +106,6 @@ export GRB_THREADS="${SLURM_CPUS_PER_TASK:-8}"
 #   {problem}_dial_contexts<cell>.csv per-context records
 #   {problem}_dial_star<cell>.csv     DERIVED -- each series' protocol point
 #   {problem}_dial_scores<cell>.csv   resume checkpoint, keyed (method@rho, dial)
-#   {problem}_tau_probe<cell>.json    the placement statistic per rho column
 #
 # Then:
 #   python experiments/plot_dial_sweep.py --all --suffix _incoh
@@ -121,7 +120,8 @@ METHODS="${METHODS:-nominal cp wrapper margin cmicl}"
 RHO_COLUMNS_GASTRIC="${RHO_COLUMNS_GASTRIC:-0.5 1.0}"
 RHO_COLUMNS_REACTOR="${RHO_COLUMNS_REACTOR:-1 2}"
 RHO_COLUMNS_SYNTHETIC="${RHO_COLUMNS_SYNTHETIC:-0.5 1.0}"
-TAU_FRAC_GRID="${TAU_FRAC_GRID:-1.0 0.5 0.25 0.1 0.05 0.02}"
+# Absolute, fixed, the same on every rho column. See (3) above.
+TAU_GRID="${TAU_GRID:-1.0 0.1 0.01 0.001}"
 ALPHA_GRID="${ALPHA_GRID:-0.0 0.1 0.2 0.3 0.5}"
 MARGIN_GRID="${MARGIN_GRID:-0.0 0.1 0.2 0.3 0.5 0.75 1.0}"
 CMICL_ALPHA_GRID="${CMICL_ALPHA_GRID:-0.02 0.05 0.1 0.2 0.3 0.5}"
@@ -186,7 +186,7 @@ python -u experiments/run_dial_sweep.py \
     --problem "${PROBLEM}" \
     --methods ${METHODS} \
     --rho-columns ${RHO_COLUMNS} \
-    --tau-frac-grid ${TAU_FRAC_GRID} \
+    --tau-grid ${TAU_GRID} \
     --alpha-grid ${ALPHA_GRID} \
     --margin-grid ${MARGIN_GRID} \
     --cmicl-alpha-grid ${CMICL_ALPHA_GRID} \
@@ -201,6 +201,39 @@ python -u experiments/run_dial_sweep.py \
     --cp-alpha-grid ${CP_ALPHA_GRID} \
     ${EXTRA_ARGS}
 
+# ---------------------------------------------------------------------------
+# THE TEST STAGE. The sweep above TUNES: every number in it is a fold score under
+# the judge that instance tunes against, and dial* is fitted to exactly that
+# column. run_dial_test.py holds each method at its own dial* and scores it again
+# under a judge the dial was never fitted against -- the ODE on the reactor, the
+# analytic f_true on synthetic, and on gastric the held-out X_test arms (there is
+# no other judge there, so what makes it a test is the COHORT).
+#
+# Two phases, and they are not interchangeable:
+#   folds  the sweep's own folds re-solved at dial*, truth-judged. A RATE, with
+#          spread -- but dial* was chosen on these folds, so it is not held out.
+#   full   one refit on all rows, one decision per method. The deployed procedure,
+#          and the only place the objectives are directly comparable (one x* each,
+#          same data, same judge). Feasibility is one bit per method here, which
+#          is why the fold rate is reported beside it.
+#
+# It reads {problem}_dial_star<cell>.csv, so the cell flags below MUST match the
+# sweep's. A series with no dial* (never reached the target) is skipped with the
+# reason printed -- there is no tuned dial to test.
+RUN_TEST="${RUN_TEST:-1}"
+TEST_PHASES="${TEST_PHASES:-folds full}"
+if [[ "${RUN_TEST}" == "1" ]]; then
+    echo "=== task ${TASK}: TEST STAGE, problem=${PROBLEM}, phases='${TEST_PHASES}' ==="
+    python -u experiments/run_dial_test.py \
+        --problem "${PROBLEM}" \
+        --methods ${METHODS} \
+        --phases ${TEST_PHASES} \
+        --seed "${SEED}" \
+        ${FOLD_ARG} \
+        ${COHERENCE} \
+        ${MATCH_BANK}
+fi
+
 # Examples. --array MUST match PROBLEMS; narrowing PROBLEMS without it leaves
 # tasks that exit 0 with "nothing to do".
 #   sbatch experiments/submit_dial_sweep.sh                                  # gastric + reactor
@@ -212,5 +245,11 @@ python -u experiments/run_dial_sweep.py \
 #   SEED=7 sbatch experiments/submit_dial_sweep.sh                           # a second bank (own _s7 cell)
 #   CP_ALPHA_ABLATE= sbatch experiments/submit_dial_sweep.sh                 # sweep only
 #   EXTRA_ARGS=--refresh sbatch experiments/submit_dial_sweep.sh             # ignore the checkpoint
+#   RUN_TEST=0 sbatch experiments/submit_dial_sweep.sh                       # tune only, no test stage
+#   TEST_PHASES=full sbatch experiments/submit_dial_sweep.sh                 # skip the |folds| re-solves
+#
+# Test-stage outputs, same cell suffix:
+#   {problem}_dial_test<cell>.csv         summary, one row per (method, phase)
+#   {problem}_dial_test_points<cell>.csv  one row per (method, phase, fold/context)
 
 echo "Finished task ${TASK} at $(date)"

@@ -552,15 +552,22 @@ def run_sweep(config, args):
     def score(tag, method, uset, knob):
         """One scored cell, resumable, with status + timings."""
         ckey = (tag, float(knob))
+        cell = f"{tag} knob={knob:.6g}"
         if ckey not in ckpt:
+            # Same reason as run_dial_sweep.score: the summary below is printed
+            # after the cell finishes, so the solver output in between has no
+            # marker saying which cell (or which fold) produced it.
+            print(f"\n[cell] BEGIN {cell}  [{len(folds)} folds]", flush=True)
             d = cv_score_knob(make_build(method, uset), knob, folds, oracle, inst,
                               constraint_names=cnames, contextual=contextual,
-                              return_details=True)
+                              return_details=True, label=cell)
             append_score(scores_path, tag, knob, d["feas"], d["obj"], d["solved"], d)
             ckpt[ckey] = d
+        else:
+            print(f"\n[cell] RESUMED {cell} (from the score checkpoint)", flush=True)
         d = ckpt[ckey]
         cap = f" CAPPED({d['n_capped']}/{len(folds)})" if d.get("n_capped") else ""
-        print(f"  {tag:<26s} knob={knob:<7g} feas={d['feas']:.3f} "
+        print(f"[cell] END   {tag:<26s} knob={knob:<7g} feas={d['feas']:.3f} "
               f"obj={d['obj']:+.4f} solved={d['solved']:.3f} "
               f"master={d['master_time_s']:.1f}s "
               f"test/pt={d['test_time_per_point_s']:.2f}s "
