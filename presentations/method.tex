@@ -635,8 +635,9 @@
       would be \emph{mislabelled} rather than smaller.
     \item Every grid spans its dial's \textbf{full usable range}: wrapper $\alpha$
       to $0.95$ ($1$ of $P$ --- $1.0$ deletes the constraint), $m$ to $5$, C-MICL
-      $\alpha$ over all of $[0.02,1]$. Search makes length cheap, and the old grids
-      were the binding limit on 3 series and left C-MICL no point at all.
+      $\alpha$ to $1$, down to what $n_{\text{cal}}$ certifies --- $1/(n_{\text{cal}}{+}1)$,
+      so $0.02$ on gastric, $0.0075$ on the reactor. Search makes length cheap; the
+      old grids bound 3 series and left C-MICL no point at all.
     \item \textbf{Searched, not walked}: ordered by robustness --- feasibility $0$
       prunes everything less robust, the solved floor everything more. Objective and
       solvability are monotone \emph{structurally}: each dial nests the feasible set.

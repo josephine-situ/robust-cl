@@ -65,7 +65,7 @@ export NUMEXPR_NUM_THREADS="${NTHREADS}"
 #
 #   method      dial      rho columns                       notes
 #   -------------------------------------------------------------------------
-#   cp          tau       gastric {0.5,1.0}, reactor {3,4}  ONE fixed tau grid
+#   cp          tau       gastric {0.5,1.0}, reactor {2,3}  ONE fixed tau grid
 #   wrapper     alpha     same                              P is a bank prefix
 #   margin      m         --                                faces no D
 #   cmicl       alpha     --                                alpha=0.1 = protocol
@@ -194,13 +194,18 @@ RHO_COLUMNS_SYNTHETIC="${RHO_COLUMNS_SYNTHETIC:-0.5 1.0}"
 #   MARGIN  m is in unexplained-sd units; large m goes INFEASIBLE rather than
 #           conservative, which shows as a falling solved fraction under
 #           MIN_SOLVED.
-#   CMICL   the full [0.02, 1] of a miscoverage level. 0.02 is the finest level
-#           n_cal=80 can certify; 1.0 is q = the smallest nonconformity score,
-#           still a real tightening.
+#   CMICL   up to 1.0 (q = the smallest nonconformity score, still a real
+#           tightening) and down to whatever n_cal can CERTIFY -- which is per
+#           problem, so this script leaves it EMPTY and lets run_dial_sweep pick
+#           it. `conformal_quantile` returns inf once k = ceil((n_cal+1)(1-alpha))
+#           exceeds n_cal, so the floor is 1/(n_cal+1): gastric n_cal=80 -> 0.02
+#           (already s_(80), nothing distinct below it), reactor n_cal=180 ->
+#           0.0075. Pinning one list here would silently give the reactor
+#           gastric's floor, which is what it did until 2026-08-27.
 TAU_GRID="${TAU_GRID:-10.0 3.0 1.0 0.3 0.1 0.03 0.01 0.003 0.001 0.0003 0.0001}"
 ALPHA_GRID="${ALPHA_GRID:-0.0 0.05 0.1 0.15 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 0.95}"
 MARGIN_GRID="${MARGIN_GRID:-0.0 0.1 0.2 0.3 0.4 0.5 0.625 0.75 0.875 1.0 1.25 1.5 1.75 2.0 2.5 3.0 4.0 5.0}"
-CMICL_ALPHA_GRID="${CMICL_ALPHA_GRID:-0.02 0.03 0.05 0.075 0.1 0.15 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 0.95 1.0}"
+CMICL_ALPHA_GRID="${CMICL_ALPHA_GRID:-}"
 # How each series' grid is walked.
 #
 #   adaptive (default)  Order the grid by robustness, bisect to bracket the
@@ -243,6 +248,14 @@ CP_ALPHA_ABLATE="${CP_ALPHA_ABLATE:---cp-alpha-ablate}"
 CP_ALPHA_RHO_GASTRIC="${CP_ALPHA_RHO_GASTRIC:-1.0}"
 CP_ALPHA_RHO_REACTOR="${CP_ALPHA_RHO_REACTOR:-3}"
 CP_ALPHA_GRID="${CP_ALPHA_GRID:-0.0 0.1 0.2 0.3}"
+# A PROBE cell: part of the sweep, run as its own experiment. Set it whenever
+# METHODS is a subset or RHO_COLUMNS_* leaves the shared grid -- the curve and the
+# star are rewritten from the rows the run itself scored, so an untagged partial
+# run would DELETE every series it did not touch. run_dial_sweep refuses that
+# outright; this is the flag that makes the probe legal instead. A tagged cell
+# resumes nothing from the untagged one and run_dial_test cannot read it, so the
+# test stage is forced off below.
+CELL_TAG="${CELL_TAG:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 TASK="${SLURM_ARRAY_TASK_ID:-0}"
@@ -290,7 +303,8 @@ python -u experiments/run_dial_sweep.py \
     --tau-grid ${TAU_GRID} \
     --alpha-grid ${ALPHA_GRID} \
     --margin-grid ${MARGIN_GRID} \
-    --cmicl-alpha-grid ${CMICL_ALPHA_GRID} \
+    ${CMICL_ALPHA_GRID:+--cmicl-alpha-grid ${CMICL_ALPHA_GRID}} \
+    ${CELL_TAG:+--cell-tag ${CELL_TAG}} \
     --search "${SEARCH}" \
     ${MAX_EVALS:+--max-evals ${MAX_EVALS}} \
     --feas-target "${FEAS_TARGET}" \
@@ -352,6 +366,14 @@ fi
 # sweep's. A series with no dial* (never reached the target) is skipped with the
 # reason printed -- there is no tuned dial to test.
 RUN_TEST="${RUN_TEST:-1}"
+# run_dial_test.py builds its cell suffix from the sweep's flags and has no
+# --cell-tag, so it would read the UNTAGGED cell's dial* and report the probe's
+# numbers under the main cell's name. Forced off rather than left to do that.
+if [[ -n "${CELL_TAG}" && "${RUN_TEST}" == "1" ]]; then
+    echo "CELL_TAG='${CELL_TAG}': test stage OFF (run_dial_test has no --cell-tag"
+    echo "and would read the untagged cell's dial*)."
+    RUN_TEST=0
+fi
 # m-out-of-n is the standing gastric protocol, so it is in the default phases
 # there and is not a legal phase anywhere else.
 if [[ "${PROBLEM}" == "gastric" ]]; then
@@ -383,6 +405,12 @@ fi
 #   COHERENCE=--coherent sbatch experiments/submit_dial_sweep.sh             # the coherence ablation
 #   MATCH_BANK=--match-bank sbatch experiments/submit_dial_sweep.sh          # B=P, clean CP-vs-wrapper
 #   METHODS="nominal cp wrapper margin" sbatch experiments/submit_dial_sweep.sh  # skip the slow gastric cmicl
+#   # the wrapper alone, at rho columns the shared grid does not carry -- its
+#   # OWN cell. nominal is NOT included: it faces no D, so it is scored once at
+#   # rho=nan and would re-solve a row the main cell already holds. Read the
+#   # probe against that cell's nominal rather than making a second copy of it.
+#   PROBLEM=reactor METHODS=wrapper RHO_COLUMNS_REACTOR="4 5 6" \
+#     CELL_TAG=wraprho456 CP_ALPHA_ABLATE= sbatch --array=0 experiments/submit_dial_sweep.sh
 #   SEED=7 sbatch experiments/submit_dial_sweep.sh                           # a second bank (own _s7 cell)
 #   CP_ALPHA_ABLATE= sbatch experiments/submit_dial_sweep.sh                 # sweep only
 #   EXTRA_ARGS=--refresh sbatch experiments/submit_dial_sweep.sh             # ignore the checkpoint

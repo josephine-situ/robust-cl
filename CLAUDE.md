@@ -104,7 +104,18 @@ sbatch experiments/submit_rho_sweep.sh                   # PROBLEM(S)/COHERENCE/
 Both sweeps resume from a checkpoint keyed `(method@rho, dial)` **only** — no cell
 token. **Always pass the cell flags**, or a second cell silently resumes the
 first's rows and overwrites its curve. The cell suffix is `_coh`/`_incoh` +
-`_matchbank` + `_f<n>` + `_m<model>` + `_s<seed>`.
+`_matchbank` + `_f<n>` + `_m<model>` + `_s<seed>` + `_<cell-tag>`.
+
+**A PARTIAL dial run is refused** (`_guard_curve_rewrite`, 2026-08-27). The curve
+and star are written, not appended, and are built from the rows *that run* scored,
+so `--methods wrapper --rho-columns 5 6` does not add a column to a finished cell —
+it **replaces** the curve with the two series it ran. The guard compares the
+planned `(method, rho)` series against the curve already on disk and aborts in
+seconds, before any solving, naming what would be lost. A probe that genuinely
+wants a subset — one method, or a rho column outside the shared grid — takes
+**`--cell-tag <name>`**, which is its own cell: it resumes nothing from the
+untagged one, and `run_dial_test.py` does not look for it (same as `_sep*`).
+`--refresh` skips the guard, having already deleted the curve on purpose.
 
 **`--refresh` clears EVERY output of the cell** (scores, contexts, curve, star,
 skipped). Pass it whenever a previous run of the same cell is **not comparable** —
@@ -146,7 +157,7 @@ m=1.5), the reactor's CP (delivering at the old max tau=1.0) and gastric's wrapp
 | `cp` tau | 10 … 1e-4 | bottom is the **mip_gap floor** `_resolve_tolerance` clamps to, so nothing below it is a distinct tolerance and a lower grid value would be a *mislabelled* tau; top is well above any iteration-0 distance, where CP stops before any cut and its curve meets nominal |
 | `wrapper` alpha | 0 … 0.95 | only multiples of **1/P** (=0.05) are distinct levels; 0.95 = "1 of the P models must hold". **1.0 is excluded**: it requires none, removing the learned constraint entirely — weaker than nominal, not a looser wrapper |
 | `margin` m | 0 … 5 | m=0 **is** nominal; the top is set by the reactor (`s_c`=2.19, so m=5 is `F_C6H6 >= 60.9`). Large m goes **infeasible, not conservative**, which shows as a falling solved fraction under `--min-solved` |
-| `cmicl` alpha | 0.02 … 1.0 | 0.02 is the finest level `n_cal=80` can certify; 1.0 is `q = s_(1)`, the smallest nonconformity score — a real, very loose tightening, not a removed constraint (`conformal_quantile` takes `k = max(ceil((n+1)(1-alpha)), 1)`) |
+| `cmicl` alpha | 1.0 … **per-problem floor** | 1.0 is `q = s_(1)`, the smallest nonconformity score — a real, very loose tightening, not a removed constraint (`conformal_quantile` takes `k = max(ceil((n+1)(1-alpha)), 1)`). The bottom is set by **n_cal, not by taste**: `k > n_cal` returns `inf` and fails the solve, so the finest certifiable level is `1/(n_cal+1)`, and only alphas landing on **distinct k** are distinct levels. Gastric `n_cal=80` → 0.02 already *is* `s_(80)` and nothing below it differs; reactor `n_cal=180` → two more levels exist, so `CMICL_ALPHA_GRID_EXTRA` adds **0.0075, 0.015** (k=180, 179) there. Synthetic is **unmeasured** — read `n_cal=` off a fold before extending it |
 
 - **The grid is SEARCHED, not walked** (`--search adaptive`, default): cells are
   ordered by robustness (`ROBUSTNESS_SIGN`), feasibility 0 prunes the less-robust
@@ -162,10 +173,24 @@ m=1.5), the reactor's CP (delivering at the old max tau=1.0) and gastric's wrapp
   signal to re-run that series with `--search grid`; a **wobble** is a numeric dip
   changing no verdict (`feas_wobble`), recorded but not acted on. Over the
   committed curves 6 of 11 series wobble, none changes a verdict, and the search
-  reproduces the exhaustive `dial*` in 11/11.
+  reproduces the exhaustive `dial*` in 11/11. On a single-decision problem a wobble
+  is quoted as **`feasible/solved -> feasible/solved` folds**, because feasibility
+  is conditional on the solved folds and **both denominators move**: the reactor's
+  C-MICL dip 0.400->0.375 is `4/10 -> 3/8`, which a fixed `1/n_folds` rendered as
+  the flatly wrong "0 fold(s)".
 - Unscored cells go to `{problem}_dial_skipped{cell}.csv` with a reason, **never**
   into the curve as NaNs — the plot reads non-finite feasibility as "no solution on
   any fold", which is a *result*, and the two claims are opposites.
+- **`bound` says whether the GRID or the METHOD ran out**, on delivering and
+  non-delivering series alike: `interior` / `grid_end` when there is a `dial*`,
+  `none_interior` / `none_grid_end` when there is not (the latter split added
+  2026-08-27 — a flat `none` could not tell "still climbing when the grid ended"
+  from "turned inside it", and only the first is a reason to widen). Committed star
+  tables predate it and carry `none`. **`*_grid_end` is not automatically a reason
+  to widen**: the grid table above says which ends are *structural* and cannot move
+  at all — tau's `mip_gap` floor, the wrapper's alpha=0 (every one of the P models
+  must hold), margin m=0 (= nominal). On the reactor all three `none` series sit on
+  one of those, so they are the METHOD running out, not the grid.
 - `dial*` assumes **no** monotonicity (best objective among whatever delivered) and
   a `none` row is not a row of NaNs — `best_feasibility` / `best_feas_dial` /
   `best_feas_objective` / `best_feas_solved_frac` keep "0.88 everywhere" and "0.00

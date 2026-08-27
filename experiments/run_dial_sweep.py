@@ -248,6 +248,40 @@ DEFAULT_MARGIN_GRID = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.625, 0.75, 0.875, 1.0,
 # score -- a real, very loose tightening, not a removed constraint.
 DEFAULT_CMICL_ALPHA_GRID = [0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3,
                             0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0]
+# ...and the BOTTOM is per problem, because n_cal sets it rather than taste.
+# `conformal_quantile` takes k = ceil((n_cal + 1)(1 - alpha)) and returns inf once
+# k > n_cal, so the finest CERTIFIABLE level is 1/(n_cal + 1). Below it no finite
+# tightening carries the guarantee and the solve fails outright. Above it, only
+# alphas landing on DISTINCT k are distinct levels: a finer value inside the same
+# k-band runs at the same q while being written to the curve as something else,
+# which is the mislabelled-dial failure TAU_GRID's bottom exists to prevent.
+#
+#   gastric  n_cal =  80  floor 1/81 = 0.0123; every alpha in [0.0123, 0.0247)
+#                         gives k = 80 = s_(max), and 0.02 IS that level. Nothing
+#                         distinct sits below it, so there is no extension.
+#   reactor  n_cal = 180  floor 1/181 = 0.0055; TWO distinct levels sit below
+#                         0.02 -- k=179 over [0.01105, 0.01657) and k=180 over
+#                         [0.00552, 0.01105). One representative each, and 0.02
+#                         is k=178, so the three are consecutive levels.
+#   synthetic             no dial cell has ever been run, so its n_cal is not
+#                         measured and nothing is asserted here. Read the
+#                         `n_fit=... n_cal=...` line off the first C-MICL fold
+#                         before extending it.
+#
+# This is NOT expected to move the reactor verdict, and was not added on a guess
+# that it would: on the 2026-08-27 run C-MICL peaked at feasibility 0.400 at
+# alpha=0.03 and had ALREADY turned by 0.02 (solved 1.000 -> 0.800, feasible
+# folds 4/10 -> 3/8), i.e. the band is wide enough there to be deleting
+# prescriptions rather than protecting them. It is here so that "the grid ran
+# out" and "the method ran out" are distinguishable on that series instead of
+# assumed apart -- the same question `bound` answers for a delivering series.
+CMICL_ALPHA_GRID_EXTRA = {"reactor": [0.0075, 0.015]}
+
+
+def cmicl_alpha_grid(problem):
+    """The shared alpha grid plus the finer levels this problem's n_cal certifies."""
+    return sorted(set(DEFAULT_CMICL_ALPHA_GRID)
+                  | set(CMICL_ALPHA_GRID_EXTRA.get(problem, ())))
 # The coverage cap, as a fraction of the anchors a cut may newly break.
 DEFAULT_CP_ALPHA_GRID = [0.0, 0.1, 0.2, 0.3]
 
@@ -280,6 +314,75 @@ ROBUSTNESS_SIGN = {"cp": -1.0, "wrapper": -1.0, "margin": 1.0, "cmicl": -1.0}
 #               robust can solve, so that tail is pruned outright.
 
 
+def _cell_tag_token(args):
+    """``--cell-tag`` as a filename token, or ``""``.
+
+    The rest of the cell suffix names things the RUN cannot choose without
+    changing what a number means (coherence, fold count, embedded model, seed).
+    This one names a question instead: a probe that deliberately runs a subset of
+    the sweep -- one method, or a rho column the shared grid does not carry -- and
+    therefore must not be written into the cell the full sweep owns. See
+    ``_guard_curve_rewrite`` for what goes wrong without it.
+    """
+    tag = (getattr(args, "cell_tag", None) or "").strip().strip("_")
+    if not tag:
+        return ""
+    keep = "".join(c for c in tag if c.isalnum() or c in "-")
+    if not keep:
+        raise SystemExit(f"[dial-sweep] --cell-tag {tag!r} has no usable "
+                         f"characters (letters, digits and '-' only)")
+    return f"_{keep}"
+
+
+def _guard_curve_rewrite(problem, var, planned, args):
+    """Refuse to rewrite a finished cell's curve with FEWER series than it holds.
+
+    ``{problem}_dial_curve{cell}.csv`` is written, not appended, and it is built
+    from the rows THIS run scored. So ``--methods wrapper --rho-columns 5 6`` does
+    not add a wrapper column to a finished cell: it REPLACES the curve, and the
+    star table with it, with the two series it just ran. The score checkpoint
+    survives -- it is keyed ``(method@rho, dial)``, so nothing is unrecoverable --
+    but the committed curve is gone until a full re-run rebuilds it, and every
+    series the run did not touch has to be re-solved to get it back.
+
+    That is the resume trap the cell suffix already guards, reached from the other
+    side: the suffix stops a second cell READING the first's rows, and this stops
+    it OVERWRITING them. A partial run is a legitimate thing to want -- it just
+    needs its own cell, which ``--cell-tag`` gives it (and which skips this check,
+    since a tagged cell owns nothing yet).
+
+    ``--refresh`` also skips it, having already deleted the curve on purpose.
+    """
+    curve_path = os.path.join(OUT_DIR, f"{problem}_dial_curve{var}.csv")
+    if getattr(args, "cell_tag", None) or args.refresh:
+        return
+    if not os.path.exists(curve_path):
+        return
+    try:
+        old = pd.read_csv(curve_path)
+    except Exception:
+        return
+    if "method" not in old:
+        return
+    have = {(str(m), "" if not np.isfinite(r) else f"{float(r):g}")
+            for m, r in zip(old["method"], old.get("rho", [np.nan] * len(old)))}
+    missing = sorted(have - set(planned))
+    if not missing:
+        return
+    lost = ", ".join(f"{m}@rho={r}" if r else m for m, r in missing)
+    raise SystemExit(
+        f"[dial-sweep] REFUSING to rewrite {curve_path}: it holds {len(have)} "
+        f"series and this run scores only {len(planned)}, so {len(missing)} would "
+        f"be DELETED from the curve and the star table -- {lost}." + "\n"
+        f"  The scored cells survive in {problem}_dial_scores{var}.csv, but the "
+        f"curve is rebuilt from this run's rows alone, so recovering them "
+        f"means re-running them." + "\n"
+        "  Run the probe in its OWN cell:   --cell-tag <name>\n"
+        "  or put the missing series back:  --methods / --rho-columns "
+        "covering them\n"
+        "  or say you meant to discard it:  --refresh")
+
+
 def _series_key(method, rho):
     """One series is one (method, rho column); the flat methods have no rho."""
     return (method, "" if not np.isfinite(rho) else f"{float(rho):g}")
@@ -295,8 +398,31 @@ def _verdict(d, target, min_solved):
     return "dead" if feas <= 0.0 else "under"
 
 
+def _fold_counts(d, n_folds):
+    """``(feasible, solved)`` fold counts behind one cell's scores, or ``None``.
+
+    Only meaningful on a single-decision problem, where a fold contributes ONE
+    binary outcome; ``n_folds=0`` (contextual) returns ``None``.
+
+    The denominator is the whole point. ``feas`` is conditional on the folds that
+    SOLVED, so a dip from 0.400 to 0.375 is not 0.025 of a fold: it is 4 of 10
+    against 3 of 8. Quoting it against a fixed ``1/n_folds`` printed the
+    2026-08-27 reactor C-MICL wobble as "0 fold(s)" -- which reads as "nothing
+    moved" when in fact one fold had flipped and two more had gone unsolvable,
+    the very thing that made that cell the end of the useful dial.
+    """
+    if not n_folds:
+        return None
+    feas = float(d.get("feas", np.nan))
+    solved = float(d.get("solved", np.nan) or np.nan)
+    if not (np.isfinite(feas) and np.isfinite(solved)):
+        return None
+    n_solved = int(round(solved * n_folds))
+    return int(round(feas * n_solved)), n_solved
+
+
 def _order_check(dname, dial_at, seq, seen, detail, target, min_solved,
-                 feas_resolution=0.0):
+                 n_folds=0):
     """Did the order the pruning rests on hold, among the cells actually scored?
 
     Returns ``(violations, wobbles)`` -- TWO different things, kept apart on
@@ -315,12 +441,13 @@ def _order_check(dname, dial_at, seq, seen, detail, target, min_solved,
     the whole grid would be crying wolf: on that curve it would fire on 6 of 11
     series, none of which the search would have got wrong.
 
-    ``feas_resolution`` is the smallest feasibility difference that is not one
-    fold flipping (``1/n_folds`` on a single-decision problem, where each fold
-    contributes ONE binary outcome; 0 on a contextual one, where a fold is a mean
-    over its held-out cohort). Wobbles are quoted in folds where it is known,
-    because "0.800 -> 0.700" on the 10-fold reactor is one fold and reads as far
-    more than that in decimals.
+    ``n_folds`` is the fold count on a single-decision problem and 0 on a
+    contextual one, where a fold is a mean over its own held-out cohort and no
+    fold quantum exists. Where it is known a wobble is quoted as
+    ``feasible/solved -> feasible/solved folds`` rather than in decimals, because
+    "0.800 -> 0.700" on the 10-fold reactor is one fold and reads as far more than
+    that as a decimal -- and because BOTH denominators can move at once
+    (``_fold_counts``).
     """
     viol, wobble = [], []
     solv, deliv = {}, {}
@@ -346,8 +473,10 @@ def _order_check(dname, dial_at, seq, seen, detail, target, min_solved,
             continue
         if deliv[x] and not deliv[y]:
             continue                                # already a violation above
-        how = (f"{(fx - fy) / feas_resolution:.0f} fold(s)"
-               if feas_resolution > 0 else f"{fx - fy:.3f}")
+        cx = _fold_counts(detail[x], n_folds)
+        cy = _fold_counts(detail[y], n_folds)
+        how = (f"{cx[0]}/{cx[1]} -> {cy[0]}/{cy[1]} folds" if cx and cy
+               else f"{fx - fy:.3f}")
         side = "above" if deliv[x] else "below"
         wobble.append(f"feasibility dips {fx:.3f}->{fy:.3f} ({how}) between "
                       f"{dname}={dial_at(x):.5g} and {dial_at(y):.5g}, both "
@@ -356,8 +485,7 @@ def _order_check(dname, dial_at, seq, seen, detail, target, min_solved,
 
 
 def _search_dials(method, grid, evaluate, known, target, min_solved,
-                  max_evals=None, must_visit=(), label="",
-                  feas_resolution=0.0):
+                  max_evals=None, must_visit=(), label="", n_folds=0):
     """Walk one series' dial grid in the order the answers actually decide.
 
     **This assumes the dial is monotone**, in both directions at once: held-out
@@ -492,7 +620,7 @@ def _search_dials(method, grid, evaluate, known, target, min_solved,
 
     # ---- did the order the pruning rests on hold? -------------------------
     viol, wobble = _order_check(dname, dial_at, sorted(seen), seen, detail,
-                                target, min_solved, feas_resolution)
+                                target, min_solved, n_folds)
 
     pruned = sum(1 for r in skipped if r["reason"].startswith("pruned"))
     info = dict(n_grid=n, n_evaluated=len(seen), spent=spent, budget=budget,
@@ -571,7 +699,7 @@ def run(config, args):
         geometry="ellipsoid", coherent=bool(args.coherent),
     )
     bank_seed = _bank_seed(config, args)
-    var = _variant_suffix(args)
+    var = _variant_suffix(args) + _cell_tag_token(args)
 
     scores_path = os.path.join(OUT_DIR, f"{problem}_dial_scores{var}.csv")
     ctx_path = os.path.join(OUT_DIR, f"{problem}_dial_contexts{var}.csv")
@@ -612,6 +740,14 @@ def run(config, args):
                                    or DEFAULT_RHO_COLUMNS[problem])]
     d_methods = [m for m in methods if m in FACES_D]
     flat_methods = [m for m in methods if m not in FACES_D]
+    # Every (method, rho) series this run will write, in the same key form the
+    # curve is read back in. Checked against what is already on disk BEFORE any
+    # solving, so a partial run fails in a second rather than after an hour.
+    _guard_curve_rewrite(
+        problem, var,
+        {_series_key(m, r) for m in d_methods for r in rho_cols}
+        | {_series_key(m, np.nan) for m in flat_methods},
+        args)
 
     print(f"[dial-sweep] problem={problem} geometry=ellipsoid "
           f"coherent={args.coherent} folds={len(su.folds)} seed={bank_seed} "
@@ -691,13 +827,14 @@ def run(config, args):
     # grid": under --search adaptive it is a SUBSET of it, and which subset --
     # and why the rest is missing -- is part of the result.
     grids, search_info, skipped_rows = {}, {}, []
-    # The smallest feasibility difference that is not one fold flipping. On a
-    # single-decision problem each fold contributes ONE binary outcome, so the
-    # cell score is a binomial proportion over len(folds) draws and 1/len(folds)
-    # is the resolution limit -- 0.1 on the 10-fold reactor, where "0.800 ->
-    # 0.700" is one fold. On a contextual problem a fold is a mean over its own
-    # held-out cohort, so there is no such quantum.
-    feas_res = 0.0 if su.contextual else 1.0 / max(len(su.folds), 1)
+    # The fold count a wobble is quoted against. On a single-decision problem
+    # each fold contributes ONE binary outcome, so a cell score is a proportion
+    # over folds and a dip is readable as a count of them -- but conditional on
+    # the folds that SOLVED, which is why `_fold_counts` renders both counts
+    # rather than a fixed 1/len(folds) quantum. On a contextual problem a fold is
+    # a mean over its own held-out cohort, so there is no such quantum: 0 disables
+    # the rendering.
+    n_folds_res = 0 if su.contextual else len(su.folds)
 
     def walk(tag, method, grid, uset, rho=np.nan, cache=None, must_visit=(),
              note_fn=None):
@@ -724,7 +861,7 @@ def run(config, args):
             viol, wob = _order_check(
                 DIAL[method] or "dial", lambda q: order[q], sorted(seen), seen,
                 detail, float(args.feas_target), float(args.min_solved),
-                feas_res)
+                n_folds_res)
             _report_order(tag, viol, wob)
             search_info[key] = dict(search="grid", n_grid=len(grid),
                                     n_evaluated=len(grid), spent=len(grid),
@@ -736,7 +873,7 @@ def run(config, args):
             known=lambda d, _t=tag: (_t, float(d)) in ckpt,
             target=float(args.feas_target), min_solved=float(args.min_solved),
             max_evals=args.max_evals, must_visit=must_visit, label=tag,
-            feas_resolution=feas_res)
+            n_folds=n_folds_res)
         info["search"] = "adaptive"
         search_info[key] = info
         for r in info["skipped"]:
@@ -791,7 +928,7 @@ def run(config, args):
             continue
         grid = {
             "margin": args.margin_grid or DEFAULT_MARGIN_GRID,
-            "cmicl": args.cmicl_alpha_grid or DEFAULT_CMICL_ALPHA_GRID,
+            "cmicl": args.cmicl_alpha_grid or cmicl_alpha_grid(problem),
         }[method]
         print(f"\n[dial-sweep] === {method} (dial={DIAL[method]}, faces no D) ===",
               flush=True)
@@ -914,10 +1051,17 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix="",
     1.0 feasibility. It is why the scatter encodes solved fraction too -- the
     table's floor is a cliff, the plot's marker size is the gradient.
 
-    ``bound`` says what stopped the search, because the three cases mean different
+    ``bound`` says what stopped the search, because the cases mean different
     things: ``grid_end`` (the winning cell sits at an end of the dial grid, so the
-    grid may be the limit rather than the method), ``interior`` (a genuine
-    optimum), ``none`` (the series never reaches the target at all).
+    grid may be the limit rather than the method) and ``interior`` (a genuine
+    optimum) for a series that delivers; ``none_grid_end`` and ``none_interior``
+    for one that never reaches the target at all. That last split matters as much
+    as the first and used to be missing -- a flat ``none`` said only "no", so the
+    2026-08-27 reactor C-MICL row (best feasibility 0.400, at alpha=0.03, one cell
+    INSIDE a grid running to 0.02) was indistinguishable from a series still
+    climbing when the grid ran out. Only the second is a reason to widen a grid,
+    and ``grid_end`` on a delivering series is exactly the signal the 2026-08-27
+    widening pass was read off.
 
     Under ``--search adaptive`` the rows in ``df`` are a SUBSET of the grid, so
     ``grids`` carries the full configured grid per series (``bound`` is a claim
@@ -971,15 +1115,27 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix="",
         )
         ok = g[g["feasibility"] >= target]
         if ok.empty:
+            # Did the series run out of GRID or out of METHOD? Read off where its
+            # best feasibility sits: at an end of the full configured grid, the
+            # curve was still being cut off and a wider grid is the next move; one
+            # cell inside it, the dial turned on its own and widening buys only
+            # more of the falling tail.
+            at_end = (np.isfinite(close["best_feas_dial"])
+                      and float(close["best_feas_dial"]) in ends)
             reached = ("no cell scored a feasibility at all "
                        f"(solved_frac>={min_solved:g} everywhere unmet)"
                        if best_feas is None else
                        f"best was {close['best_feasibility']:.3f} at "
-                       f"{g_all['dial_name'].iloc[0]}={close['best_feas_dial']:.5g}")
+                       f"{g_all['dial_name'].iloc[0]}={close['best_feas_dial']:.5g}"
+                       + (" -- AT A GRID END, so the grid may be the limit rather "
+                          "than the method" if at_end else
+                          " -- inside the grid, so the dial turned before the grid "
+                          "ran out"))
             rows.append(dict(method=method, rho=rho, dial_name=g_all["dial_name"].iloc[0],
                              dial_star=np.nan, feasibility=np.nan, objective=np.nan,
                              solved_frac=np.nan, n_capped=0, master_time_s=np.nan,
-                             test_time_per_point_s=np.nan, bound="none",
+                             test_time_per_point_s=np.nan,
+                             bound=("none_grid_end" if at_end else "none_interior"),
                              note=f"never reaches feas>={target:g} at "
                                   f"solved_frac>={min_solved:g}; {reached}",
                              **prov, **close))
@@ -1047,6 +1203,15 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--problem", choices=("synthetic", "reactor", "gastric"),
                    default="gastric")
+    p.add_argument("--cell-tag", default=None,
+                   help="extra token on the cell suffix, for a PROBE that runs "
+                        "part of the sweep -- one method, or a rho column the "
+                        "shared grid does not carry. Without it such a run is "
+                        "refused, because the curve and star are rewritten from "
+                        "the rows the run itself scored and the untouched series "
+                        "would be dropped. A tagged cell is its own experiment: "
+                        "it resumes nothing from the untagged one, and "
+                        "run_dial_test.py does not look for it")
     p.add_argument("--methods", nargs="+", default=None,
                    help="default: nominal cp wrapper margin cmicl. robust_reg is "
                         "NOT on this axis -- its dial is the radius, so at a fixed "
@@ -1071,8 +1236,11 @@ def main():
                         f"(default {DEFAULT_MARGIN_GRID}); m=0 IS nominal")
     p.add_argument("--cmicl-alpha-grid", type=float, nargs="+", default=None,
                    help=f"C-MICL miscoverage grid (default "
-                        f"{DEFAULT_CMICL_ALPHA_GRID}). Extended upward on purpose: "
-                        f"where it FIRST solves on gastric is the result")
+                        f"{DEFAULT_CMICL_ALPHA_GRID}, plus any per-problem lower "
+                        f"extension in CMICL_ALPHA_GRID_EXTRA="
+                        f"{CMICL_ALPHA_GRID_EXTRA}). Extended upward on purpose -- "
+                        f"where it FIRST solves on gastric is the result; the "
+                        f"bottom is what n_cal can certify")
     p.add_argument("--cp-alpha-ablate", action="store_true",
                    help="after the sweep, hold tau at tau* and walk CP's coverage "
                         "cap. Contextual problems only (gastric)")
