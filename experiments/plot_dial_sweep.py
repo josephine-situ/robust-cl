@@ -4,6 +4,7 @@ Reads ``results/rho_sweep/{problem}_dial_curve{cell}.csv`` from
 ``run_dial_sweep.py`` and writes to results/figures/:
 
   fig_dial_frontier_{problem}   every method, every dial value, every rho column
+  fig_dial_solved_{problem}     the SOLVED FRACTION of those same cells
   fig_dial_cpalpha_{problem}    the coverage-cap ablation (``--cp-alpha-ablate``)
 
 Why this figure and not another rho curve: the question the contribution has to
@@ -12,19 +13,37 @@ a statement about two axes at once. A rho curve answers "how much assumed
 uncertainty does each method absorb", which is about D -- interesting, but it is
 the supporting reading now.
 
-Three encoding decisions, each load-bearing:
+**These are TUNING scores, and the panel now says so.** Every point is a mean over
+the sweep's own CV folds under the *proxy* judge that instance tunes against
+(``cv_calibrate.make_cv_oracle``, fit on training rows only), and ``dial*`` is
+picked from exactly these cells. The feasibility axis is held out *within* a fold
+-- the fold-val contexts on gastric, the single fold decision on synthetic and the
+reactor -- and is not the test stage. ``run_dial_test.py`` is what re-scores each
+method at its own ``dial*`` under a judge the dial never faced (and on gastric
+under a different cohort as well); a number off this figure is not that number.
 
-- **Colour is the METHOD; the rho column is fill and linestyle.** A rho variation
-  of a method is its own series (solid + filled for the larger rho, dashed + open
-  for the smaller), but it keeps the method's colour, so the eye groups by method
-  first. Colour never carries two things at once, and identity is never
-  colour-alone -- every method also has its own marker, matching
-  ``plot_rho_sweep.py`` and ``make_paper_figures.py``.
-- **Marker size is the SOLVED FRACTION.** Without it the figure lies. Gastric
-  margin at m=0.75 reads objective 8.78 at feasibility 1.000, which looks
-  dominating until you see it is a 20% cohort -- the other 80% of contexts had no
-  solution at all. A conditional-on-solved objective rewards a cell for solving
-  few, so the thing that makes it conditional has to be on the same mark.
+Encoding decisions, each load-bearing:
+
+- **Colour is the METHOD; the rho column is a SHADE of it plus a linestyle.** A
+  rho variation of a method is its own series (dark + solid for the larger rho,
+  light + dashed for the smaller) inside the method's own hue, so the eye groups
+  by method first. The RHS margin used to be a second blue one shade off CP's,
+  which put the contribution and the baseline it has to beat in one colour
+  family; it is orange, and the only two series sharing a hue are now the two rho
+  columns of a single method.
+- **Marker SHAPE says whether the method faces D at all** -- a circle for the
+  shared-uncertainty-set methods (CP, wrapper), a square for the two that face no
+  D (RHS margin, C-MICL), a star for the nominal reference. Three shapes carrying
+  one real distinction, instead of a shape per method carrying none.
+- **A HOLLOW marker means the cell is below ``--min-solved``, and nothing else.**
+  Fill has exactly one meaning. Those cells stay on the panel -- "this dial value
+  renders most contexts unsolvable" is a result -- but are excluded from the
+  Pareto set and labelled with their solved fraction, because a
+  conditional-on-solved objective rewards a cell for solving few.
+- **Solved fraction is its OWN panel** (``fig_dial_solved_*``), on the same x
+  axis and the same styling, so a frontier point is read by dropping straight
+  down. It used to be the marker AREA on the frontier itself, which gave every
+  point a different size and cost the primary panel its legibility.
 - **The Pareto direction follows the problem's own objective sense** (carried in
   the curve CSV, off the oracle), because gastric maximises survival and the
   reactor minimises cost. The arrow and the non-dominated set both flip with it;
@@ -33,10 +52,6 @@ Three encoding decisions, each load-bearing:
 Marked: the 0.9 feasibility rule (the vertical line every protocol point is read
 against) and C-MICL's alpha=0.1, which is asserted rather than chosen.
 
-Cells below ``--min-solved`` are drawn hollow and excluded from the Pareto set --
-kept visible, because "this dial value renders most contexts unsolvable" is a
-result, but never allowed to win a frontier.
-
 Usage::
 
     python experiments/plot_dial_sweep.py --problem gastric --suffix _incoh
@@ -44,6 +59,7 @@ Usage::
 """
 import argparse
 import os
+import textwrap
 
 import numpy as np
 import pandas as pd
@@ -64,12 +80,14 @@ LABEL = {"nominal": "Nominal", "wrapper": "Wrapper",
          "cmicl": r"C-MICL (no $\mathcal{D}$)",
          "margin": r"Tuned nominal, RHS margin (no $\mathcal{D}$)",
          "cp": "CP (ours)"}
-# Shorter forms for the legend, which carries up to 7 series plus 4 keys and is
+# Shorter forms for the legend, which carries up to 7 series plus its keys and is
 # laid out in columns UNDER the panel -- the full names above stay for prose.
 SHORT = {"margin": r"RHS margin (no $\mathcal{D}$)"}
 COLOR = {"nominal": "#595959", "wrapper": "#009E73", "cmicl": "#CC79A7",
-         "margin": "#56B4E9", "cp": "#0072B2"}
-MARKER = {"nominal": "*", "wrapper": "^", "cmicl": "v", "margin": "P", "cp": "D"}
+         "margin": "#E69F00", "cp": "#0072B2"}
+# Shape = does this method face the shared uncertainty set D.
+MARKER = {"nominal": "*", "wrapper": "o", "cmicl": "s", "margin": "s", "cp": "o"}
+MSIZE = 8.0            # one marker size for every cell; see the module docstring
 DIAL_TEX = {"tau": r"$\tau$", "alpha": r"$\alpha$", "margin": r"$m$",
             "none": ""}
 
@@ -78,10 +96,6 @@ PTITLE = {"synthetic": "Synthetic", "gastric": "Gastric (OptiCL)",
 OBJ_LABEL = {"synthetic": r"Objective $c^\top x^*$ (lower better)",
              "gastric": "Overall survival, months (higher better)",
              "reactor": "Operating cost (lower better)"}
-
-# Marker area in pt^2 at solved_frac 0 and 1. The floor keeps a 20%-cohort cell
-# visible rather than vanishing -- it has to be readable to be disbelieved.
-SIZE_MIN, SIZE_MAX = 28.0, 190.0
 
 plt.rcParams.update({
     "figure.dpi": 140, "savefig.dpi": 300, "font.size": 13,
@@ -97,10 +111,72 @@ def _load(problem, kind, suffix):
     return pd.read_csv(path) if os.path.exists(path) else None
 
 
-def _sizes(solved):
-    s = np.asarray(solved, dtype=float)
-    s = np.where(np.isfinite(s), np.clip(s, 0.0, 1.0), 0.0)
-    return SIZE_MIN + (SIZE_MAX - SIZE_MIN) * s
+def _lighten(hex_color, frac=0.55):
+    """Blend towards white. The SMALLER rho column of a method is drawn in this,
+    so its two columns stay one hue family and the method is read first."""
+    c = hex_color.lstrip("#")
+    rgb = [int(c[i:i + 2], 16) / 255.0 for i in (0, 2, 4)]
+    return tuple(v + (1.0 - v) * frac for v in rgb)
+
+
+def _n_folds(problem, suffix):
+    """Fold count, off the per-context records. Used only to caption what the
+    numbers are; a missing file just drops the count from the caption."""
+    ctx = _load(problem, "dial_contexts", suffix)
+    if ctx is None or ctx.empty or "fold" not in ctx.columns:
+        return None
+    return int(ctx["fold"].nunique())
+
+
+def _subtitle(problem, suffix):
+    """One line naming which folds and which judge produced every point here.
+
+    The failure mode this guards against is quoting a tuned cell's own tuning
+    score as the result, which is what run_dial_test.py exists to avoid.
+    """
+    nf = _n_folds(problem, suffix)
+    folds = f"{nf} CV folds" if nf else "the sweep's CV folds"
+    unit = ("held-out contexts within each fold" if problem == "gastric"
+            else "one held-out decision per fold")
+    return (f"TUNING scores: {folds}, {unit}, train-only proxy judge. "
+            r"$\mathrm{dial}^\ast$ is chosen on these same cells; "
+            "the test stage is run_dial_test.py.")
+
+
+def _series(main):
+    """The (method, rho) groups in fixed method order, with the style each gets.
+
+    Shared by the frontier and the solved-fraction panel, so the two are read
+    against each other without a second legend to reconcile.
+    """
+    rhos = sorted({float(r) for r in main["rho"].dropna().unique()})
+    out = []
+    for method in METHODS:
+        g_m = main[main["method"] == method]
+        if g_m.empty:
+            continue
+        for rho, g in g_m.groupby("rho", dropna=False):
+            big = (not np.isfinite(rho)) or float(rho) == rhos[-1]
+            col = COLOR[method] if big else _lighten(COLOR[method])
+            ls = "-" if big else "--"
+            lab = SHORT.get(method, LABEL[method]) + (
+                "" if not np.isfinite(rho) else rf",  $\rho={rho:g}$")
+            out.append((method, g.sort_values("dial"), col, ls, lab))
+    return out
+
+
+def _draw_series(ax, method, g, col, ls, ycol, min_solved):
+    """One series: the dial path, then filled/hollow markers on it."""
+    ax.plot(g["feasibility"], g[ycol], ls=ls, lw=1.3, color=col, alpha=0.55,
+            zorder=2)
+    ok = g["solved_frac"] >= min_solved
+    for mask, face in ((ok, col), (~ok, "none")):
+        sub = g[mask]
+        if sub.empty:
+            continue
+        ax.plot(sub["feasibility"], sub[ycol], ls="", marker=MARKER[method],
+                markersize=MSIZE, markerfacecolor=face, markeredgecolor=col,
+                markeredgewidth=1.5 if face == "none" else 1.0, zorder=4)
 
 
 def _pareto(df, sense):
@@ -127,12 +203,94 @@ def _pareto(df, sense):
     return df.index[keep]
 
 
-def _series_key(row):
-    """(method, rho) -- one series. rho is NaN for the methods that face no D."""
-    return (row["method"], row["rho"])
+def _dead_footer(main, compact):
+    """Cells that produced no decision on any fold.
+
+    A dial value at which the master is infeasible everywhere is a result --
+    "C-MICL cannot be run at this level on this instance" -- and an empty region
+    of the panel does not say it.
+    """
+    dead = main[~np.isfinite(main["feasibility"])]
+    if dead.empty:
+        return None
+    parts = []
+    for method, g in dead.groupby("method"):
+        vals = ", ".join(f"{v:g}" for v in sorted(g["dial"].unique()))
+        parts.append(f"{LABEL[method].split(' (')[0]} "
+                     f"{DIAL_TEX.get(str(g['dial_name'].iloc[0]), '')} = {vals}")
+    body = ("; ".join(sorted(LABEL[k].split(" (")[0]
+                             for k in dead["method"].unique()))
+            if compact else "; ".join(parts))
+    return ("no solution on any fold (not plotted): " + body, "#7A2E2E", 9.5)
 
 
-def frontier(problem, suffix, min_solved, target, out_name=None):
+def _skipped_footer(problem, suffix, compact):
+    """Cells the adaptive search never scored.
+
+    A gap in a curve is otherwise indistinguishable from a cell that produced
+    nothing, and those are opposite claims: one says "not measured", the other
+    "no solution exists here". The dead cells above get their own red line; this
+    one is grey and separates cells pruned on the search rules from cells the
+    eval budget simply did not reach. Absent when the whole grid was walked.
+    """
+    skip = _load(problem, "dial_skipped", suffix)
+    if skip is None or skip.empty:
+        return None
+    n_pruned = int(skip["reason"].astype(str).str.startswith("pruned").sum())
+    bits = []
+    for method, g in skip.groupby("method"):
+        vals = ", ".join(f"{v:g}" for v in sorted(g["dial"].unique()))
+        bits.append(f"{LABEL.get(method, method).split(' (')[0]} = {vals}")
+    # COMPACT drops the per-method dial lists, which run to three wrapped lines
+    # and shrink the panel to under half the figure. The counts stay -- "some
+    # cells were not scored" is the part a reader must not miss -- and the dial
+    # values live in {problem}_dial_skipped{cell}.csv, which the caption names.
+    detail = ("; see *_dial_skipped*.csv" if compact else ": " + "; ".join(bits))
+    return (f"not scored ({n_pruned} pruned on the search rules, "
+            f"{len(skip) - n_pruned} outside the eval budget){detail}",
+            "#6B6B6B", 9.0)
+
+
+def _layout(fig, ax, footers, handles, ncol):
+    """Footnote lines under the axes, then the legend under those.
+
+    Both are laid out relative to the axes rather than at fixed figure
+    coordinates: the legend's anchor is a function of how many footnote lines
+    there turned out to be, because a constant that happened to fit once put the
+    two on top of each other.
+    """
+    y = -0.155                  # clears the tick labels and the x-axis label
+    for text, color, size in footers:
+        for line in textwrap.wrap(text, width=100) or [""]:
+            y -= 0.040
+            fig.text(0.02, y, line, transform=ax.transAxes, fontsize=size,
+                     color=color, va="top")
+    fig.legend(handles=handles, loc="upper center",
+               bbox_to_anchor=(0.5, y - 0.03), bbox_transform=ax.transAxes,
+               ncol=ncol, fontsize=10)
+
+
+def _set_xlim(ax, main, xlim):
+    """x-span. FIXED (the default) keeps the full 0-1 fraction, so panels from
+    different problems are read against the same axis -- and on the reactor the
+    wrapper genuinely sits at 0.0, so the span is the data. AUTO tightens to the
+    data with padding, for a problem whose whole frontier lives in a corner of
+    it: every gastric cell scores between 0.85 and 1.00, and on the fixed span
+    that is the right sixth of the panel with the differences invisible. It
+    changes no number, only the magnification, so the 0.9 rule stays drawn.
+    """
+    f = main["feasibility"].to_numpy(float)
+    f = f[np.isfinite(f)]
+    if xlim == "auto" and f.size:
+        lo, hi = float(f.min()), float(f.max())
+        pad = max(0.02, 0.08 * (hi - lo))
+        ax.set_xlim(max(-0.03, lo - pad), min(1.05, hi + pad))
+    else:
+        ax.set_xlim(-0.03, 1.05)
+
+
+def frontier(problem, suffix, min_solved, target, out_name=None, xlim="fixed",
+             compact=False):
     df = _load(problem, "dial_curve", suffix)
     if df is None:
         print(f"  no {RES}/{problem}_dial_curve{suffix}.csv -- skipping")
@@ -141,65 +299,53 @@ def frontier(problem, suffix, min_solved, target, out_name=None):
     ref = df[df.get("phase", "dial") == "reference"]
     sense = str(df["objective_sense"].iloc[0])
 
-    fig, ax = plt.subplots(figsize=(8.2, 5.8))
+    # COMPACT is the deck aspect: wider and shorter, so that once the condensed
+    # footnotes and the 4-column legend are stacked underneath, the PANEL is
+    # still most of the height. At the report aspect a slide renders the plot at
+    # about 45% of the figure.
+    fig, ax = plt.subplots(figsize=(10.0, 5.2) if compact else (8.2, 5.8))
 
     # The rule every protocol point is read against, drawn before the data so it
     # sits behind it.
     ax.axvline(target, color="#C0392B", ls="--", lw=1.2, zorder=1)
 
     handles = []
-    # nominal: a horizontal reference at its objective plus its own marker. It is
-    # the level the whole panel is read against, so it gets a line, not just a dot.
+    # nominal: just a marker.
     for _, r in ref.iterrows():
-        ax.axhline(float(r["objective"]), color=COLOR["nominal"], ls=":", lw=1.1,
-                   zorder=1)
-        ax.scatter([r["feasibility"]], [r["objective"]],
-                   s=_sizes([r["solved_frac"]]), marker=MARKER["nominal"],
-                   c=COLOR["nominal"], edgecolors="white", linewidths=1.2,
-                   zorder=5)
+        ax.plot([r["feasibility"]], [r["objective"]], ls="",
+                marker=MARKER["nominal"], markersize=15,
+                markerfacecolor=COLOR["nominal"], markeredgecolor="white",
+                markeredgewidth=1.2, zorder=5)
         handles.append(Line2D([], [], color=COLOR["nominal"], ls=":", lw=1.4,
-                              marker=MARKER["nominal"], markersize=11,
+                              marker=MARKER["nominal"], markersize=12,
                               label=LABEL["nominal"]))
 
-    # Rho columns get fill + linestyle; the method keeps the colour.
-    rhos = sorted({float(r) for r in main["rho"].dropna().unique()})
-    fill_for = {r: (i == len(rhos) - 1) for i, r in enumerate(rhos)}
-    ls_for = {r: ("-" if i == len(rhos) - 1 else "--") for i, r in enumerate(rhos)}
+    below = []                  # cells under the solved floor, labelled in place
+    for method, g, col, ls, lab in _series(main):
+        _draw_series(ax, method, g, col, ls, "objective", min_solved)
+        for _, r in g[g["solved_frac"] < min_solved].iterrows():
+            if np.isfinite(r["feasibility"]) and np.isfinite(r["objective"]):
+                below.append((r["feasibility"], r["objective"],
+                              float(r["solved_frac"]), col))
+        handles.append(Line2D([], [], color=col, ls=ls, lw=1.6,
+                              marker=MARKER[method], markersize=8,
+                              markerfacecolor=col, markeredgecolor=col,
+                              label=lab))
 
-    for method in METHODS:
-        g_m = main[main["method"] == method]
-        if g_m.empty:
-            continue
-        for rho, g in g_m.groupby("rho", dropna=False):
-            g = g.sort_values("dial")
-            filled = True if not np.isfinite(rho) else fill_for[float(rho)]
-            ls = "-" if not np.isfinite(rho) else ls_for[float(rho)]
-            col = COLOR[method]
-            # The path through dial order: it says which way the dial moves the
-            # decision, which a bare cloud of points does not.
-            ax.plot(g["feasibility"], g["objective"], ls=ls, lw=1.4, color=col,
-                    alpha=0.55, zorder=2)
-            ok = g["solved_frac"] >= min_solved
-            for mask, face in ((ok, col if filled else "none"),
-                               (~ok, "none")):
-                sub = g[mask]
-                if sub.empty:
-                    continue
-                ax.scatter(sub["feasibility"], sub["objective"],
-                           s=_sizes(sub["solved_frac"]), marker=MARKER[method],
-                           facecolors=face, edgecolors=col,
-                           linewidths=1.6 if face == "none" else 1.0,
-                           zorder=4)
-            lab = SHORT.get(method, LABEL[method]) + (
-                "" if not np.isfinite(rho) else rf",  $\rho={rho:g}$")
-            handles.append(Line2D([], [], color=col, ls=ls, lw=1.6,
-                                  marker=MARKER[method], markersize=8,
-                                  markerfacecolor=col if filled else "none",
-                                  markeredgecolor=col, label=lab))
+    # A hollow marker says "most contexts had no decision here"; the number says
+    # how few. Cheap while there are a handful -- past that the reader is better
+    # served by the companion panel than by a thicket of labels.
+    if len(below) <= 6:
+        lo, hi = ax.get_ylim()
+        ax.set_ylim(lo - 0.07 * (hi - lo), hi)
+        for x, y, frac, col in below:
+            ax.annotate(f"{frac:.0%} solved", (x, y),
+                        textcoords="offset points", xytext=(0, -15),
+                        ha="center", fontsize=8.5, color=col)
 
     # C-MICL's protocol point: asserted, not chosen, so it is called out rather
-    # than left as one dot among six. On gastric it is expected NOT to solve, and a
-    # cell with no finite coordinates cannot be a dot at all -- which is exactly
+    # than left as one dot among six. On gastric it is expected NOT to solve, and
+    # a cell with no finite coordinates cannot be a dot at all -- which is exactly
     # when it most needs saying, so it goes into the legend instead of vanishing.
     cm = main[(main["method"] == "cmicl") &
               (main["note"].astype(str) == "protocol point")]
@@ -216,79 +362,97 @@ def frontier(problem, suffix, min_solved, target, out_name=None):
                 [], [], ls="", marker="x", color=COLOR["cmicl"], markersize=8,
                 label=rf"C-MICL protocol $\alpha={r['dial']:g}$: no solution"))
 
-    # Every OTHER cell that produced nothing. A dial value at which the master is
-    # infeasible on every fold is a result -- "C-MICL cannot be run at this level
-    # on this instance" -- and an empty region of the plot does not say it.
-    dead = main[~np.isfinite(main["feasibility"])]
-    if not dead.empty:
-        parts = []
-        for method, g in dead.groupby("method"):
-            vals = ", ".join(f"{v:g}" for v in sorted(g["dial"].unique()))
-            parts.append(f"{LABEL[method].split(' (')[0]} "
-                         f"{DIAL_TEX.get(str(g['dial_name'].iloc[0]), '')}"
-                         f" = {vals}")
-        ax.text(0.0, -0.155, "no solution on any fold: " + "; ".join(parts),
-                transform=ax.transAxes, fontsize=9.5, color="#7A2E2E")
-
-    # Cells the adaptive search never scored. A gap in a curve is otherwise
-    # indistinguishable from a cell that produced nothing, and those are opposite
-    # claims: one says "not measured", the other says "no solution exists here".
-    # The dead cells above already have their own line, in red; this one is grey
-    # and says how many were pruned on the rules (a feasibility of 0 below, an
-    # unsolvable cell above) versus how many the eval budget simply did not
-    # reach. Absent when the whole grid was walked.
-    skip = _load(problem, "dial_skipped", suffix)
-    if skip is not None and not skip.empty:
-        why = skip["reason"].astype(str)
-        n_pruned = int(why.str.startswith("pruned").sum())
-        bits = []
-        for method, g in skip.groupby("method"):
-            vals = ", ".join(f"{v:g}" for v in sorted(g["dial"].unique()))
-            bits.append(f"{LABEL.get(method, method).split(' (')[0]} = {vals}")
-        ax.text(0.0, -0.195,
-                f"not scored ({n_pruned} pruned on the search rules, "
-                f"{len(skip) - n_pruned} outside the eval budget): "
-                + "; ".join(bits),
-                transform=ax.transAxes, fontsize=9.0, color="#6B6B6B")
-
     # The Pareto set, over the cells that clear the solved floor. Ringed rather
     # than recoloured, so a point keeps its method identity.
     elig = main[main["solved_frac"] >= min_solved]
     if not elig.empty:
         front = elig.loc[_pareto(elig, sense)].sort_values("feasibility")
-        ax.scatter(front["feasibility"], front["objective"],
-                   s=_sizes(front["solved_frac"]) + 90, marker="o",
-                   facecolors="none", edgecolors="#4D4D4D", linewidths=0.9,
-                   zorder=3)
+        ax.plot(front["feasibility"], front["objective"], ls="", marker="o",
+                markersize=MSIZE + 7, markerfacecolor="none",
+                markeredgecolor="#4D4D4D", markeredgewidth=0.9, zorder=3)
 
     ax.set_xlabel("Held-out feasibility (fraction of contexts)")
     ax.set_ylabel(OBJ_LABEL.get(problem, "Objective"))
     better = "up" if sense == "max" else "down"
     ax.set_title(f"{PTITLE.get(problem, problem)}: objective vs feasibility "
-                 f"(better = right and {better})")
-    ax.set_xlim(-0.03, 1.05)
+                 f"(better = right and {better})", pad=24)
+    ax.text(0.0, 1.015, _subtitle(problem, suffix), transform=ax.transAxes,
+            fontsize=9, color="#555555", va="bottom")
+    _set_xlim(ax, main, xlim)
 
-    # One legend, UNDER the panel. Anchoring it outside the axes on the right got
-    # clipped once the series count grew, and there is no corner of this panel free
-    # of data -- the whole figure is a frontier running across it.
+    footers = [f for f in (_dead_footer(main, compact),
+                           _skipped_footer(problem, suffix, compact)) if f]
     extra = [
         Line2D([], [], color="#C0392B", ls="--", lw=1.2,
                label=f"feasibility target {target:g}"),
         Line2D([], [], ls="", marker="o", markerfacecolor="none",
-               markeredgecolor="#4D4D4D", markersize=9, label="Pareto-optimal"),
-    ] + [
-        # Marker size IS the solved fraction, so its key belongs in the same
-        # legend as the series rather than in a box of its own.
-        Line2D([], [], ls="", marker="o", markerfacecolor="#9A9A9A",
-               markeredgecolor="#4D4D4D",
-               markersize=np.sqrt(_sizes([v])[0]), label=f"solved {v:.0%}")
-        for v in (0.25, 0.5, 1.0)
+               markeredgecolor="#4D4D4D", markersize=11, label="Pareto-optimal"),
+        # Fill carries exactly one thing, and this is it.
+        Line2D([], [], ls="", marker="o", markerfacecolor="none",
+               markeredgecolor="#9A9A9A", markeredgewidth=1.5, markersize=8,
+               label=f"hollow: solved < {min_solved:g}"),
     ]
-    fig.legend(handles=handles + extra, loc="upper center",
-               bbox_to_anchor=(0.5, 0.0), ncol=3, fontsize=10)
+    _layout(fig, ax, footers, handles + extra, 4 if compact else 3)
+    _save(fig, out_name or f"fig_dial_frontier_{problem}{suffix}")
 
-    name = out_name or f"fig_dial_frontier_{problem}{suffix}"
-    _save(fig, name)
+
+def solved_panel(problem, suffix, min_solved, target, out_name=None,
+                 xlim="fixed", compact=False):
+    """Solved fraction of the same cells, on the same x axis as the frontier.
+
+    The conditional-on-solved objective in the frontier is only readable beside
+    this: a cell that scores feasibility 1.00 on 14% of contexts and one that
+    scores it on 100% are the same dot up there and are not the same result.
+    Same colours, shapes and linestyles, so no second legend has to be
+    reconciled with the first.
+    """
+    df = _load(problem, "dial_curve", suffix)
+    if df is None:
+        return
+    main = df[df.get("phase", "dial") == "dial"]
+    ref = df[df.get("phase", "dial") == "reference"]
+
+    fig, ax = plt.subplots(figsize=(10.0, 4.4) if compact else (8.2, 4.8))
+    ax.axvline(target, color="#C0392B", ls="--", lw=1.2, zorder=1)
+    ax.axhline(min_solved, color="#7A2E2E", ls=":", lw=1.2, zorder=1)
+
+    handles = []
+    for _, r in ref.iterrows():
+        ax.plot([r["feasibility"]], [r["solved_frac"]], ls="",
+                marker=MARKER["nominal"], markersize=15,
+                markerfacecolor=COLOR["nominal"], markeredgecolor="white",
+                markeredgewidth=1.2, zorder=5)
+        handles.append(Line2D([], [], color=COLOR["nominal"], ls="",
+                              marker=MARKER["nominal"], markersize=12,
+                              label=LABEL["nominal"]))
+
+    for method, g, col, ls, lab in _series(main):
+        _draw_series(ax, method, g, col, ls, "solved_frac", min_solved)
+        handles.append(Line2D([], [], color=col, ls=ls, lw=1.6,
+                              marker=MARKER[method], markersize=8,
+                              markerfacecolor=col, markeredgecolor=col,
+                              label=lab))
+
+    ax.set_xlabel("Held-out feasibility (fraction of contexts)")
+    ax.set_ylabel("Solved fraction (contexts with a decision)")
+    ax.set_ylim(-0.03, 1.05)
+    ax.set_title(f"{PTITLE.get(problem, problem)}: how much of the cohort each "
+                 f"cell could prescribe for", pad=24)
+    ax.text(0.0, 1.015,
+            "Same cells as the frontier panel. Feasibility and objective there "
+            "are CONDITIONAL on this fraction.",
+            transform=ax.transAxes, fontsize=9, color="#555555", va="bottom")
+    _set_xlim(ax, main, xlim)
+
+    footers = [f for f in (_dead_footer(main, compact),) if f]
+    extra = [
+        Line2D([], [], color="#C0392B", ls="--", lw=1.2,
+               label=f"feasibility target {target:g}"),
+        Line2D([], [], color="#7A2E2E", ls=":", lw=1.2,
+               label=f"solved floor {min_solved:g}"),
+    ]
+    _layout(fig, ax, footers, handles + extra, 4 if compact else 3)
+    _save(fig, out_name or f"fig_dial_solved_{problem}{suffix}")
 
 
 def cp_alpha_panel(problem, suffix, min_solved, target):
@@ -325,10 +489,9 @@ def cp_alpha_panel(problem, suffix, min_solved, target):
 def _save(fig, name):
     os.makedirs(OUT, exist_ok=True)
     fig.tight_layout()
-    for ext in ("pdf", "png"):
-        fig.savefig(f"{OUT}/{name}.{ext}", bbox_inches="tight")
+    fig.savefig(f"{OUT}/{name}.png", bbox_inches="tight")
     plt.close(fig)
-    print(f"  wrote {OUT}/{name}.pdf/.png")
+    print(f"  wrote {OUT}/{name}.png")
 
 
 def main():
@@ -341,13 +504,26 @@ def main():
                    help="sweep CELL suffix, e.g. _incoh, _coh, _incoh_s7")
     p.add_argument("--min-solved", type=float, default=0.5)
     p.add_argument("--feas-target", type=float, default=0.9)
+    p.add_argument("--compact", action="store_true",
+                   help="deck aspect: wider panel, condensed footnotes, "
+                        "4-column legend. Writes <name>_slide.")
+    p.add_argument("--xlim", choices=("fixed", "auto"), default="fixed",
+                   help="fixed: the whole 0-1 feasibility span, comparable "
+                        "across problems. auto: tighten to the data, for a "
+                        "frontier that lives in one corner of it (gastric).")
     args = p.parse_args()
 
     problems = (["synthetic", "reactor", "gastric"] if args.all
                 else [args.problem])
     for prob in problems:
+        tag = "_slide" if args.compact else ""
         frontier(prob, args.suffix, float(args.min_solved),
-                 float(args.feas_target))
+                 float(args.feas_target), xlim=args.xlim, compact=args.compact,
+                 out_name=f"fig_dial_frontier_{prob}{args.suffix}{tag}")
+        solved_panel(prob, args.suffix, float(args.min_solved),
+                     float(args.feas_target), xlim=args.xlim,
+                     compact=args.compact,
+                     out_name=f"fig_dial_solved_{prob}{args.suffix}{tag}")
         cp_alpha_panel(prob, args.suffix, float(args.min_solved),
                        float(args.feas_target))
 

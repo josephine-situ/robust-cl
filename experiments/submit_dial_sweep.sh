@@ -252,6 +252,13 @@ case "${PROBLEM}" in
     *) echo "unknown problem '${PROBLEM}'"; exit 1 ;;
 esac
 
+# RUN_SWEEP=0 runs the TEST STAGE ALONE, against the dial* already on disk. Use
+# it when the tuning is done and only the test is wanted: re-running the sweep
+# would replay its checkpoint for free, but it would ALSO spend fresh evaluation
+# budget on cells the adaptive search had not reached, which can move dial*
+# underneath the test stage that is about to read it.
+RUN_SWEEP="${RUN_SWEEP:-1}"
+if [[ "${RUN_SWEEP}" == "1" ]]; then
 echo "=== task ${TASK}: problem=${PROBLEM} rho columns='${RHO_COLUMNS}' methods='${METHODS}' seed=${SEED} ${COHERENCE} ${MATCH_BANK} ${FOLD_ARG} ${CP_ALPHA_ABLATE} ==="
 
 python -u experiments/run_dial_sweep.py \
@@ -274,6 +281,11 @@ python -u experiments/run_dial_sweep.py \
     ${CP_ALPHA_RHO:+--cp-alpha-rho ${CP_ALPHA_RHO}} \
     --cp-alpha-grid ${CP_ALPHA_GRID} \
     ${EXTRA_ARGS}
+else
+    echo "=== task ${TASK}: RUN_SWEEP=0 -- skipping the tuning sweep. The test"
+    echo "    stage below holds each method at the dial* already on disk, in"
+    echo "    results/rho_sweep/${PROBLEM}_dial_star*.csv ==="
+fi
 
 # ---------------------------------------------------------------------------
 # THE TEST STAGE. The sweep above TUNES: every number in it is a fold score under
@@ -283,25 +295,58 @@ python -u experiments/run_dial_sweep.py \
 # analytic f_true on synthetic, and on gastric the held-out X_test arms (there is
 # no other judge there, so what makes it a test is the COHORT).
 #
-# Two phases, and they are not interchangeable:
-#   folds  the sweep's own folds re-solved at dial*, truth-judged. A RATE, with
-#          spread -- but dial* was chosen on these folds, so it is not held out.
-#   full   one refit on all rows, one decision per method. The deployed procedure,
-#          and the only place the objectives are directly comparable (one x* each,
-#          same data, same judge). Feasibility is one bit per method here, which
-#          is why the fold rate is reported beside it.
+# Three phases, and they are not interchangeable:
+#   folds      the sweep's own folds re-solved at dial*, truth-judged. A RATE,
+#              with spread -- but dial* was chosen on these folds, so it is not
+#              held out.
+#   full       one refit on all rows, one decision per method. The deployed
+#              procedure, and the only place the objectives are directly
+#              comparable (one x* each, same data, same judge). Feasibility is
+#              one bit per method here, which is why the fold rate is reported
+#              beside it.
+#   subsample  GASTRIC ONLY: m-out-of-n subsampling (N_REALIZATIONS draws of
+#              SUBSAMPLE_FRAC of the constraint FIT rows, without replacement)
+#              against the FIXED full-cohort GT oracle, each draw prescribing for
+#              the 96 held-out X_test arms. It is `full` repeated over training
+#              draws, and it is the only spread the test stage can honestly
+#              report: the folds are fixed by construction AND are what dial* was
+#              tuned on, while the training draw is neither. Same uncertainty
+#              every Table 6 number in this repo is reported over, and the same
+#              CRN seeds (bootstrap_seed + 1000*(r+1)), so realization r is the
+#              same draw as realization r there. It reports feasibility twice:
+#              conditional on each series' own solved arms, and over the
+#              samestore cohort (the arms every series solved, recomputed per
+#              draw). The reactor and synthetic have no held-out cohort to
+#              prescribe for -- their held-out axis IS the fold, which `folds`
+#              already scores under the ODE / the analytic truth -- so the phase
+#              is refused there rather than silently skipped.
+#
+# COST: the subsample phase is N_REALIZATIONS x the `full` phase, i.e. one full
+# gastric instance build (data + GT ensemble) and one master + 96 prescribe
+# solves per (draw, series). At 10 draws x ~6 series that is the expensive part
+# of this job; N_REALIZATIONS=3 is the cheap smoke-sized version.
 #
 # It reads {problem}_dial_star<cell>.csv, so the cell flags below MUST match the
 # sweep's. A series with no dial* (never reached the target) is skipped with the
 # reason printed -- there is no tuned dial to test.
 RUN_TEST="${RUN_TEST:-1}"
-TEST_PHASES="${TEST_PHASES:-folds full}"
+# m-out-of-n is the standing gastric protocol, so it is in the default phases
+# there and is not a legal phase anywhere else.
+if [[ "${PROBLEM}" == "gastric" ]]; then
+    TEST_PHASES="${TEST_PHASES:-folds full subsample}"
+else
+    TEST_PHASES="${TEST_PHASES:-folds full}"
+fi
+N_REALIZATIONS="${N_REALIZATIONS:-10}"
+SUBSAMPLE_FRAC="${SUBSAMPLE_FRAC:-0.5}"
 if [[ "${RUN_TEST}" == "1" ]]; then
     echo "=== task ${TASK}: TEST STAGE, problem=${PROBLEM}, phases='${TEST_PHASES}' ==="
     python -u experiments/run_dial_test.py \
         --problem "${PROBLEM}" \
         --methods ${METHODS} \
         --phases ${TEST_PHASES} \
+        --n-realizations "${N_REALIZATIONS}" \
+        --subsample-frac "${SUBSAMPLE_FRAC}" \
         --seed "${SEED}" \
         ${FOLD_ARG} \
         ${COHERENCE} \
@@ -320,10 +365,14 @@ fi
 #   CP_ALPHA_ABLATE= sbatch experiments/submit_dial_sweep.sh                 # sweep only
 #   EXTRA_ARGS=--refresh sbatch experiments/submit_dial_sweep.sh             # ignore the checkpoint
 #   RUN_TEST=0 sbatch experiments/submit_dial_sweep.sh                       # tune only, no test stage
+#   RUN_SWEEP=0 PROBLEM=gastric sbatch --array=0 experiments/submit_dial_sweep.sh   # test only, at the dial* on disk
 #   TEST_PHASES=full sbatch experiments/submit_dial_sweep.sh                 # skip the |folds| re-solves
+#   TEST_PHASES="folds full" sbatch experiments/submit_dial_sweep.sh          # gastric without the m-out-of-n draws
+#   N_REALIZATIONS=3 sbatch experiments/submit_dial_sweep.sh                  # cheaper m-out-of-n
 #
 # Test-stage outputs, same cell suffix:
 #   {problem}_dial_test<cell>.csv         summary, one row per (method, phase)
-#   {problem}_dial_test_points<cell>.csv  one row per (method, phase, fold/context)
+#   {problem}_dial_test_points<cell>.csv  one row per (method, phase, fold or
+#                                         realization, context)
 
 echo "Finished task ${TASK} at $(date)"

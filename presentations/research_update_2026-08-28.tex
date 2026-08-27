@@ -28,7 +28,84 @@
 \end{frame}
 
 % ===========================================================================
+% THE PRIMARY FIGURE. Dial sweep, gastric, seed 42, incoherent cell.
+% run_dial_sweep.py --problem gastric ; plot_dial_sweep.py --xlim auto
+\begin{frame}{Gastric: objective at equal feasibility}
+    \centering
+    \includegraphics[width=\linewidth,height=0.66\textheight,keepaspectratio]{../results/figures/fig_dial_frontier_gastric_incoh_s42_slide.png}
+    \vspace{-0.2em}
+    \begin{flushleft}\footnotesize
+    \textbf{The frontier crosses.}
+    At feas $\approx0.93$ the RHS margin wins ($10.97$ vs wrapper $10.89$, CP $9.84$);
+    at feas $\approx0.97$ \textbf{CP wins} ($10.78$ vs wrapper $10.63$, margin $9.85$)
+    and solves more ($0.82$ vs $0.65$).
+    $\rho=0.5$ is CP's column; $\rho=1$ is over-robust. C-MICL: no solution at its protocol $\alpha=0.1$.
+    \end{flushleft}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{Gastric: tuned dial, then tested}
+    \footnotesize
+    Dial$^\ast$ = best objective among cells with feas $\ge 0.9$, solved $\ge 0.5$
+    (tuning judge = train-only ensemble). Test judge = full-416 GT ensemble.
+    \vspace{0.5em}
+    \begin{tabular}{llccc|cc}
+        \toprule
+        & & \multicolumn{3}{c|}{tuned} & \multicolumn{2}{c}{tested (folds)} \\
+        method & dial$^\ast$ & feas & obj & solved & feas & obj \\
+        \midrule
+        nominal              & --             & 0.891 & \textbf{11.30} & 0.951 & 0.934 & \textbf{11.29} \\
+        RHS margin           & $m=0.2$        & 0.931 & 10.97 & 0.922 & 0.951 & 11.01 \\
+        wrapper $\rho{=}1$   & $\alpha=0.4$   & 0.930 & 10.89 & 0.592 & 0.970 & 10.94 \\
+        wrapper $\rho{=}0.5$ & $\alpha=0.2$   & 0.941 & 10.88 & 0.679 & 0.961 & 10.97 \\
+        CP $\rho{=}0.5$      & $\tau=0.03$    & 0.974 & 10.78 & 0.821 & \textbf{0.987} & 10.86 \\
+        CP $\rho{=}1$        & $\tau=0.1$     & 0.938 & 9.84  & 0.870 & 0.947 & 10.07 \\
+        C-MICL               & \multicolumn{6}{l}{no cell cleared solved $\ge 0.5$} \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.5em}
+    \begin{itemize}
+        \item \textbf{Under the test judge nominal already clears 0.9} (0.934).
+              The tuning proxy is more pessimistic than the evaluation oracle.
+        \item So the $0.9$ rule that fixed every dial$^\ast$ is not binding at test.
+        \item Objectives are conditional on each cell's own solved contexts:
+              wrapper's $10.94$ is on a $59\%$ cohort.
+    \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{What the mean hides: worst case over training draws}
+    \footnotesize
+    Outer $m$-out-of-$n$ subsampling, \texttt{all\_constraints} feasibility,
+    30 realizations. \textbf{2026-08-13, \texttt{box\_l1} --- stale, shown for shape only.}
+    \vspace{0.5em}
+    \begin{tabular}{lcccc}
+        \toprule
+        method & mean & sd & worst case & 10th pct \\
+        \midrule
+        nominal    & 0.898 & 0.157 & \textbf{0.220} & 0.771 \\
+        robust\_reg & 0.923 & 0.075 & 0.684 & 0.791 \\
+        CP         & 0.919 & 0.099 & 0.607 & \textbf{0.867} \\
+        \bottomrule
+    \end{tabular}
+    \vspace{0.5em}
+    \begin{itemize}
+        \item Means differ by $0.025$; \textbf{worst cases by $3\times$}.
+        \item The dial sweep does \textbf{not} compute this --- it has no outer
+              resampling loop at all. Only \texttt{run\_chemo\_robust.py} does.
+        \item Closest current proxy: worst of 4 temporal test folds ---
+              CP $\rho{=}0.5$ \textbf{0.947}, margin $0.923$, wrapper $\rho{=}0.5$ $0.880$,
+              nominal $0.900$.
+        \item That is a worst \emph{year}, not a worst \emph{draw}. Different quantity.
+    \end{itemize}
+\end{frame}
+
+% ===========================================================================
 \begin{frame}{Next steps}
+    \begin{enumerate}
+        \item Extend c-micl alpha grid.
+        \item WFP example.
+    \end{enumerate}
 \end{frame}
 
 \end{document}

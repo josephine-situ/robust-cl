@@ -699,18 +699,20 @@
   \begin{itemize}
     \item Judge: analytic $f_{\text{true}}$ (synthetic); the \textbf{ODE}
       (reactor); the \textbf{full-cohort ($416$-arm) GT ensemble} on the $96$
-      held-out arms (gastric) --- \emph{not} the train-only $320$-arm proxy that
-      tuned $\text{dial}^\ast$. Both judge and cohort change there.
-    \item \textbf{folds}: the sweep's folds re-solved at $\text{dial}^\ast$. A rate
-      with spread, but \emph{not} held out --- $\text{dial}^\ast$ was chosen on them.
-    \item \textbf{full}: one refit on all rows --- the deployed procedure, and the
-      only place objectives compare directly. One \emph{bit} of feasibility each.
-    \item \mc{No row-level split exists on synthetic/reactor: single-decision,
-      $X_{\text{test}}$ empty, folds the only row structure.}
-    \item \textbf{A fitted judge cannot score a boundary optimum.} Its error
-      decides the verdict exactly where the optimum sits. Measurable only on the
-      reactor: the proxy agrees with the ODE on $5/5$ nominal decisions yet flips
-      $25.9\%$ of verdicts inside its own $|F-50|<5$ band.
+      held-out arms (gastric) --- \emph{not} the $320$-arm tuning proxy. Both
+      judge and cohort change there.
+    \item \textbf{folds}: the sweep's folds re-solved. A rate with spread, but
+      \emph{not} held out --- $\text{dial}^\ast$ was chosen on them.
+    \item \textbf{full}: one refit on all rows --- the deployed procedure, the
+      only place objectives compare directly. One \emph{bit} each.
+    \item \textbf{subsample} (gastric only --- the others are single-decision,
+      $X_{\text{test}}$ empty, so their held-out axis is the fold):
+      \textbf{full} over $R{=}10$ $m$-out-of-$n$ draws ($m/n{=}0.5$ of the fit
+      rows, CRN, fixed oracle). The only spread neither fixed by construction
+      nor tuned on; mean, \textbf{worst case}, 10th pct.
+    \item \textbf{A fitted judge cannot score a boundary optimum.} Measurable
+      only on the reactor: the proxy agrees with the ODE on $5/5$ nominal
+      decisions yet flips $25.9\%$ of verdicts in its own $|F-50|<5$ band.
   \end{itemize}
 \end{frame}
 
