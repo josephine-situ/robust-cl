@@ -12,7 +12,7 @@ The grid::
 
     method      dial      rho columns                       notes
     ---------------------------------------------------------------------------
-    cp          tau       gastric {0.5, 1.0}, reactor {1,2}  ONE fixed tau grid
+    cp          tau       gastric {0.5, 1.0}, reactor {2,3}  ONE fixed tau grid
     wrapper     alpha     same                               P is a bank prefix
     margin      m         --                                 faces no D
     cmicl       alpha     --                                 alpha=0.1 = protocol
@@ -63,9 +63,15 @@ Four things this file exists to get right, in the order they had to be fixed:
    what the objective pays for). The search bisects to bracket that end, then
    spends the rest of ``--max-evals`` filling the band around it -- the
    deliverable is a CURVE, so resolution goes where the frontier bends and none
-   of it into the two dead tails. That let the grids get FINER at lower cost:
-   ``TAU_GRID`` is 7 half-decades where it was 4 decades, and every old value is
-   still in it, so an existing checkpoint resumes rather than being orphaned.
+   of it into the two dead tails. That let the grids get FINER at lower cost
+   (``TAU_GRID`` is half-decades where it was decades) and then WIDER at lower
+   cost again (2026-08-27: every grid now spans its dial's full usable range,
+   because bracketing is O(log n) and the dead tails are pruned unscored). Every
+   old value is still in every grid, so an existing checkpoint resumes rather
+   than being orphaned. Widening was not cosmetic -- on the 2026-08-27 curves the
+   reactor's margin, the reactor's CP and gastric's wrapper each had their
+   protocol point pinned at ``bound="grid_end"``, and gastric's C-MICL had no
+   protocol point at all because it first solves above the old grid top.
 
    This ASSUMES the dial is monotone, which the rho axis is not always (CP's dip
    at rho=0.5 on gastric; robust_reg's feasibility falling with rho) and which
@@ -97,7 +103,7 @@ Outputs, all scoped by the same cell suffix ``run_rho_sweep`` uses
 Usage::
 
     python experiments/run_dial_sweep.py --problem gastric
-    python experiments/run_dial_sweep.py --problem reactor --rho-columns 1 2 3
+    python experiments/run_dial_sweep.py --problem reactor --rho-columns 1 2 3 4
     python experiments/run_dial_sweep.py --problem gastric --coherent
     python experiments/run_dial_sweep.py --problem gastric --cp-alpha-ablate
     python experiments/run_dial_sweep.py --problem reactor --search grid
@@ -148,10 +154,14 @@ BANK_KWARG = {"cp": "cp_bank", "wrapper": "bank"}
 # doubling into a rho sweep by the back door.
 #   gastric  0.5 / 1.0 -- where CP's committed curve is strongest, and the point
 #            below it. Both are headline columns now, not sensitivity checks.
-#   reactor  1 / 2 -- nominal misses the benzene target by ~4 units of F and
-#            rho=1 buys ~2.2, so 2 is right at the edge. Add 3 if it is short:
-#            --rho-columns 1 2 3.
-DEFAULT_RHO_COLUMNS = {"gastric": [0.5, 1.0], "reactor": [1.0, 2.0],
+#   reactor  2 / 3 -- MEASURED, not guessed. rho=1 and 2 were the original pair
+#            because nominal misses the benzene target by ~4 units of F and
+#            rho=1 buys ~2.2; the 2026-08-27 run at {3, 4} then showed rho=3 is
+#            already past the edge (CP delivers feasibility 0.9 at the LOOSEST
+#            tau on the grid and 1.0 everywhere below it), so 4 only buys
+#            objective CP is not being asked to pay. 2/3 brackets the transition
+#            instead of sitting above it. --rho-columns overrides.
+DEFAULT_RHO_COLUMNS = {"gastric": [0.5, 1.0], "reactor": [2.0, 3.0],
                        "synthetic": [0.5, 1.0]}
 
 # CP's tau grid. ABSOLUTE, FIXED BEFORE THE RUN, and the SAME on every rho column.
@@ -181,21 +191,63 @@ DEFAULT_RHO_COLUMNS = {"gastric": [0.5, 1.0], "reactor": [1.0, 2.0],
 # longer pays for its length: it walks O(log n) cells to bracket the target and
 # spends what is left filling the band around it, so resolution near the knee of
 # the frontier is now nearly free while the dead tails cost nothing at all.
-TAU_GRID = [1.0, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001]
+#
+# WIDENED AT BOTH ENDS on 2026-08-27, for a reason the committed curves state
+# outright: the 2026-08-27 reactor run has CP DELIVERING at the loosest tau on
+# the grid (feasibility 0.9 at tau=1.0, rho=3), so the least-robust delivering
+# cell -- which is exactly what `_dial_star` returns, because the objective is
+# what robustness is paid for -- sat at `bound="grid_end"`. The grid was the
+# limit, not the method. tau=3, 10 give the search somewhere to bracket it, and
+# they are also where CP's curve joins the nominal point: a tau above the
+# iteration-0 separation distance stops before any cut.
+#
+# The bottom is the mip_gap floor and stops there. `_resolve_tolerance` floors
+# `tau * conv` at `mip_gap * conv` (= 1e-4 in tau units on EVERY problem since
+# 2026-08-25), so 1e-4 IS the smallest distinct setting: a grid value below it
+# would run at 1e-4 while being written to the curve as something else, which is
+# the mislabelled-tau failure that section exists to prevent.
+TAU_GRID = [10.0, 3.0, 1.0, 0.3, 0.1, 0.03, 0.01, 0.003, 0.001, 0.0003, 0.0001]
 
 # All three below are supersets of their pre-2026-08-26 values, for the same
-# resume reason.
-DEFAULT_ALPHA_GRID = [0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5]
+# resume reason, and each was widened again on 2026-08-27 -- see TAU_GRID for
+# why widening is now cheap and why it was needed.
+#
+# The wrapper's alpha runs to the far end of its OWN resolution. It is a chance
+# constraint over P models, so the only distinct levels are multiples of 1/P
+# (=0.05 at P=20) and every value here is one; alpha=0.95 requires exactly ONE
+# of the P models to hold. 1.0 is deliberately absent: it requires none, which
+# removes the learned constraint from the MIP altogether, so it is not a looser
+# wrapper but the absence of one -- weaker than nominal, and not a point on this
+# method's frontier. Grid-limited before this: at rho=1.0 on gastric the old top
+# (alpha=0.5) still delivered 0.919, so the search wanted a LESS robust cell and
+# the grid had none.
+DEFAULT_ALPHA_GRID = [0.0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8,
+                      0.9, 0.95]
 # m=0 is bit-identical to nominal (same fit, same MIP, same x*), so the baseline's
-# curve starts AT the nominal point rather than near it.
+# curve starts AT the nominal point rather than near it. The top end is set by the
+# REACTOR, where the old grid ran out with the baseline still climbing: m=1.5 (the
+# old max) scored feasibility 0.1 against a 0.9 target, so the margin's own
+# protocol point was unreachable and the one comparison it exists for -- the same
+# feasibility bought by a one-line RHS shift -- could not be made. m is in
+# unexplained-sd units (reactor s_c=2.19, so m=5 is F_C6H6 >= 60.9). Large m goes
+# INFEASIBLE rather than conservative once `rhs - m_c` leaves the label range;
+# that shows up as a falling solved fraction and is what --min-solved guards, so
+# the tail costs at most the cells the search spends discovering it.
 DEFAULT_MARGIN_GRID = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.625, 0.75, 0.875, 1.0,
-                       1.25, 1.5]
-# Extended UPWARD on purpose. C-MICL is measured infeasible on gastric at
-# alpha=0.1 under both multiplicity settings, and n_cal=80 means alpha >= 0.02 is
-# needed for a finite conformal quantile at all. Where it FIRST solves is the
-# result; 0.1 is the protocol point whether or not it solves there.
+                       1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0]
+# Extended UPWARD on purpose, now over the full [0, 1] of a miscoverage level.
+# C-MICL is measured infeasible on gastric at alpha=0.1 under both multiplicity
+# settings, and n_cal=80 means alpha >= 0.02 is needed for a finite conformal
+# quantile at all. Where it FIRST solves is the result; 0.1 is the protocol point
+# whether or not it solves there. Measured on the 2026-08-27 gastric run: alpha
+# 0.1 and 0.3 solved NOTHING and 0.5 -- the old grid top -- solved 13.8% of
+# contexts, under the 0.5 floor, so C-MICL's row of the star table was empty and
+# the "where does it first solve" question was answered only with "above 0.5".
+# alpha=1.0 is well defined and is kept as the endpoint: `conformal_quantile`
+# takes k = max(ceil((n+1)(1-alpha)), 1), so it is the SMALLEST nonconformity
+# score -- a real, very loose tightening, not a removed constraint.
 DEFAULT_CMICL_ALPHA_GRID = [0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3,
-                            0.4, 0.5]
+                            0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 1.0]
 # The coverage cap, as a fraction of the anchors a cut may newly break.
 DEFAULT_CP_ALPHA_GRID = [0.0, 0.1, 0.2, 0.3]
 
@@ -1010,7 +1062,10 @@ def main():
                         f"not a statistic read back off it")
     p.add_argument("--alpha-grid", type=float, nargs="+", default=None,
                    help=f"wrapper alpha grid (default {DEFAULT_ALPHA_GRID}); "
-                        "0/0.1/0.2/0.5 are OptiCL's published WFP values")
+                        "0/0.1/0.2/0.5 are OptiCL's published WFP values. Only "
+                        "multiples of 1/P are distinct levels; 1.0 is excluded "
+                        "because it removes the constraint rather than loosening "
+                        "it")
     p.add_argument("--margin-grid", type=float, nargs="+", default=None,
                    help=f"margin m grid, unexplained-sd units "
                         f"(default {DEFAULT_MARGIN_GRID}); m=0 IS nominal")
@@ -1023,7 +1078,7 @@ def main():
                         "cap. Contextual problems only (gastric)")
     p.add_argument("--cp-alpha-rho", type=float, default=None,
                    help="rho column for the coverage-cap ablation (default: the "
-                        "largest column). gastric 1.0, reactor 2.0")
+                        "largest column). gastric 1.0, reactor 3.0")
     p.add_argument("--cp-alpha-grid", type=float, nargs="+", default=None,
                    help=f"coverage-cap values (default {DEFAULT_CP_ALPHA_GRID}); "
                         "0 is the production pin")

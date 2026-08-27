@@ -133,18 +133,20 @@ export NUMEXPR_NUM_THREADS="${NTHREADS}"
 #    infeasible at alpha=0.1 under BOTH multiplicity settings (half-widths
 #    1.33-1.73 sd(y) on five constraints at once against rhs=0.6), and n_cal=80
 #    means alpha >= 0.02 is needed for a finite conformal quantile at all. The
-#    grid is extended UPWARD (0.2, 0.3, 0.5) to find where it FIRST solves; that
-#    threshold is the result. Budget for it: proving the marginal case infeasible
-#    took 176 s against nominal's 0.9 s.
-#  - REACTOR rho=2 may still be short. Nominal misses the benzene target by ~4
-#    units of F and rho=1 buys ~2.2, so 2 is right at the edge --
-#    RHO_COLUMNS="1 2 3" if it is.
+#    grid runs over the FULL [0.02, 1] of a miscoverage level to find where it
+#    FIRST solves; that threshold is the result. Measured 2026-08-27: alpha 0.1
+#    and 0.3 solved nothing, 0.5 solved 13.8% of contexts (under MIN_SOLVED), so
+#    the answer is above the old grid top and C-MICL had no protocol point at
+#    all. Budget for it: proving the marginal case infeasible took 176 s against
+#    nominal's 0.9 s.
+#  - REACTOR rho=3 is now the TOP column, not the fallback. The pair was {1, 2}
+#    on the reasoning that nominal misses the benzene target by ~4 units of F and
+#    rho=1 buys ~2.2; the run at {3, 4} then showed rho=3 already delivers at the
+#    LOOSEST tau on the grid, so 4 is above the transition entirely. {2, 3}
+#    brackets it -- RHO_COLUMNS_REACTOR="1 2 3 4" to see the whole span.
 #
 # SEEDS: the full dial grids run at seed 42 only. Repeating three seeds triples a
-# grid that is already |rho columns| x |dial grid| cells; the bank-variance spread
-# is cheaper to buy by re-running the PROTOCOL POINTS (each method at its dial*)
-# at seeds 7 and 13, which is a separate, much smaller job. Revisit if the curves
-# come out non-monotone.
+# grid that is already |rho columns| x |dial grid| cells.
 #
 # Outputs, all under the same cell suffix run_rho_sweep uses
 # (_coh/_incoh [_matchbank] [_f<n>] [_m<model>] [_s<seed>]):
@@ -165,20 +167,40 @@ PROBLEMS="${PROBLEMS:-${PROBLEM:-gastric reactor}}"
 METHODS="${METHODS:-nominal cp wrapper margin cmicl}"
 # rho columns, per problem. Empty means run_dial_sweep's own defaults.
 RHO_COLUMNS_GASTRIC="${RHO_COLUMNS_GASTRIC:-0.5 1.0}"
-RHO_COLUMNS_REACTOR="${RHO_COLUMNS_REACTOR:-3 4}"
+RHO_COLUMNS_REACTOR="${RHO_COLUMNS_REACTOR:-2 3}"
 RHO_COLUMNS_SYNTHETIC="${RHO_COLUMNS_SYNTHETIC:-0.5 1.0}"
 # Absolute, fixed, the same on every rho column. See (3) above.
 #
-# All four are FINER than they were before 2026-08-26, and each is a strict
-# SUPERSET of its old values, so a checkpoint written under the old grids resumes
-# into these instead of being orphaned. The length is affordable because SEARCH
-# (below) does not walk them: it brackets the feasibility target and fills the
-# band around it, so the resolution lands where the frontier bends and the dead
-# tails cost nothing.
-TAU_GRID="${TAU_GRID:-1.0 0.3 0.1 0.03 0.01 0.003 0.001}"
-ALPHA_GRID="${ALPHA_GRID:-0.0 0.05 0.1 0.15 0.2 0.3 0.4 0.5}"
-MARGIN_GRID="${MARGIN_GRID:-0.0 0.1 0.2 0.3 0.4 0.5 0.625 0.75 0.875 1.0 1.25 1.5}"
-CMICL_ALPHA_GRID="${CMICL_ALPHA_GRID:-0.02 0.03 0.05 0.075 0.1 0.15 0.2 0.3 0.4 0.5}"
+# All four are FINER than they were before 2026-08-26 and WIDER than they were
+# before 2026-08-27, and each is a strict SUPERSET of its old values, so a
+# checkpoint written under the old grids resumes into these instead of being
+# orphaned. Both are affordable because SEARCH (below) does not walk them: it
+# brackets the feasibility target in O(log n) cells and fills the band around it,
+# so the resolution lands where the frontier bends and the dead tails cost
+# nothing. Widening was not cosmetic -- on the 2026-08-27 curves the reactor's
+# margin (feasibility 0.1 at the old max m=1.5), the reactor's CP (delivering at
+# the old max tau=1.0) and gastric's wrapper (delivering at the old max
+# alpha=0.5) all had their protocol point pinned at bound="grid_end".
+#
+# Each grid now spans its dial's full usable range, and "usable" is a property of
+# the method, not a round number:
+#   TAU     bottom 1e-4 = the mip_gap floor `_resolve_tolerance` clamps to, so
+#           nothing below it is a distinct tolerance; top 10 is well above any
+#           iteration-0 separation distance, where CP stops before any cut and
+#           its curve meets nominal.
+#   ALPHA   wrapper: multiples of 1/P (=0.05) are the only distinct levels;
+#           0.95 = "1 of the P models must hold". 1.0 would require none, i.e.
+#           no learned constraint at all -- weaker than nominal, not a wrapper.
+#   MARGIN  m is in unexplained-sd units; large m goes INFEASIBLE rather than
+#           conservative, which shows as a falling solved fraction under
+#           MIN_SOLVED.
+#   CMICL   the full [0.02, 1] of a miscoverage level. 0.02 is the finest level
+#           n_cal=80 can certify; 1.0 is q = the smallest nonconformity score,
+#           still a real tightening.
+TAU_GRID="${TAU_GRID:-10.0 3.0 1.0 0.3 0.1 0.03 0.01 0.003 0.001 0.0003 0.0001}"
+ALPHA_GRID="${ALPHA_GRID:-0.0 0.05 0.1 0.15 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 0.95}"
+MARGIN_GRID="${MARGIN_GRID:-0.0 0.1 0.2 0.3 0.4 0.5 0.625 0.75 0.875 1.0 1.25 1.5 1.75 2.0 2.5 3.0 4.0 5.0}"
+CMICL_ALPHA_GRID="${CMICL_ALPHA_GRID:-0.02 0.03 0.05 0.075 0.1 0.15 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9 0.95 1.0}"
 # How each series' grid is walked.
 #
 #   adaptive (default)  Order the grid by robustness, bisect to bracket the
@@ -357,7 +379,7 @@ fi
 # tasks that exit 0 with "nothing to do".
 #   sbatch experiments/submit_dial_sweep.sh                                  # gastric + reactor
 #   PROBLEM=gastric sbatch --array=0 experiments/submit_dial_sweep.sh        # gastric only
-#   RHO_COLUMNS_REACTOR="1 2 3" sbatch experiments/submit_dial_sweep.sh      # if rho=2 is short
+#   RHO_COLUMNS_REACTOR="1 2 3 4" sbatch experiments/submit_dial_sweep.sh    # the whole rho span
 #   COHERENCE=--coherent sbatch experiments/submit_dial_sweep.sh             # the coherence ablation
 #   MATCH_BANK=--match-bank sbatch experiments/submit_dial_sweep.sh          # B=P, clean CP-vs-wrapper
 #   METHODS="nominal cp wrapper margin" sbatch experiments/submit_dial_sweep.sh  # skip the slow gastric cmicl

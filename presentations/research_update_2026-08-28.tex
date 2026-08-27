@@ -9,38 +9,69 @@
 \setbeamertemplate{footline}{\hfill\insertframenumber/\inserttotalframenumber\hspace{1.5em}}
 
 \title{Robust Constraint Learning: Research Update}
-\subtitle{The shared-$D$ $\rho$ sweep; a conformal competitor}
+\subtitle{The dial sweep: objective at equal feasibility, then tested}
 \date{\today}
 
 \begin{document}
 
 % ===========================================================================
 \begin{frame}{Method Overview}
-    - Gastric and synthetic
-    - Tuning rho procedure
-    - Methods
-    - Evaluation
+    \footnotesize
+    \textbf{Problem.} A learned $f(x;\theta)$ is embedded as $f(x)\le b$. Noisy
+    labels give models whose ``optimal'' decisions violate the \emph{true} constraint.
+    \begin{itemize}
+        \item \textbf{Cutting Planes (ours)}: separate the worst-case model over a
+              fixed bank of $B{=}200$ relabelings drawn from $D$, one cut per
+              iteration. Dial $=\tau$, the stopping tolerance, in sd units.
+        \item \textbf{Baselines}: wrapper (chance constraint over $P{=}20$ models,
+              dial $\alpha$); RHS margin (shift $b$ by $m\,s_c$);
+              C-MICL (split-conformal width model, dial $\alpha$); nominal.
+        \item \textbf{Instances}: gastric (OptiCL, 5 toxicity constraints, 96
+              held-out arms); DMA-MR reactor (C-MICL Sec.~5.1, \textbf{
+              ODE oracle}).
+    \end{itemize}
+    \textbf{Protocol.}
+    \begin{enumerate}
+        \item \textbf{Tune} Fix $\rho$; walk each method along \emph{its own} dial;
+              report the curve in objective $\times$ feasibility. dial$^\ast$ = best objective
+              among cells with feas $\ge0.9$, solved $\ge0.5$. 
+        \item \textbf{Evaluate} Re-score at dial$^\ast$ under a judge the dial never faced 
+              / on a test set. Different folds of the training set / subsampling are used
+              to evaluate the worst-case.
+    \end{enumerate}
 \end{frame}
 
 \begin{frame}{Implementation details for multiple constraints}
-    - Context anchors
-    - Feasibility rollback
+    \footnotesize
+    \begin{itemize}
+        \item \textbf{Context anchors.} Gastric has one context per study, so
+              separation is scored at 10 k-medoid anchors. The protected set is
+              \emph{fixed} so all contexts feasible at nominal need to remain
+              feasible.
+        \item \textbf{Feasibility rollback.} A cut breaking a protected anchor is
+              rolled back and that (constraint, draw) pair permanently rejected;
+              CP then tries the constraint's \emph{next} most-violating model.
+        \item \textbf{Incoherent separation.} Draws are
+              ranked \emph{per constraint} and one model admitted for each.
+        \item Nothing is ever removed from the master (to prevent cycling).
+    \end{itemize}
 \end{frame}
 
 % ===========================================================================
 % THE PRIMARY FIGURE. Dial sweep, gastric, seed 42, incoherent cell.
-% run_dial_sweep.py --problem gastric ; plot_dial_sweep.py --xlim auto
-\begin{frame}{Gastric: objective at equal feasibility}
+% run_dial_sweep.py --problem gastric ; plot_dial_sweep.py --xlim auto --compact
+\begin{frame}{Gastric: objective vs feasibility (for tuning dials)}
     \centering
-    \includegraphics[width=\linewidth,height=0.66\textheight,keepaspectratio]{../results/figures/fig_dial_frontier_gastric_incoh_s42_slide.png}
+    \includegraphics[width=\linewidth,height=0.58\textheight,keepaspectratio]{../results/figures/fig_dial_frontier_gastric_incoh_s42_slide.png}
     \vspace{-0.2em}
-    \begin{flushleft}\footnotesize
-    \textbf{The frontier crosses.}
-    At feas $\approx0.93$ the RHS margin wins ($10.97$ vs wrapper $10.89$, CP $9.84$);
-    at feas $\approx0.97$ \textbf{CP wins} ($10.78$ vs wrapper $10.63$, margin $9.85$)
-    and solves more ($0.82$ vs $0.65$).
-    $\rho=0.5$ is CP's column; $\rho=1$ is over-robust. C-MICL: no solution at its protocol $\alpha=0.1$.
-    \end{flushleft}
+    \begin{itemize} \footnotesize
+        \item Best method according to the tuning proxy is dependent on the feasibility threshold.
+        \item Mostly monotone, except for CP (blue). More robust dials should move the result
+        to the bottom right corner. CP unreliable when few cuts are made.
+        \item \textbf{$\tau$ sets CP's cost}: master solve $4\to8\to57\to348\to704$\,s
+        per fold as $\tau$ falls $1.0\to0.01$ ($\rho{=}1$) --- the cut loop, not
+        the prescription.
+    \end{itemize}
 \end{frame}
 
 % ===========================================================================
@@ -49,62 +80,82 @@
     Dial$^\ast$ = best objective among cells with feas $\ge 0.9$, solved $\ge 0.5$
     (tuning judge = train-only ensemble). Test judge = full-416 GT ensemble.
     \vspace{0.5em}
-    \begin{tabular}{llccc|cc}
+    {\scriptsize\setlength{\tabcolsep}{3.5pt}
+    \begin{tabular}{llccc|cc|cc}
         \toprule
-        & & \multicolumn{3}{c|}{tuned} & \multicolumn{2}{c}{tested (folds)} \\
-        method & dial$^\ast$ & feas & obj & solved & feas & obj \\
+        & & \multicolumn{3}{c|}{tuned} & \multicolumn{2}{c|}{tested (folds)}
+          & \multicolumn{2}{c}{solve time (s)} \\
+        method & dial$^\ast$ & feas & obj & solved & feas & obj & master & /arm \\
         \midrule
-        nominal              & --             & 0.891 & \textbf{11.30} & 0.951 & 0.934 & \textbf{11.29} \\
-        RHS margin           & $m=0.2$        & 0.931 & 10.97 & 0.922 & 0.951 & 11.01 \\
-        wrapper $\rho{=}1$   & $\alpha=0.4$   & 0.930 & 10.89 & 0.592 & 0.970 & 10.94 \\
-        wrapper $\rho{=}0.5$ & $\alpha=0.2$   & 0.941 & 10.88 & 0.679 & 0.961 & 10.97 \\
-        CP $\rho{=}0.5$      & $\tau=0.03$    & 0.974 & 10.78 & 0.821 & \textbf{0.987} & 10.86 \\
-        CP $\rho{=}1$        & $\tau=0.1$     & 0.938 & 9.84  & 0.870 & 0.947 & 10.07 \\
-        C-MICL               & \multicolumn{6}{l}{no cell cleared solved $\ge 0.5$} \\
+        nominal              & --             & 0.891 & \textbf{11.30} & 0.951 & 0.934 & \textbf{11.29} & \textbf{0.3} & \textbf{0.08} \\
+        RHS margin           & $m=0.2$        & 0.931 & 10.97 & 0.922 & 0.951 & 11.01 & 0.5 & 0.09 \\
+        wrapper $\rho{=}1$   & $\alpha=0.4$   & 0.930 & 10.89 & 0.592 & 0.970 & 10.94 & 14.8 & 1.11 \\
+        wrapper $\rho{=}0.5$ & $\alpha=0.2$   & 0.941 & 10.88 & 0.679 & 0.961 & 10.97 & 18.3 & 1.36 \\
+        CP $\rho{=}0.5$      & $\tau=0.03$    & 0.974 & 10.78 & 0.821 & \textbf{0.987} & 10.86 & 75.8 & 0.20 \\
+        CP $\rho{=}1$        & $\tau=0.1$     & 0.938 & 9.84  & 0.870 & 0.947 & 10.07 & 56.7 & 0.22 \\
+        C-MICL               & \multicolumn{8}{l}{no cell cleared solved $\ge 0.5$ \quad (master 1.5--8.7)} \\
         \bottomrule
-    \end{tabular}
-    \vspace{0.5em}
+    \end{tabular}}
+    \vspace{0.3em}
     \begin{itemize}
-        \item \textbf{Under the test judge nominal already clears 0.9} (0.934).
-              The tuning proxy is more pessimistic than the evaluation oracle.
-        \item So the $0.9$ rule that fixed every dial$^\ast$ is not binding at test.
-        \item Objectives are conditional on each cell's own solved contexts:
-              wrapper's $10.94$ is on a $59\%$ cohort.
+        \item \textbf{On one full-data fit nominal already clears 0.9} (0.934).
+              The test set is newer studies - less toxicity.
+        \item CP ($\rho=0.5$) has best feasibility.
+        \item Times are per fold: master $=$ fit${+}$build${+}$solve (for CP the whole
+              cut loop); /arm $=$ one prescribe solve per held-out context.
+              \textbf{CP pays in the cut loop, not at prescribe time}: $0.20$ vs the
+              wrapper's $1.36$\,s/arm --- one cut per iteration against all $P{=}20$ models.
     \end{itemize}
 \end{frame}
 
 % ===========================================================================
+% run_dial_test.py --problem gastric --phases subsample
 \begin{frame}{What the mean hides: worst case over training draws}
     \footnotesize
-    Outer $m$-out-of-$n$ subsampling, \texttt{all\_constraints} feasibility,
-    30 realizations. \textbf{2026-08-13, \texttt{box\_l1} --- stale, shown for shape only.}
-    \vspace{0.5em}
-    \begin{tabular}{lcccc}
+    $m$-out-of-$n$ at dial$^\ast$: $50\%$ of the fit rows resampled, fixed
+    full-416 GT judge, samestore cohort of the 96 held-out arms.
+    \vspace{0.15em}
+    \begin{tabular}{lcccccc}
         \toprule
-        method & mean & sd & worst case & 10th pct \\
+        & \multicolumn{4}{c}{feasibility} & \multicolumn{2}{c}{objective} \\
+        \cmidrule(lr){2-5}\cmidrule(lr){6-7}
+        method & mean & sd & worst case & 10th pct & mean & sd \\
         \midrule
-        nominal    & 0.898 & 0.157 & \textbf{0.220} & 0.771 \\
-        robust\_reg & 0.923 & 0.075 & 0.684 & 0.791 \\
-        CP         & 0.919 & 0.099 & 0.607 & \textbf{0.867} \\
+        nominal              & 0.853 & 0.296 & 0.045 & 0.645 & \textbf{12.26} & 0.60 \\
+        wrapper $\rho{=}1$   & 0.910 & 0.116 & 0.622 & 0.799 & 11.87 & 0.53 \\
+        wrapper $\rho{=}0.5$ & 0.917 & 0.109 & 0.644 & 0.821 & 11.78 & 0.53 \\
+        CP $\rho{=}1$        & 0.942 & 0.054 & 0.822 & 0.878 & 11.62 & 0.52 \\
+        RHS margin           & 0.945 & 0.095 & 0.682 & 0.904 & 12.01 & 0.52 \\
+        CP $\rho{=}0.5$      & \textbf{0.959} & \textbf{0.033} & \textbf{0.889} & \textbf{0.925} & 11.83 & 0.59 \\
         \bottomrule
     \end{tabular}
-    \vspace{0.5em}
+    \vspace{0.15em}
     \begin{itemize}
-        \item Means differ by $0.025$; \textbf{worst cases by $3\times$}.
-        \item The dial sweep does \textbf{not} compute this --- it has no outer
-              resampling loop at all. Only \texttt{run\_chemo\_robust.py} does.
-        \item Closest current proxy: worst of 4 temporal test folds ---
-              CP $\rho{=}0.5$ \textbf{0.947}, margin $0.923$, wrapper $\rho{=}0.5$ $0.880$,
-              nominal $0.900$.
-        \item That is a worst \emph{year}, not a worst \emph{draw}. Different quantity.
+        \item CP $\rho{=}0.5$ and RHS margin perform well.
+        \item CP has best worst case.
     \end{itemize}
 \end{frame}
 
 % ===========================================================================
+% run_dial_sweep.py --problem reactor --rho-columns 3 4 ; run_dial_test.py
+\begin{frame}{Reactor}
+    \centering
+    \includegraphics[width=\linewidth,height=0.60\textheight,keepaspectratio]{../results/figures/fig_dial_frontier_reactor_incoh_f10_mmlp_s42_slide.png}
+    \begin{itemize}
+        \item CP the only method to reach 0.9 feasibility. Need to expand grid for others.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Reactor: confirmed against the ODE}
+    % Results should be in a similar format to gastric.
+\end{frame}
+
 \begin{frame}{Next steps}
+    \footnotesize
     \begin{enumerate}
-        \item Extend c-micl alpha grid.
-        \item WFP example.
+        \item Extend the CMICL alpha grid (gastric infeasible).
+              Extend all baseline dials (alpha can go from 0 to 1, margin can extend further).
+        \item WFP food basket instance.
     \end{enumerate}
 \end{frame}
 

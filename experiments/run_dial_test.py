@@ -74,6 +74,18 @@ scoped by them. Outputs:
 
   ``{problem}_dial_test_points{cell}.csv``  one row per (method, phase, fold/realization/context)
   ``{problem}_dial_test{cell}.csv``         the summary, one row per (method, phase)
+
+**The objective carries a spread too** (``objective_sd``, and
+``objective_samestore_sd`` in the ``subsample`` phase), over the same axis
+``spread_over`` names for feasibility -- folds in ``folds``, realizations in
+``subsample``, NaN in ``full``, computed the same way as the feasibility spread
+beside it in that phase. It is what says whether a gap between two methods'
+objectives is a method effect or the draw: on the 2026-08-27 gastric run every
+method's ``objective_samestore_sd`` is 0.52-0.60, wider than any gap between
+their means, and the comparison survives only because the draws are PAIRED by
+CRN. There is deliberately no worst case or quantile for the objective -- which
+tail is the bad one depends on ``judge.objective_sense``, so such a column would
+mean opposite things on gastric and the reactor.
 """
 
 import argparse
@@ -452,17 +464,25 @@ def _subsample_phase(config, args, su, judge, judge_name, series, points, summar
                 ss_o.append(float(np.mean(ov)))
         f_mean, f_sd, f_worst, f_q10 = _tail(feas_r)
         s_mean, s_sd, s_worst, s_q10 = _tail(ss_f)
+        # The objective gets a MEAN and an SD only -- no worst case, no
+        # quantile. Both of those are directional, and which tail is the bad one
+        # depends on `judge.objective_sense` (gastric maximises survival, the
+        # reactor minimises cost), so a `min` column would mean opposite things
+        # on the two problems. The sd is sense-free, which is the whole reason
+        # it is the one that can be reported here.
+        o_mean, o_sd, _, _ = _tail(obj_r)
+        so_mean, so_sd, _, _ = _tail(ss_o)
         summary.append(dict(
             problem="gastric", method=method, rho=rho, dial_name=dial_name,
             dial_star=dial, kind=kind, phase="subsample", judge=judge_name,
             feasibility=f_mean, feas_sd_across_folds=f_sd,
             feas_worst_case=f_worst, feas_q10=f_q10,
             spread_over="realizations",
-            objective=float(np.mean(obj_r)) if obj_r else np.nan,
+            objective=o_mean, objective_sd=o_sd,
             solved_frac=float(np.mean(solved_r)) if solved_r else np.nan,
             feasibility_samestore=s_mean, feas_samestore_sd=s_sd,
             feas_samestore_worst_case=s_worst, feas_samestore_q10=s_q10,
-            objective_samestore=float(np.mean(ss_o)) if ss_o else np.nan,
+            objective_samestore=so_mean, objective_samestore_sd=so_sd,
             n_samestore=float(np.mean(sizes)) if sizes else 0.0,
             n_realizations=n_real, subsample_frac=frac,
             n_points=int(sum(1 for q in sub_pts
@@ -571,7 +591,14 @@ def run(config, args):
                 # Spread ACROSS FOLDS, the only variation this phase has. It is
                 # not a CI: the folds are fixed by construction and dial* was
                 # chosen on them.
+                # `ddof=0` here against the `subsample` phase's `ddof=1` -- these
+                # are the population sd of the folds in hand rather than an
+                # estimate for a population of draws. Kept as it was so no
+                # committed `feas_sd_across_folds` moves; `obj_spread` is
+                # computed the SAME way as the feasibility spread beside it, so
+                # the two columns of one row are always commensurable.
                 spread = float(np.std(feas_f)) if len(feas_f) > 1 else np.nan
+                obj_spread = float(np.std(obj_f)) if len(obj_f) > 1 else np.nan
             else:                                     # full: one refit, all rows
                 inst = su.instance
                 if su.constraint_names is not None:
@@ -587,14 +614,16 @@ def run(config, args):
                                        phase=phase, judge=judge_name, fold=-1,
                                        context_idx=ci, solved=sv, feasible=fv,
                                        objective=ov))
-                spread = np.nan
+                # One refit, one decision per method: there is no spread to
+                # report on either column, which is the point of the phase.
+                spread = obj_spread = np.nan
             dt = time.time() - t0
             summary.append(dict(
                 problem=problem, method=method, rho=rho, dial_name=dial_name,
                 dial_star=dial, kind=kind, phase=phase, judge=judge_name,
                 feasibility=feas, feas_sd_across_folds=spread,
                 spread_over=("folds" if phase == "folds" else ""),
-                objective=obj, solved_frac=solved,
+                objective=obj, objective_sd=obj_spread, solved_frac=solved,
                 n_points=int(sum(1 for p in points
                                  if p["method"] == method and p["phase"] == phase
                                  and (p["rho"] == rho or
