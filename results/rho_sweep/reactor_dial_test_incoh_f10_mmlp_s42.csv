@@ -1,0 +1,7 @@
+problem,method,rho,dial_name,dial_star,kind,phase,judge,feasibility,feas_sd_across_folds,spread_over,objective,solved_frac,n_points,objective_sense,coherent,matched_bank,seed,wall_s
+reactor,cp,3.0,tau,1.0,tested,folds,ode,1.0,0.0,folds,3253.082039700491,1.0,10,min,False,False,42,683.0932965278625
+reactor,cp,3.0,tau,1.0,tested,full,ode,1.0,,,3305.0779587139896,1.0,1,min,False,False,42,71.70688152313232
+reactor,cp,4.0,tau,1.0,tested,folds,ode,1.0,0.0,folds,3320.215816272982,1.0,10,min,False,False,42,734.5115225315094
+reactor,cp,4.0,tau,1.0,tested,full,ode,1.0,,,3241.9340104712137,1.0,1,min,False,False,42,63.26087665557861
+reactor,nominal,,none,0.0,reference,folds,ode,0.0,0.0,folds,2942.0474546181977,1.0,10,min,False,False,42,4.523653984069824
+reactor,nominal,,none,0.0,reference,full,ode,0.0,,,2935.8423304048792,1.0,1,min,False,False,42,0.820765495300293

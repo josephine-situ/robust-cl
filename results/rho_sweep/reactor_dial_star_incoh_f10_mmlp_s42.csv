@@ -1,0 +1,8 @@
+feas_target,min_solved,objective_sense,method,rho,dial_name,dial_star,feasibility,objective,solved_frac,n_capped,master_time_s,test_time_per_point_s,bound,note,search,n_grid,n_evaluated,n_pruned,n_unreached,monotone_note,feas_wobble,best_feasibility,best_feas_dial,best_feas_objective,best_feas_solved_frac
+0.9,0.5,min,cmicl,,alpha,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.400 at alpha=0.03,adaptive,10,6,3,1,,"feasibility dips 0.400->0.375 (0 fold(s)) between alpha=0.03 and 0.02, both below the target",0.4,0.03,3190.6561676542433,1.0
+0.9,0.5,min,cp,3.0,tau,1.0,0.9,3253.082039700491,1.0,0,16.094683170318604,0.0,grid_end,"at a grid end -- the dial grid may be the limit, not the method",adaptive,7,7,0,0,,,1.0,0.001,3274.343626953049,1.0
+0.9,0.5,min,cp,4.0,tau,1.0,1.0,3320.215816272982,1.0,0,20.12386453151703,0.0,grid_end,"at a grid end -- the dial grid may be the limit, not the method",adaptive,7,7,0,0,,,1.0,0.001,3341.650942953719,1.0
+0.9,0.5,min,margin,,margin,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.100 at margin=1.5,adaptive,12,4,8,0,,,0.1,1.5,3113.5923914996783,1.0
+0.9,0.5,min,wrapper,3.0,alpha,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.400 at alpha=0,adaptive,8,4,4,0,,,0.4,0.0,3164.8252990273013,1.0
+0.9,0.5,min,wrapper,4.0,alpha,,,,,0,,,none,never reaches feas>=0.9 at solved_frac>=0.5; best was 0.500 at alpha=0,adaptive,8,4,4,0,,,0.5,0.0,3204.3891540978357,1.0
+0.9,0.5,min,nominal,,none,,0.0,2942.0474546181977,1.0,0,0.4562017202377319,0.0,no_dial,"reference level, nothing to move",none,1,1,0,0,,,0.0,,2942.0474546181977,1.0
