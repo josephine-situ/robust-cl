@@ -1,0 +1,23 @@
+problem,method,rho,dial_name,search,dial,robustness_rank,reason
+reactor,wrapper,4.0,alpha,adaptive,0.95,0,"pruned: less robust than alpha=0.1, which scored feasibility 0"
+reactor,wrapper,4.0,alpha,adaptive,0.9,1,"pruned: less robust than alpha=0.1, which scored feasibility 0"
+reactor,wrapper,4.0,alpha,adaptive,0.8,2,"pruned: less robust than alpha=0.1, which scored feasibility 0"
+reactor,wrapper,4.0,alpha,adaptive,0.7,3,"pruned: less robust than alpha=0.1, which scored feasibility 0"
+reactor,wrapper,4.0,alpha,adaptive,0.6,4,"pruned: less robust than alpha=0.1, which scored feasibility 0"
+reactor,wrapper,4.0,alpha,adaptive,0.5,5,"pruned: less robust than alpha=0.1, which scored feasibility 0"
+reactor,wrapper,4.0,alpha,adaptive,0.3,7,"pruned: less robust than alpha=0.1, which scored feasibility 0"
+reactor,wrapper,4.0,alpha,adaptive,0.2,8,"pruned: less robust than alpha=0.1, which scored feasibility 0"
+reactor,wrapper,5.0,alpha,adaptive,0.95,0,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,5.0,alpha,adaptive,0.9,1,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,5.0,alpha,adaptive,0.8,2,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,5.0,alpha,adaptive,0.7,3,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,5.0,alpha,adaptive,0.6,4,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,5.0,alpha,adaptive,0.5,5,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,5.0,alpha,adaptive,0.3,7,not reached: eval budget 6 spent
+reactor,wrapper,6.0,alpha,adaptive,0.95,0,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,6.0,alpha,adaptive,0.9,1,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,6.0,alpha,adaptive,0.8,2,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,6.0,alpha,adaptive,0.7,3,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,6.0,alpha,adaptive,0.6,4,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,6.0,alpha,adaptive,0.5,5,"pruned: less robust than alpha=0.4, which scored feasibility 0"
+reactor,wrapper,6.0,alpha,adaptive,0.3,7,not reached: eval budget 6 spent

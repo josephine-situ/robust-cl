@@ -1,9 +1,5 @@
 problem,method,rho,dial_name,search,dial,robustness_rank,reason
-reactor,cp,2.0,tau,adaptive,10.0,0,not reached: eval budget 6 spent
-reactor,cp,2.0,tau,adaptive,3.0,1,not reached: eval budget 6 spent
-reactor,cp,2.0,tau,adaptive,1.0,2,not reached: eval budget 6 spent
-reactor,cp,2.0,tau,adaptive,0.3,3,not reached: eval budget 6 spent
-reactor,cp,2.0,tau,adaptive,0.003,7,not reached: eval budget 6 spent
+reactor,cp,2.0,tau,adaptive,10.0,0,"pruned: less robust than tau=3, which scored feasibility 0"
 reactor,wrapper,2.0,alpha,adaptive,0.95,0,"pruned: less robust than alpha=0.05, which scored feasibility 0"
 reactor,wrapper,2.0,alpha,adaptive,0.9,1,"pruned: less robust than alpha=0.05, which scored feasibility 0"
 reactor,wrapper,2.0,alpha,adaptive,0.8,2,"pruned: less robust than alpha=0.05, which scored feasibility 0"
