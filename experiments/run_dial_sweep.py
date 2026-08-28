@@ -164,6 +164,43 @@ BANK_KWARG = {"cp": "cp_bank", "wrapper": "bank"}
 DEFAULT_RHO_COLUMNS = {"gastric": [0.5, 1.0], "reactor": [2.0, 3.0],
                        "synthetic": [0.5, 1.0]}
 
+# PER-METHOD overrides of the above, for the case where one method's usable range
+# simply is not the shared one. Only entry: the reactor's wrapper.
+#
+# The shared {2, 3} brackets CP's transition, but the wrapper never gets there --
+# it is out of DIAL at alpha=0 (where all P=20 models must hold; there is no
+# stricter level) at feasibility 0.10 on rho=2 and 0.40 on rho=3. Its alpha=0 end
+# only clears the 0.9 target at rho=6, measured on the 2026-08-28 {4,5,6} probe:
+# 0.50 / 0.70 / 0.90 as rho goes 4 / 5 / 6. So on the shared column the wrapper
+# has no dial* at all, and reporting it there measures the column rather than the
+# method. {5, 6} brackets ITS transition the way {2, 3} brackets CP's -- and the
+# comparison the deliverable makes is at equal FEASIBILITY, not at equal rho, so
+# the two methods sitting on different columns is the point rather than a
+# confound. The cost of that capacity is what the curve then shows.
+#
+# --rho-columns overrides BOTH: it puts every method on the given columns, which
+# is what a span probe (`--rho-columns 1 2 3 4`) wants.
+METHOD_RHO_COLUMNS = {"reactor": {"wrapper": [5.0, 6.0]}}
+
+
+def _rho_columns_for(problem, methods, override):
+    """``{method: [rho, ...]}`` for the D-facing methods, and their sorted union.
+
+    ``override`` (``--rho-columns``) wins for every method; otherwise a method
+    takes its ``METHOD_RHO_COLUMNS`` entry if it has one and the problem default
+    if it does not. The union is what the run loops over -- one bank per rho,
+    shared by whichever methods sit on it.
+    """
+    if override:
+        cols = [float(r) for r in override]
+        by_method = {m: list(cols) for m in methods}
+    else:
+        shared = [float(r) for r in DEFAULT_RHO_COLUMNS[problem]]
+        per = METHOD_RHO_COLUMNS.get(problem, {})
+        by_method = {m: [float(r) for r in per.get(m, shared)] for m in methods}
+    union = sorted({r for cols in by_method.values() for r in cols})
+    return by_method, union
+
 # CP's tau grid. ABSOLUTE, FIXED BEFORE THE RUN, and the SAME on every rho column.
 #
 # tau is a stopping tolerance in unexplained-sd units (cp.py, `tolerance_basis:
@@ -352,6 +389,16 @@ def _guard_curve_rewrite(problem, var, planned, args):
     since a tagged cell owns nothing yet).
 
     ``--refresh`` also skips it, having already deleted the curve on purpose.
+
+    ``--drop-series cp@2 wrapper@3`` is the narrow version of ``--refresh``: it
+    says "I mean to lose exactly these", and the guard still fires on anything
+    else that would go. It exists because the two ways of meaning it differ in
+    cost -- ``--refresh`` clears the score CHECKPOINT too, so every surviving
+    series is re-solved from scratch, which on a cell whose expensive series are
+    the ones being KEPT is a large price for a bookkeeping statement. Naming the
+    casualties keeps the checkpoint and still cannot silently drop a series the
+    caller forgot about. A name that is not on disk is an error, not a no-op:
+    it usually means a typo, and ignoring it would re-arm the trap.
     """
     curve_path = os.path.join(OUT_DIR, f"{problem}_dial_curve{var}.csv")
     if getattr(args, "cell_tag", None) or args.refresh:
@@ -367,6 +414,27 @@ def _guard_curve_rewrite(problem, var, planned, args):
     have = {(str(m), "" if not np.isfinite(r) else f"{float(r):g}")
             for m, r in zip(old["method"], old.get("rho", [np.nan] * len(old)))}
     missing = sorted(have - set(planned))
+
+    # Series the caller has explicitly said they mean to lose.
+    dropped = set()
+    for token in (getattr(args, "drop_series", None) or []):
+        m, _, r = str(token).partition("@")
+        key = (m.strip(), f"{float(r):g}" if r.strip() else "")
+        if key not in have:
+            raise SystemExit(
+                f"[dial-sweep] --drop-series {token!r} names a series the curve "
+                f"does not hold. It has: "
+                + ", ".join(sorted(f"{a}@{b}" if b else a for a, b in have))
+                + ".\n  Nothing was run: fix the name rather than widening the "
+                  "flag, or the guard stops protecting the rest of the cell.")
+        dropped.add(key)
+    if dropped:
+        print("[dial-sweep] --drop-series: intentionally discarding "
+              + ", ".join(sorted(f"{a}@rho={b}" if b else a for a, b in dropped))
+              + " from the curve and star table (the score checkpoint keeps "
+                "their rows, unread)", flush=True)
+    missing = [k for k in missing if k not in dropped]
+
     if not missing:
         return
     lost = ", ".join(f"{m}@rho={r}" if r else m for m, r in missing)
@@ -380,7 +448,10 @@ def _guard_curve_rewrite(problem, var, planned, args):
         "  Run the probe in its OWN cell:   --cell-tag <name>\n"
         "  or put the missing series back:  --methods / --rho-columns "
         "covering them\n"
-        "  or say you meant to discard it:  --refresh")
+        "  or name what you mean to lose:   --drop-series "
+        + " ".join(f"{m}@{r}" if r else m for m, r in missing) + "\n"
+        "  or discard the whole cell:       --refresh (re-solves everything: it "
+        "clears the score checkpoint too)")
 
 
 def _series_key(method, rho):
@@ -736,24 +807,31 @@ def run(config, args):
                  "radius. It belongs on run_rho_sweep.py."
                  if "robust_reg" in bad else "")
         raise SystemExit(f"[dial-sweep] not on this axis: {bad}.{extra}")
-    rho_cols = [float(r) for r in (args.rho_columns
-                                   or DEFAULT_RHO_COLUMNS[problem])]
     d_methods = [m for m in methods if m in FACES_D]
     flat_methods = [m for m in methods if m not in FACES_D]
+    rho_by_method, rho_cols = _rho_columns_for(problem, d_methods,
+                                               args.rho_columns)
     # Every (method, rho) series this run will write, in the same key form the
     # curve is read back in. Checked against what is already on disk BEFORE any
     # solving, so a partial run fails in a second rather than after an hour.
     _guard_curve_rewrite(
         problem, var,
-        {_series_key(m, r) for m in d_methods for r in rho_cols}
+        {_series_key(m, r) for m, cols in rho_by_method.items() for r in cols}
         | {_series_key(m, np.nan) for m in flat_methods},
         args)
 
     print(f"[dial-sweep] problem={problem} geometry=ellipsoid "
           f"coherent={args.coherent} folds={len(su.folds)} seed={bank_seed} "
           f"sense={su.oracle.objective_sense}", flush=True)
-    print(f"[dial-sweep] rho columns={rho_cols} (D-facing: {d_methods or 'none'})",
-          flush=True)
+    if len({tuple(c) for c in rho_by_method.values()}) > 1:
+        print("[dial-sweep] rho columns are PER METHOD: "
+              + "; ".join(f"{m}={[float(f'{r:g}') for r in c]}"
+                          for m, c in sorted(rho_by_method.items()))
+              + " -- the comparison is at equal FEASIBILITY, not equal rho",
+              flush=True)
+    else:
+        print(f"[dial-sweep] rho columns={rho_cols} "
+              f"(D-facing: {d_methods or 'none'})", flush=True)
     print(f"[dial-sweep] dials: "
           + ", ".join(f"{m}={DIAL[m] or 'none'}" for m in methods), flush=True)
     print(f"[dial-sweep] shared bank B={_bank_size(config, args)} per "
@@ -886,6 +964,13 @@ def run(config, args):
     for rho in rho_cols:
         if not d_methods:
             break
+        # Only the methods whose OWN columns include this rho. With per-method
+        # columns the union is looped, so a rho the wrapper alone sits on must
+        # not drag CP onto it (and vice versa) -- that would silently re-add the
+        # very series `_guard_curve_rewrite` was told this run does not score.
+        here = [m for m in d_methods if rho in rho_by_method[m]]
+        if not here:
+            continue
         uset = dataclasses.replace(base_uset, rho=rho)
         # A fresh cache per column: the bank is keyed on the fold index alone, so
         # carrying one across columns would hand rho=1.0 the rho=0.5 bank.
@@ -899,7 +984,7 @@ def run(config, args):
         print(f"\n[dial-sweep] === rho = {rho:g} ===", flush=True)
 
         tau_vals = None
-        if "cp" in d_methods:
+        if "cp" in here:
             # tau is FIXED BEFORE THE RUN and is the same on every rho column.
             # It is not read off any iteration-0 distance -- see TAU_GRID.
             tau_vals = [float(t) for t in (args.tau_grid or TAU_GRID)]
@@ -907,7 +992,7 @@ def run(config, args):
                   f"{tau_vals} -- unexplained-sd units, set before the run",
                   flush=True)
 
-        for method in d_methods:
+        for method in here:
             grid = (tau_vals if method == "cp"
                     else [float(a) for a in (args.alpha_grid or DEFAULT_ALPHA_GRID)])
             if grid is None:
@@ -1001,8 +1086,12 @@ def _cp_alpha_ablation(su, config, args, base_uset, star, score, problem,
               f"coverage cap to relax, so every alpha would return the same run. "
               f"See cp._BasicSeparation.", flush=True)
         return
+    # CP's OWN top column, not the union's: with per-method columns the union can
+    # hold a rho no CP series was ever scored at, and the star lookup below would
+    # then miss and skip the ablation for the wrong reason.
     rho_a = float(args.cp_alpha_rho if args.cp_alpha_rho is not None
-                  else max(args.rho_columns or DEFAULT_RHO_COLUMNS[problem]))
+                  else max(_rho_columns_for(problem, ["cp"],
+                                            args.rho_columns)[0]["cp"]))
     sel = star[(star["method"] == "cp") & np.isclose(star["rho"], rho_a)]
     if sel.empty or not np.isfinite(sel["dial_star"].iloc[0]):
         print(f"\n[dial-sweep] SKIPPING the cp_alpha ablation: cp has no tau* at "
@@ -1101,8 +1190,21 @@ def _dial_star(df, problem, target, sense, min_solved, out_suffix="",
         # table could not tell them apart. Reported on EVERY row (it is the
         # series' own best, not the protocol point) so the two never get confused.
         elig = g[np.isfinite(g["feasibility"])]
-        best_feas = (elig.loc[elig["feasibility"].idxmax()]
-                     if not elig.empty else None)
+        # The most-feasible cell, ties broken on OBJECTIVE in the problem's own
+        # sense. Ties are the rule, not the exception, on the single-decision
+        # instances -- feasibility there is quantized to 1/n_folds, so a whole
+        # stretch of the dial can share one rate -- and `idxmax` alone would pick
+        # whichever happened to sort first, making the row an artifact of grid
+        # order. Breaking on objective makes this the exact analogue of `dial*`
+        # with the target lowered to the rate actually achieved, which is what
+        # `run_dial_test.py --fallback-best-feas` then tests.
+        if elig.empty:
+            best_feas = None
+        else:
+            top = elig[np.isclose(elig["feasibility"],
+                                  elig["feasibility"].max())]
+            best_feas = top.loc[top["objective"].idxmin() if sense == "min"
+                                else top["objective"].idxmax()]
         close = dict(
             best_feasibility=(float(best_feas["feasibility"])
                               if best_feas is not None else np.nan),
@@ -1216,10 +1318,20 @@ def main():
                    help="default: nominal cp wrapper margin cmicl. robust_reg is "
                         "NOT on this axis -- its dial is the radius, so at a fixed "
                         "rho it has none; it stays on run_rho_sweep.py")
+    p.add_argument("--drop-series", nargs="+", default=None, metavar="METHOD@RHO",
+                   help="series this run intentionally removes from the cell's "
+                        "curve and star table, e.g. `wrapper@2 wrapper@3` after "
+                        "moving a method to its own rho columns. The narrow "
+                        "--refresh: the guard still fires on anything else that "
+                        "would be lost, and the score checkpoint is KEPT, so the "
+                        "series that survive are not re-solved")
     p.add_argument("--rho-columns", type=float, nargs="+", default=None,
                    help=f"rho values to run the D-facing methods at "
-                        f"(default {DEFAULT_RHO_COLUMNS}). Both columns share one "
-                        f"output CSV; the rho column tells them apart")
+                        f"(default {DEFAULT_RHO_COLUMNS}, with per-method "
+                        f"overrides {METHOD_RHO_COLUMNS}). Passing this puts "
+                        f"EVERY method on the given columns, overriding both. "
+                        f"All columns share one output CSV; the rho column tells "
+                        f"them apart")
     p.add_argument("--tau-grid", type=float, nargs="+", default=None,
                    help=f"CP's tau grid, absolute, in unexplained-sd units "
                         f"(default {TAU_GRID}). FIXED BEFORE THE RUN and the same "

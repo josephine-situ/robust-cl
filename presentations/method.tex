@@ -622,8 +622,15 @@
 % ===========================================================================
 \begin{frame}{Calibration: primary axis is each method's own dial}
   Held-out CV, after model selection. $\rho$ \textbf{fixed} at two columns
-  (gastric $0.5,1$; reactor $2,3$); each walks \emph{its own} dial.
+  (gastric $0.5,1$; reactor $2,3$, and $5,6$ for the wrapper); each walks
+  \emph{its own} dial.
   \begin{itemize}
+    \item \textbf{A method may take its OWN columns.} The wrapper on the
+      reactor is out of \emph{dial} at $\alpha{=}0$ on $\{2,3\}$ (all $P{=}20$
+      models must hold; only $0.40$), and first clears $0.9$ at $\rho{=}6$. Not
+      a confound --- the comparison is at equal \textbf{feasibility}, not equal
+      $\rho$, so the extra capacity is priced by the curve; reporting it on a
+      column where it has no $\text{dial}^\ast$ would measure the column.
     \item Reported object: the curve in \textbf{objective $\times$ feasibility}.
       ``At equal feasibility, whose decisions are better'' is a two-axis claim.
     \item Dials: CP $\tau$, wrapper $\alpha$, margin $m$, C-MICL $\alpha$
@@ -712,11 +719,33 @@
       \emph{not} held out --- $\text{dial}^\ast$ was chosen on them.
     \item \textbf{full}: one refit on all rows --- the deployed procedure, the
       only place objectives compare directly. One \emph{bit} each.
-    \item \textbf{subsample} (gastric only --- the others are single-decision,
-      $X_{\text{test}}$ empty, so their held-out axis is the fold):
-      \textbf{full} over $R{=}10$ $m$-out-of-$n$ draws ($m/n{=}0.5$ of the fit
-      rows, CRN, fixed oracle). The only spread neither fixed by construction
-      nor tuned on; mean, \textbf{worst case}, 10th pct.
+    \item \textbf{subsample} (gastric only): \textbf{full} over $R{=}10$
+      $m$-out-of-$n$ draws ($m/n{=}0.5$ of the fit rows, CRN, fixed oracle).
+      Mean, \textbf{worst case}, 10th pct. Gastric needs it because its judge is
+      \emph{fitted} and its test is a cohort split, so the training draw is the
+      only axis neither fixed by construction nor tuned on; the reactor is judged
+      by the \textbf{ODE}, so its folds are already out of sample.
+  \end{itemize}
+\end{frame}
+
+% ===========================================================================
+\begin{frame}{The test stage: what it refuses to report}
+  \small
+  \begin{itemize}
+    \item \textbf{No $\text{dial}^\ast$ $\Rightarrow$ the series is skipped},
+      not quietly tested at some other dial: nothing was tuned, so there is
+      nothing to test.
+    \item \texttt{--fallback-best-feas} tests it anyway at its
+      \emph{most-feasible} cell, marked $\texttt{kind=best\_feas}$. That is a
+      \textbf{ceiling} --- ``how feasible does it get at its best, under a fresh
+      judge'' --- and \emph{never} a protocol point: unlike $\text{dial}^\ast$
+      (best objective \emph{among} cells that already cleared the target), this
+      dial is the argmax of the very quantity being re-reported. Never read a
+      $\texttt{best\_feas}$ row against a $\texttt{tested}$ one as if the two
+      were tuned alike.
+    \item A series whose every dial fell under \texttt{--min-solved} has no cell
+      to fall back \emph{to} and is skipped regardless --- gastric C-MICL. There
+      the fix is a wider $\alpha$ grid, not a fallback.
     \item \textbf{A fitted judge cannot score a boundary optimum.} Measurable
       only on the reactor: the proxy agrees with the ODE on $5/5$ nominal
       decisions yet flips $25.9\%$ of verdicts in its own $|F-50|<5$ band.

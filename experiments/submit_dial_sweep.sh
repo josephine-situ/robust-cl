@@ -143,7 +143,10 @@ export NUMEXPR_NUM_THREADS="${NTHREADS}"
 #    on the reasoning that nominal misses the benzene target by ~4 units of F and
 #    rho=1 buys ~2.2; the run at {3, 4} then showed rho=3 already delivers at the
 #    LOOSEST tau on the grid, so 4 is above the transition entirely. {2, 3}
-#    brackets it -- RHO_COLUMNS_REACTOR="1 2 3 4" to see the whole span.
+#    brackets it -- RHO_COLUMNS_REACTOR="1 2 3 4" to see the whole span. The
+#    WRAPPER is on its own columns {5, 6} (METHOD_RHO_COLUMNS): on {2, 3} it is
+#    out of DIAL at alpha=0 (all P=20 models must hold) at only 0.40, and first
+#    clears 0.9 at rho=6. Setting RHO_COLUMNS_REACTOR overrides that too.
 #
 # SEEDS: the full dial grids run at seed 42 only. Repeating three seeds triples a
 # grid that is already |rho columns| x |dial grid| cells.
@@ -165,10 +168,16 @@ export NUMEXPR_NUM_THREADS="${NTHREADS}"
 # #8) -- which is exactly what a protocol point rests on.
 PROBLEMS="${PROBLEMS:-${PROBLEM:-gastric reactor}}"
 METHODS="${METHODS:-nominal cp wrapper margin cmicl}"
-# rho columns, per problem. Empty means run_dial_sweep's own defaults.
-RHO_COLUMNS_GASTRIC="${RHO_COLUMNS_GASTRIC:-0.5 1.0}"
-RHO_COLUMNS_REACTOR="${RHO_COLUMNS_REACTOR:-2 3}"
-RHO_COLUMNS_SYNTHETIC="${RHO_COLUMNS_SYNTHETIC:-0.5 1.0}"
+# rho columns, per problem. EMPTY BY DEFAULT, and deliberately so: --rho-columns
+# puts EVERY method on the given columns, which would override the per-method
+# defaults in run_dial_sweep.METHOD_RHO_COLUMNS -- on the reactor that silently
+# puts the wrapper back on CP's {2, 3}, where it has no dial* at all. Leaving
+# these empty makes run_dial_sweep the single source of truth for the columns
+# (gastric {0.5, 1}, reactor {2, 3} with the wrapper on {5, 6}); set one only to
+# force a span probe, e.g. RHO_COLUMNS_REACTOR="1 2 3 4".
+RHO_COLUMNS_GASTRIC="${RHO_COLUMNS_GASTRIC:-}"
+RHO_COLUMNS_REACTOR="${RHO_COLUMNS_REACTOR:-}"
+RHO_COLUMNS_SYNTHETIC="${RHO_COLUMNS_SYNTHETIC:-}"
 # Absolute, fixed, the same on every rho column. See (3) above.
 #
 # All four are FINER than they were before 2026-08-26 and WIDER than they were
@@ -294,12 +303,12 @@ esac
 # underneath the test stage that is about to read it.
 RUN_SWEEP="${RUN_SWEEP:-1}"
 if [[ "${RUN_SWEEP}" == "1" ]]; then
-echo "=== task ${TASK}: problem=${PROBLEM} rho columns='${RHO_COLUMNS}' methods='${METHODS}' seed=${SEED} ${COHERENCE} ${MATCH_BANK} ${FOLD_ARG} ${CP_ALPHA_ABLATE} ==="
+echo "=== task ${TASK}: problem=${PROBLEM} rho columns='${RHO_COLUMNS:-(run_dial_sweep defaults, per method)}' methods='${METHODS}' seed=${SEED} ${COHERENCE} ${MATCH_BANK} ${FOLD_ARG} ${CP_ALPHA_ABLATE} ==="
 
 python -u experiments/run_dial_sweep.py \
     --problem "${PROBLEM}" \
     --methods ${METHODS} \
-    --rho-columns ${RHO_COLUMNS} \
+    ${RHO_COLUMNS:+--rho-columns ${RHO_COLUMNS}} \
     --tau-grid ${TAU_GRID} \
     --alpha-grid ${ALPHA_GRID} \
     --margin-grid ${MARGIN_GRID} \
@@ -344,18 +353,20 @@ fi
 #              SUBSAMPLE_FRAC of the constraint FIT rows, without replacement)
 #              against the FIXED full-cohort GT oracle, each draw prescribing for
 #              the 96 held-out X_test arms. It is `full` repeated over training
-#              draws, and it is the only spread the test stage can honestly
-#              report: the folds are fixed by construction AND are what dial* was
-#              tuned on, while the training draw is neither. Same uncertainty
-#              every Table 6 number in this repo is reported over, and the same
-#              CRN seeds (bootstrap_seed + 1000*(r+1)), so realization r is the
-#              same draw as realization r there. It reports feasibility twice:
-#              conditional on each series' own solved arms, and over the
+#              draws, and on gastric it is the only spread the test stage can
+#              honestly report: the folds are fixed by construction AND are what
+#              dial* was tuned on, while the training draw is neither. Same
+#              uncertainty every Table 6 number in this repo is reported over, and
+#              the same CRN seeds (bootstrap_seed + 1000*(r+1)), so realization r
+#              is the same draw as realization r there. It reports feasibility
+#              twice: conditional on each series' own solved arms, and over the
 #              samestore cohort (the arms every series solved, recomputed per
-#              draw). The reactor and synthetic have no held-out cohort to
-#              prescribe for -- their held-out axis IS the fold, which `folds`
-#              already scores under the ODE / the analytic truth -- so the phase
-#              is refused there rather than silently skipped.
+#              draw). Gastric needs it because gastric has no ground truth -- its
+#              judge is a FITTED ensemble and its test is a cohort split. The
+#              reactor and synthetic are judged by the ODE and by the analytic
+#              f_true, a judge the dial never faced that reads no training row, so
+#              their `folds` are already out of sample and the phase is refused
+#              there rather than silently skipped.
 #
 # COST: the subsample phase is N_REALIZATIONS x the `full` phase, i.e. one full
 # gastric instance build (data + GT ensemble) and one master + 96 prescribe

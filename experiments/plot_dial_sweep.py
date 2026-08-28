@@ -27,10 +27,14 @@ Encoding decisions, each load-bearing:
 - **Colour is the METHOD; the rho column is a SHADE of it plus a linestyle.** A
   rho variation of a method is its own series (dark + solid for the larger rho,
   light + dashed for the smaller) inside the method's own hue, so the eye groups
-  by method first. The RHS margin used to be a second blue one shade off CP's,
-  which put the contribution and the baseline it has to beat in one colour
-  family; it is orange, and the only two series sharing a hue are now the two rho
-  columns of a single method.
+  by method first. The shade is relative to that METHOD's own columns, because
+  methods need not share them -- on the reactor the wrapper runs at rho 5/6 where
+  CP runs at 2/3, and reading the split off the panel's global max would draw
+  both of CP's columns as the same light dashed series.
+  The RHS margin used to be a second blue one shade off CP's, which put the
+  contribution and the baseline it has to beat in one colour family; it is
+  orange, and the only two series sharing a hue are now the two rho columns of a
+  single method.
 - **Marker SHAPE says whether the method faces D at all** -- a circle for the
   shared-uncertainty-set methods (CP, wrapper), a square for the two that face no
   D (RHS margin, C-MICL), a star for the nominal reference. Three shapes carrying
@@ -149,14 +153,19 @@ def _series(main):
     Shared by the frontier and the solved-fraction panel, so the two are read
     against each other without a second legend to reconcile.
     """
-    rhos = sorted({float(r) for r in main["rho"].dropna().unique()})
     out = []
     for method in METHODS:
         g_m = main[main["method"] == method]
         if g_m.empty:
             continue
+        # Dark+solid is the method's OWN larger column, not the panel's largest
+        # rho. Methods may sit on different columns (`METHOD_RHO_COLUMNS`: the
+        # wrapper runs at rho 5/6 on the reactor where CP runs at 2/3), and a
+        # global max would then render BOTH of CP's columns as the light dashed
+        # one -- two distinct series drawn identically.
+        own = sorted({float(r) for r in g_m["rho"].dropna().unique()})
         for rho, g in g_m.groupby("rho", dropna=False):
-            big = (not np.isfinite(rho)) or float(rho) == rhos[-1]
+            big = (not np.isfinite(rho)) or float(rho) == own[-1]
             col = COLOR[method] if big else _lighten(COLOR[method])
             ls = "-" if big else "--"
             lab = SHORT.get(method, LABEL[method]) + (

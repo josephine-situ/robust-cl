@@ -34,21 +34,37 @@ sweep, 8 frames, complete); **2026-08-19** is the last rho-sweep deck.
 
 Python **>=3.14** via **uv**; prefix with `uv run`. **Gurobi license required.**
 No test suite, no linter. `main.py` is a stub — entry points are `experiments/`.
-Verify changes with the `--quick` gastric path or `run_all.py`, then read the CSVs
-in `results/`. Prefer the **Bash** tool (POSIX scripts).
+Prefer the **Bash** tool (POSIX scripts).
+
+### Sweeps run on the CLUSTER, not locally
+
+**Never run a full sweep, a rho sweep or a test stage on the local machine** —
+`run_dial_sweep.py`, `run_rho_sweep.py`, `run_dial_test.py` and the full
+`run_chemo_robust.py` all go through their `submit_*.sh` on SLURM. They are hours
+of Gurobi, and a local run also **writes into the same `results/rho_sweep/` files**
+the committed cells live in: the curve, the star, the test CSV and the score
+checkpoint are all written in place, so a run that is interrupted — or simply
+scores a different set of series — leaves a committed cell partially overwritten.
+A killed local `run_dial_test.py` has already clobbered
+`reactor_dial_test_incoh_f10_mmlp_s42.csv` down to the one series it reached
+(2026-08-28); `git checkout` restored it, which only worked because the cell was
+committed.
+
+**What is fine locally**: anything that reads results or is seconds long — the
+plotters, `summarize_table6.py`, `--rho-star-only`, `verify_embedding.py`, the
+`--quick` gastric path, and a `--help` or an import to check a change parses. When
+in doubt, hand the user the `sbatch` line rather than starting it here.
 
 ```bash
 uv sync
 uv run python experiments/run_chemo_robust.py --quick   # gastric smoke test (5 cohorts, 4 methods)
-uv run python experiments/run_chemo_robust.py           # full gastric (long; use SLURM)
-uv run python experiments/run_all.py                    # synthetic, all methods
 uv run python experiments/run_cv.py --problem {synthetic,reactor,gastric} [--ensemble]  # model / GT-ensemble CV
 uv run python experiments/verify_embedding.py [--problem synthetic|reactor]  # MIP vs sklearn/xgb agreement
 uv run python experiments/summarize_table6.py           # Table 6 CSV -> .csv/.tex
 uv run python experiments/run_adversary_probe.py        # is the random bank a weak adversary?
 uv run python experiments/probe_cmicl_cost_sampling.py  # does a SAMPLED c restore C-MICL's rate?
 uv run python experiments/measure_clip_fraction.py      # how much of D the label bounds remove, per rho
-sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu
+sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu  (full gastric)
 ```
 
 **SLURM**: every `submit_*.sh` sources `experiments/_activate_env.sh` rather than
@@ -78,25 +94,33 @@ fixed, reporting `rho*(method)` — a question about D, not about decisions. It
 `rho*` is a capacity, `m*` a price, `dial*` a point on a frontier; **none of them
 is the comparison** — the curve is, in both files.
 
-```bash
-uv run python experiments/run_dial_sweep.py --problem gastric               # the primary axis
-uv run python experiments/run_dial_sweep.py --problem reactor --rho-columns 1 2 3 4
-uv run python experiments/run_dial_sweep.py --problem gastric --coherent    # the ablation cell
-uv run python experiments/run_dial_sweep.py --problem gastric --cp-alpha-ablate   # coverage cap; walked whole
-uv run python experiments/run_dial_sweep.py --problem reactor --search grid  # no monotonicity assumed
-uv run python experiments/run_dial_test.py --problem reactor                # the TEST stage at dial*
-uv run python experiments/run_dial_test.py --problem gastric --phases full  # OOS: the 96 X_test arms
-uv run python experiments/plot_dial_sweep.py --all --suffix _incoh          # frontier + solved figures
-uv run python experiments/plot_dial_sweep.py --problem gastric --suffix _incoh_s42 --xlim auto --compact  # DECK figure
-sbatch experiments/submit_dial_sweep.sh                  # one array task per problem; test stage after
+**These go through `sbatch`** (see "Sweeps run on the CLUSTER"); the `python` forms
+below are the argument reference, and what the submit scripts invoke. Only the
+`plot_*` and `--rho-star-only` lines are local commands.
 
-uv run python experiments/run_rho_sweep.py --problem gastric --ablate        # incoherent cell (default)
-uv run python experiments/run_rho_sweep.py --problem gastric --coherent --ablate
-uv run python experiments/run_rho_sweep.py --problem gastric --match-bank    # B=P
-uv run python experiments/run_rho_sweep.py --rho-star-only --feas-target 0.8 --out-suffix _t080
-uv run python experiments/pool_rho_seeds.py --problem gastric --cell _incoh  # spread across seeds
-uv run python experiments/plot_rho_sweep.py --suffix _incoh
+```bash
+sbatch experiments/submit_dial_sweep.sh                  # one array task per problem; test stage after
+#   the sweep, by flag:
+#     --problem gastric                        the primary axis
+#     --problem reactor --rho-columns 1 2 3 4  every method on the whole span
+#     --problem gastric --coherent             the ablation cell
+#     --problem gastric --cp-alpha-ablate      coverage cap; walked whole
+#     --problem reactor --search grid          no monotonicity assumed
+#     --problem reactor --drop-series wrapper@2 wrapper@3   moving a method's columns
+#   the test stage, by flag:
+#     --problem reactor                        folds + full at dial*
+#     --problem gastric --phases full          OOS: the 96 X_test arms
+#     --problem reactor --no-fallback-best-feas   tuned protocol points only
+uv run python experiments/plot_dial_sweep.py --all --suffix _incoh          # LOCAL: frontier + solved
+uv run python experiments/plot_dial_sweep.py --problem gastric --suffix _incoh_s42 --xlim auto --compact  # DECK figure
+
 sbatch experiments/submit_rho_sweep.sh                   # PROBLEM(S)/COHERENCE/MATCH_BANK/RHO_GRID/SEEDS env
+#     --problem gastric --ablate               incoherent cell (default)
+#     --problem gastric --coherent --ablate
+#     --problem gastric --match-bank           B=P
+uv run python experiments/run_rho_sweep.py --rho-star-only --feas-target 0.8 --out-suffix _t080  # LOCAL: no solving
+uv run python experiments/pool_rho_seeds.py --problem gastric --cell _incoh  # LOCAL: spread across seeds
+uv run python experiments/plot_rho_sweep.py --suffix _incoh                  # LOCAL
 ```
 
 ### Cells, checkpoints, and the resume trap
@@ -131,18 +155,37 @@ grid|). The rho sweep is where `--seed` is swept.
 | method | dial | rho columns | notes |
 |---|---|---|---|
 | `cp` | tau | gastric {0.5, 1.0}, reactor {2, 3} | **one fixed tau grid**, same on every column |
-| `wrapper` | alpha | same | its P models are a prefix of CP's bank |
+| `wrapper` | alpha | gastric {0.5, 1.0}, **reactor {5, 6}** | its P models are a prefix of CP's bank |
 | `margin` | m | — | scored once; faces no D |
 | `cmicl` | alpha | — | scored once; alpha = `1 - feas_target` is the protocol point |
 | `nominal` | none | — | single reference point |
 | `robust_reg` | — | — | **dropped**: its dial IS rho, so at fixed rho it has none |
 
-**The reactor's rho columns are {2, 3}, measured rather than guessed** (2026-08-27).
-They were {1, 2} on the reasoning that nominal misses the benzene target by ~4 units
-of `F` and rho=1 buys ~2.2; the run at {3, 4} then showed rho=3 is already **past**
-the transition — CP delivers 0.9 at the loosest tau on the grid and 1.0 everywhere
-below it — so 4 only buys objective CP is not being asked to pay. {2, 3} brackets
-the transition instead of sitting above it. `--rho-columns 1 2 3 4` for the whole span.
+**The reactor's rho columns are {2, 3} for CP and {5, 6} for the wrapper, measured
+rather than guessed.** CP's were {1, 2} on the reasoning that nominal misses the
+benzene target by ~4 units of `F` and rho=1 buys ~2.2; the run at {3, 4} then showed
+rho=3 is already **past** the transition — CP delivers 0.9 at the loosest tau on the
+grid and 1.0 everywhere below it — so 4 only buys objective CP is not being asked to
+pay. {2, 3} brackets the transition instead of sitting above it.
+
+**`METHOD_RHO_COLUMNS` is where a method's columns diverge from the shared ones**
+(2026-08-28), and the wrapper on the reactor is the only entry. On {2, 3} it is out
+of **dial**, not out of grid: alpha=0 already requires all P=20 models to hold and
+there is no stricter level, yet it reaches only 0.10 (rho=2) and 0.40 (rho=3). Its
+alpha=0 end first clears 0.9 at rho=6 (0.50 / 0.70 / 0.90 as rho goes 4 / 5 / 6), so
+{5, 6} brackets **its** transition the way {2, 3} brackets CP's. **This is not a
+confound**: the deliverable compares at equal held-out *feasibility*, not at equal
+rho, so the price of that extra capacity is exactly what the curve is measuring —
+and reporting the wrapper on a column where it has no `dial*` measures the column
+instead of the method. `--rho-columns 1 2 3 4` overrides **both** and puts every
+method on the given span.
+
+**Moving a method's columns drops its old series**, which `_guard_curve_rewrite`
+refuses by default. **`--drop-series wrapper@2 wrapper@3`** is the narrow
+`--refresh`: it names the casualties, still fires on anything else, and **keeps the
+score checkpoint** so the surviving series resume free (`--refresh` clears the
+checkpoint too and re-solves the whole cell — on the reactor that is CP's entire tau
+grid, for a bookkeeping statement). A name not on disk is an error, not a no-op.
 
 **Every grid spans its dial's full usable range** (widened 2026-08-27, each still a
 strict superset of its predecessor so checkpoints resume rather than orphan). The
@@ -225,7 +268,7 @@ under a judge the dial never faced. Three phases, not interchangeable:
 |---|---|---|
 | `folds` | the sweep's own folds re-solved at `dial*`, truth-judged; a rate with a spread over folds | **not held out** — `dial*` was chosen on these folds |
 | `full` | one refit on **all** rows, one decision per method | one **bit** of feasibility per method; no spread |
-| `subsample` | **gastric only, default-on**: `full` repeated over `--n-realizations` (10) m-out-of-n draws of `--subsample-frac` (0.5) of the constraint fit rows | refused elsewhere — no other instance has a cohort to prescribe for |
+| `subsample` | **gastric only, default-on**: `full` repeated over `--n-realizations` (10) m-out-of-n draws of `--subsample-frac` (0.5) of the constraint fit rows | refused elsewhere — see below; it is a claim about gastric's judge, not a plumbing limit |
 
 The judge: **synthetic** the analytic `f_true`; **reactor** the **ODE**
 (`make_gt_oracle`), never the proxy that tuned `dial*`; **gastric** the
@@ -236,9 +279,9 @@ them is the easy mistake here; on gastric both judge *and* cohort change between
 tuning and test.
 
 `subsample` is the repo's standing robustness protocol (the one every Table 6
-number is reported over) applied at `dial*`, and the only place the stage can
-honestly report **training-draw** variation. It resamples the fit rows only — the
-oracle is built once off the full-data instance — under **CRN**
+number is reported over) applied at `dial*`, and on gastric the only place the
+stage can honestly report **training-draw** variation. It resamples the fit rows
+only — the oracle is built once off the full-data instance — under **CRN**
 (`subsample_seed = bootstrap_seed + 1000*(r+1)`, byte-identical to
 `run_chemo_robust.run_robustness_probe`), so realization `r` is the same draw there
 and the comparison is paired. `feasibility` is conditional on each series' own
@@ -246,9 +289,39 @@ solved arms; `feasibility_samestore` is over the arms **every tested series** so
 that realization — the Table 6 convention, and the one that does not flatter
 whoever solved least. **The tail is the point**: `feas_worst_case` and `feas_q10`
 sit beside the mean for both cohorts, and at 10 draws the min *is* one draw, a
-range and never a bound. A series with no `dial*` is skipped with the reason
-printed; `RUN_TEST=0` / `TEST_PHASES=full` narrow the stage in
-`submit_dial_sweep.sh`.
+range and never a bound.
+
+**Why gastric only, and it is not a plumbing limit.** Gastric has **no ground
+truth**: its judge is a *fitted* ensemble and its "test" is a cohort split, so the
+training draw is the only axis left that is neither fixed by construction nor part
+of the tuning. Synthetic and the reactor are judged by the analytic `f_true` and by
+the **ODE** — a judge `dial*` never faced, which reads no training row at all — so
+their `folds` are **already out of sample in the way that matters**, and repeating
+them over draws would buy a spread rather than a validity the fold rate lacks. The
+phase is **refused** there, not silently skipped.
+
+**A series with no `dial*` is tested at its most-feasible cell**
+(`--fallback-best-feas`, **default on** since 2026-08-28; `--no-fallback-best-feas`
+restores the skip). That dial is the argmax of **tuned** feasibility under the
+**tuning** judge, ties broken on objective in the problem's own sense — the exact
+analogue of `dial*` with the target lowered to the rate actually achieved, and the
+tie-break matters because feasibility on a single-decision instance is quantized to
+`1/n_folds`, so whole stretches of a dial share one rate (cp@rho=2 sits at 0.700 for
+six consecutive tau values) and `idxmax` alone would return an artifact of grid
+order. Those rows carry **`kind="best_feas"`, never `"tested"`**, and are a
+**ceiling**, not a protocol point: unlike `dial*` (best objective *among* cells that
+had already cleared the target) this dial is selected on the very quantity being
+re-reported. Never read a `best_feas` row against a `tested` one as if both were
+tuned alike.
+
+**The fallback does not rescue a series that never SOLVED.** `best_feas_dial` is
+computed only over cells clearing `--min-solved`, so a series under that floor
+everywhere has no cell to fall back to and is skipped regardless — **gastric C-MICL
+is exactly this**, and its fix is a wider alpha grid, not a fallback. The skip
+message distinguishes the three states (column absent → old star file; column empty
+→ nothing cleared `--min-solved`; a real number → a fallback point).
+
+`RUN_TEST=0` / `TEST_PHASES=full` narrow the stage in `submit_dial_sweep.sh`.
 
 **Neither single-decision instance has a row-level train/test split, and that is
 structural**: `synthetic_nonlinear` and `reactor_micl` set `X_test` empty, so the
@@ -296,19 +369,35 @@ margin, is **structural**, not evidence of stability.
 ## Which results are current
 
 - **Only `results/rho_sweep/` and `results/figures/fig_rho_*` / `fig_dial_*`** —
-  ellipsoid geometry, fixed temporal folds. Inside it the **2026-08-27 dial cells
-  are newest and the only tested ones**: gastric with all three phases, the reactor
-  with a full curve, a star table and an ODE-judged test stage.
-- **Both committed dial cells are now GRID-SUPERSEDED, not invalidated**
-  (2026-08-27). The dial grids were widened and the reactor's rho columns moved
-  {3, 4} -> {2, 3}, so the committed curves and star tables are the answer to a
-  narrower question than the code now asks: on the reactor `margin`, reactor `cp`
-  and gastric `wrapper` the star sits at `bound="grid_end"`, and gastric `cmicl`
-  has no star at all. **Re-run both cells WITHOUT `--refresh`** — every new grid is
-  a strict superset of the one that produced those rows and the scoring rule is
-  unchanged, so the search replays them free and spends its budget only on the new
-  cells. The reactor's rho=4 series simply drops out of the rewritten curve (the
-  curve is built from the run's own rows; the checkpoint keeps them, unread).
+  ellipsoid geometry, fixed temporal folds. Inside it the **dial cells are newest
+  and the only tested ones**: gastric with all three phases, the reactor with a
+  full curve, a star table and an ODE-judged test stage.
+- **The reactor dial cell is COLUMN-SUPERSEDED, not invalidated** (2026-08-28).
+  Its rows are the answer at rho columns {2, 3} for **every** method, and the
+  wrapper's default columns are now **{5, 6}** (`METHOD_RHO_COLUMNS`), so its two
+  committed wrapper series are no longer the ones the code asks for. Everything
+  else in the cell stands: `cp@3` tau*=1.0 (feas 0.9, obj 3253), `margin` m*=4.0
+  (feas 1.0, obj 3411), both `interior`; `cp@2` tops out at 0.80 and turns
+  **inside** the tau grid; `cmicl` caps at 0.50 at its n_cal=180 floor — the
+  METHOD running out, not the grid, so {2, 3} does bracket CP's transition.
+  **The re-run is a CLUSTER job**: `--drop-series wrapper@2 wrapper@3` keeps the
+  score checkpoint, so CP, margin and cmicl replay free and only the wrapper at
+  rho 5 and 6 is solved. `results/figures/fig_dial_*_reactor_*` were regenerated
+  from the committed {2, 3} curve and will need regenerating again after it.
+  - `reactor_dial_*_wraprho456.csv` is the **`--cell-tag` probe** that measured
+    those columns: the wrapper alone at rho {4, 5, 6}, feasibility 0.50 / 0.70 /
+    0.90 at alpha=0, obj 3281 at rho=6 (vs CP's 3253 at rho=3). It resumes
+    nothing from the untagged cell and `run_dial_test.py` does not read it, so it
+    is the *evidence* for the column move, not a row of the new cell.
+- **The gastric dial cell is still GRID-SUPERSEDED, not invalidated**: it predates
+  the per-problem C-MICL alpha floor (`CMICL_ALPHA_GRID_EXTRA`), so its `cmicl`
+  row is "no cell cleared solved >= 0.5" rather than a measured cap, and its star
+  table carries the flat `bound="none"` that cannot tell `none_interior` from
+  `none_grid_end`. **Re-run it WITHOUT `--refresh`** — the new grid is a strict
+  superset and the scoring rule is unchanged, so the search replays the existing
+  rows free and spends its budget only on the new cells. Its C-MICL row is also
+  the one series `--fallback-best-feas` cannot help: nothing cleared
+  `--min-solved`, so there is no cell to fall back to.
 - **No gastric result outside those dial cells is current** (2026-08-21): the
   production draw is now **incoherent** and DLT is **derived** rather than drawn,
   so the default cell is `_incoh` and the committed `_coh` curves are neither the

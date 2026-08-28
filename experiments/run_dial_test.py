@@ -27,21 +27,25 @@ So: read ``{problem}_dial_star{cell}.csv``, hold each method at its own
            m-out-of-n subsampling (``--subsample-frac 0.5``,
            ``--n-realizations 10``) of the CONSTRAINT FIT ROWS against the fixed
            full-cohort GT oracle, each realization prescribing for the held-out
-           ``X_test`` arms. It is ``full`` repeated over training draws, and it
-           is what gives the test stage a spread that is not the fold spread
-           ``dial*`` was tuned on: the folds are fixed by construction, the
-           training draw is not. Common random numbers -- the subsample seed is
-           ``bootstrap_seed + 1000*(r+1)``, a function of the realization ALONE,
-           exactly as ``run_chemo_robust.py``'s Table 6 probe computes it -- so
-           every method sees the same 10 draws and the comparison is paired.
-           Two feasibility columns are reported: the usual one, conditional on
-           each series' OWN solved arms, and ``feasibility_samestore``, over the
-           arms EVERY series solved in that realization (recomputed per draw,
-           the Table 6 convention). Unavailable on synthetic and the reactor --
-           their instance builders take no ``train_subsample_frac``, and neither
-           has a held-out cohort to prescribe for; their held-out axis is the
-           fold, which is what the ``folds`` phase already scores under the ODE
-           / the analytic truth.
+           ``X_test`` arms. It is ``full`` repeated over training draws, and on
+           gastric it is what gives the test stage a spread that is not the fold
+           spread ``dial*`` was tuned on. Common random numbers -- the subsample
+           seed is ``bootstrap_seed + 1000*(r+1)``, a function of the realization
+           ALONE, exactly as ``run_chemo_robust.py``'s Table 6 probe computes it
+           -- so every method sees the same 10 draws and the comparison is
+           paired. Two feasibility columns are reported: the usual one,
+           conditional on each series' OWN solved arms, and
+           ``feasibility_samestore``, over the arms EVERY series solved in that
+           realization (recomputed per draw, the Table 6 convention).
+
+           **Gastric needs it because gastric has no ground truth.** Its judge
+           is a FITTED ensemble and its "test" is a cohort split, so the
+           training draw is the only axis left that is neither fixed by
+           construction nor part of the tuning. Synthetic and the reactor are
+           judged by the analytic ``f_true`` and by the ODE -- a judge the dial
+           never faced and that reads no training row -- so ``folds`` is already
+           out of sample there in the way that matters, and the phase is refused
+           rather than silently skipped.
 
 **The judge, per problem.**
 
@@ -202,13 +206,32 @@ def _judge(problem, su):
     return o, "gt_ensemble_full416"
 
 
-def _dial_star_rows(problem, var, methods):
+def _dial_star_rows(problem, var, methods, fallback_best_feas=False):
     """(method, rho, dial_name, dial_star) per series, from the sweep's star file.
 
     Series that never reached the target carry ``dial_star = NaN`` and are
     SKIPPED with the reason printed: there is no tuned dial to test. ``nominal``
     has no dial and is always carried at 0 -- it is the reference every phase is
     read against.
+
+    ``fallback_best_feas`` tests those series anyway, at ``best_feas_dial`` --
+    the most-feasible cell the series managed (already filtered on
+    ``--min-solved`` by the sweep, so it is a cell that really solved). They
+    carry ``kind="best_feas"``, NOT ``"tested"``, and the distinction is the
+    whole point: ``dial*`` is the best OBJECTIVE among cells that had already
+    cleared the feasibility target, so its tested feasibility is not selected
+    on; ``best_feas_dial`` is the argmax of the very quantity the test stage
+    then re-reports. That is a CEILING for the method -- "how feasible does it
+    get at its best, under a fresh judge" -- and never a protocol point. The
+    selection is at least made under the *tuning* judge and re-scored under the
+    test judge, so the two are not the same column, but they are correlated and
+    a fallback row must never be read against a ``tested`` one as if both were
+    tuned the same way.
+
+    A series with no ``best_feasibility`` at all is still skipped: that is the
+    ``solved_frac >= --min-solved`` guard biting at every dial, and there is no
+    cell to fall back TO. Gastric C-MICL is exactly this case -- the fallback
+    does not rescue it, and only a re-run on the extended alpha grid can.
     """
     path = os.path.join(OUT_DIR, f"{problem}_dial_star{var}.csv")
     if not os.path.exists(path):
@@ -229,11 +252,29 @@ def _dial_star_rows(problem, var, methods):
             # `best_feasibility` was added to the star table on 2026-08-26; a
             # star file written before that has no such column, which is not the
             # same thing as a series that scored nothing.
-            best = r.get("best_feasibility", None)
-            why = ("best feasibility {:.3f}".format(float(best))
-                   if best is not None and np.isfinite(best)
-                   else "how close it got is not recorded -- this star file "
-                        "predates the best_feasibility column; re-run the sweep")
+            # Three distinct states, and they call for different fixes: the
+            # column is absent (an old star file -- re-run the sweep), it is
+            # present but EMPTY (every cell fell under --min-solved, so the
+            # series has no scored cell at all and no fallback exists -- widen
+            # the dial grid), or it holds a real number (a fallback point).
+            has_col = "best_feasibility" in r.index
+            best = r.get("best_feasibility", np.nan)
+            has_best = has_col and best is not None and np.isfinite(best)
+            bdial = r.get("best_feas_dial", np.nan)
+            if fallback_best_feas and has_best and np.isfinite(bdial):
+                out.append((m, float(r["rho"]) if np.isfinite(r["rho"]) else np.nan,
+                            str(r["dial_name"]), float(bdial), "best_feas"))
+                continue
+            if has_best:
+                why = "best feasibility {:.3f}".format(float(best))
+            elif not has_col:
+                why = ("how close it got is not recorded -- this star file "
+                       "predates the best_feasibility column; re-run the sweep")
+            else:
+                why = ("it never scored a feasibility at all -- every dial fell "
+                       "under --min-solved, so there is no best_feas cell to "
+                       "fall back to; widening the dial grid is the fix, not "
+                       "--fallback-best-feas")
             skipped.append(f"{m}@rho={r['rho']} (no dial*: {why})")
             continue
         out.append((m, float(r["rho"]) if np.isfinite(r["rho"]) else np.nan,
@@ -262,8 +303,21 @@ def _prescriptions(su, result, contextual, instance=None, rows=None):
     the old behaviour.
     """
     if not contextual:
+        # An infeasible master is NOT a decision. Every solver returns
+        # `x_opt=np.zeros(n_features), obj_value=inf, status="infeasible"` when
+        # the MIP has no solution, and zeros are FINITE -- so a finiteness check
+        # alone scores a phantom decision at the origin, which on synthetic and
+        # the reactor sits comfortably inside every constraint. This is the same
+        # gate `cv_calibrate._score_single_decision` carries (see the long note
+        # there); the test stage was missing it, and on the reactor the origin is
+        # not merely wrong but has T=0, which the ODE judge cannot integrate.
+        # `max_iterations` / `coverage_cap` / `cycle_detected` are CP returning a
+        # real INCUMBENT and must still be scored -- only "infeasible" is out.
         x = getattr(result, "x_opt", None)
-        ok = x is not None and np.all(np.isfinite(x))
+        obj_v = getattr(result, "obj_value", None)
+        ok = (x is not None and np.all(np.isfinite(x))
+              and str(getattr(result, "status", "")) != "infeasible"
+              and obj_v is not None and np.isfinite(float(obj_v)))
         return [(-1, np.asarray(x, dtype=float) if ok else None)]
     from src.evaluation.chemo_metrics import solve_for_test_cohort
     inst = su.instance if instance is None else instance
@@ -296,6 +350,15 @@ def _score(su, judge, result, contextual, instance=None, rows=None):
 def _subsample_phase(config, args, su, judge, judge_name, series, points, summary,
                      write):
     """m-out-of-n subsampling at ``dial*``, on the held-out cohort. Gastric only.
+
+    **Why gastric and not the others**, since the draw itself would generalise:
+    gastric has no ground truth. Its judge is a FITTED ensemble and its "test" is
+    a cohort split, so the training draw is the only axis left that is neither
+    fixed by construction nor part of the tuning. Synthetic and the reactor are
+    judged by the analytic ``f_true`` and by the ODE -- a judge the dial never
+    faced, which reads no training row at all -- so ``folds`` is already out of
+    sample there in the way that matters, and repeating it over draws would buy
+    a spread, not a validity the fold rate lacks.
 
     This is the repo's standing robustness protocol (see CLAUDE.md, Evaluation)
     applied to the TEST stage instead of to Table 6: resample the CONSTRAINT FIT
@@ -501,16 +564,20 @@ def run(config, args):
     os.makedirs(OUT_DIR, exist_ok=True)
     problem = args.problem
     # Checked BEFORE the instance is built, so an illegal phase costs nothing.
-    # Not a defaulted-away option: `_setup_synthetic` / `_setup_reactor` build
-    # their instances through `run_sweep`, which takes no `train_subsample_frac`,
-    # and neither problem has a held-out cohort to prescribe for -- their
-    # held-out axis IS the fold, which `folds` already scores under the ODE / the
-    # analytic truth. Silently dropping the phase would report a test stage that
-    # did not run.
+    # Not a defaulted-away option, and NOT merely a plumbing limit: gastric needs
+    # this phase because its judge is a fitted ensemble and its "test" is a cohort
+    # split, leaving the training draw as the only axis that is neither fixed by
+    # construction nor part of the tuning. Synthetic and the reactor are judged by
+    # the analytic f_true and by the ODE -- a judge the dial never faced, reading
+    # no training row -- so `folds` is already out of sample there in the way that
+    # matters. Silently dropping the phase would report a test stage that did not
+    # run, so it is refused instead.
     if "subsample" in args.phases and problem != "gastric":
         raise SystemExit(f"[dial-test] --phases subsample is gastric only (got "
-                         f"--problem {problem}). The reactor's held-out axis is "
-                         f"the fold, judged by the ODE: use `--phases folds`.")
+                         f"--problem {problem}). Gastric needs it because its "
+                         f"judge is FITTED and its test is a cohort split; the "
+                         f"reactor is judged by the ODE, so `--phases folds full` "
+                         f"is already out of sample.")
     su = {"synthetic": _setup_synthetic, "reactor": _setup_reactor,
           "gastric": _setup_gastric}[problem](config, args)
     var = _variant_suffix(args)
@@ -522,7 +589,8 @@ def run(config, args):
         geometry="ellipsoid", coherent=bool(args.coherent),
     )
 
-    series, skipped = _dial_star_rows(problem, var, args.methods)
+    series, skipped = _dial_star_rows(problem, var, args.methods,
+                                      fallback_best_feas=args.fallback_best_feas)
     phases = list(args.phases)
     solve_phases = [ph for ph in phases if ph != "subsample"]
 
@@ -538,6 +606,18 @@ def run(config, args):
               f"sweep tuned dial* against. `full` prescribes for the "
               f"{len(su.instance.X_test)} X_test arms, which no method's "
               f"constraint fit has seen.", flush=True)
+    ceilings = [s for s in series if s[4] == "best_feas"]
+    if ceilings:
+        print(f"[dial-test] --fallback-best-feas: {len(ceilings)} series with no "
+              f"dial* are tested at their MOST-FEASIBLE cell instead. These rows "
+              f"carry kind='best_feas' and are a CEILING for the method, not a "
+              f"protocol point -- the dial was picked by maximising the quantity "
+              f"being re-reported. Do not read them against kind='tested' rows "
+              f"as if both were tuned the same way.", flush=True)
+        for m, rho, dn, d, _ in ceilings:
+            print(f"[dial-test]   CEILING {m}"
+                  + (f"@rho={rho:g}" if np.isfinite(rho) else "")
+                  + f" at {dn}={d:g}", flush=True)
     for s in skipped:
         print(f"[dial-test] SKIPPING {s}", flush=True)
     print(flush=True)
@@ -665,6 +745,22 @@ def main():
                    default="reactor")
     p.add_argument("--methods", nargs="+", default=None,
                    help="default: every series in the star file that has a dial*")
+    p.add_argument("--fallback-best-feas", dest="fallback_best_feas",
+                   action="store_true", default=True,
+                   help="DEFAULT ON. Also test series with NO dial*, at their "
+                        "most-feasible cell (`best_feas_dial`: argmax of TUNED "
+                        "feasibility under the tuning judge, ties broken on "
+                        "objective). Those rows carry kind='best_feas' and are a "
+                        "CEILING, not a protocol point -- the dial was chosen by "
+                        "maximising the very quantity being re-reported, so they "
+                        "must not be read against a kind='tested' row as if "
+                        "tuned alike. Series whose every cell fell under "
+                        "--min-solved have no cell to fall back to and are "
+                        "skipped regardless.")
+    p.add_argument("--no-fallback-best-feas", dest="fallback_best_feas",
+                   action="store_false",
+                   help="skip series with no dial* instead, reporting only "
+                        "tuned protocol points")
     p.add_argument("--phases", nargs="+", default=None,
                    choices=("folds", "full", "subsample"),
                    help="`folds` re-solves the sweep's folds under the truth "
@@ -673,9 +769,10 @@ def main():
                         "deployed procedure, one bit of feasibility); "
                         "`subsample` is m-out-of-n subsampling of the fit rows "
                         "against the fixed full-cohort oracle on the held-out "
-                        "X_test arms -- GASTRIC ONLY, and the only spread here "
-                        "that is neither fixed by construction nor part of the "
-                        "tuning. Default: folds full [subsample on gastric]")
+                        "X_test arms -- GASTRIC ONLY, because gastric's judge is "
+                        "fitted and its test is a cohort split; the reactor is "
+                        "judged by the ODE, so its `folds` are already out of "
+                        "sample. Default: folds full [subsample on gastric]")
     p.add_argument("--n-realizations", type=int, default=10,
                    help="training draws in the `subsample` phase (default 10, "
                         "the Table 6 protocol)")
@@ -695,8 +792,9 @@ def main():
     p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json")
     args = p.parse_args()
     if args.phases is None:
-        # m-out-of-n is the standing gastric protocol, so it is on by default
-        # there and unavailable elsewhere -- see `_subsample_phase`.
+        # m-out-of-n is the standing gastric protocol, so it is in the default
+        # phases there and is not a legal phase anywhere else -- the reactor and
+        # synthetic get their out-of-sample from the JUDGE, not from the draw.
         args.phases = (["folds", "full", "subsample"] if args.problem == "gastric"
                        else ["folds", "full"])
 

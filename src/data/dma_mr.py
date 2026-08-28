@@ -145,6 +145,14 @@ def benzene_flow(u: np.ndarray) -> float:
     unusable point rather than as a zero.
     """
     v0, v_He, T, dt, L = (float(t) for t in u)
+    # The docstring promises nan for an unusable design, and these two divisions
+    # sit OUTSIDE the try below -- so a degenerate u raised instead of returning,
+    # taking the caller down with it. T=0 is not a hypothetical: an infeasible
+    # master returns `x_opt=zeros` as a sentinel, and a caller that forgets to
+    # gate on `status` hands the origin straight to this oracle. Report it as
+    # unusable (the contract) rather than trusting every caller to gate.
+    if not (np.isfinite(T) and T > 0.0) or not np.isfinite([v0, v_He, dt, L]).all():
+        return float("nan")
     At = 0.25 * np.pi * (dt ** 2)         # cross-sectional area [cm^2]
     Ft0 = PT * v0 / (R_GAS * T)           # inlet molar flow, pure CH4 [mol/h]
     F_He = PS * v_He / (R_GAS * T)        # sweep gas molar flow [mol/h]
