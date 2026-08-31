@@ -140,20 +140,12 @@
 % run_dial_sweep.py --problem reactor --rho-columns 2 3 ; plot_dial_sweep.py --compact
 \begin{frame}{Reactor: objective vs feasibility (for tuning dials)}
     \centering
-    \includegraphics[width=\linewidth,height=0.50\textheight,keepaspectratio]{../results/figures/fig_dial_frontier_reactor_incoh_f10_mmlp_s42_slide.png}
+    \includegraphics[width=\linewidth,height=0.8\textheight,keepaspectratio]{../results/figures/fig_dial_frontier_reactor_incoh_f10_mmlp_s42_slide.png}
     \vspace{-0.2em}
     \begin{itemize} \footnotesize
-        \item \textbf{Nominal is feasible on 0 of 10 folds} --- the learned
-              constraint really bites here.
-        \item \textbf{CP is the only method that reaches 0.9 cheaply}: $\rho{=}3$,
-              $\tau{=}1$ gives $0.9$ at cost $3253$ ($+10.6\%$ over nominal);
-              saturates at $1.00 / 3274$ below $\tau{=}0.3$. At $\rho{=}2$ it tops
-              out at $0.80$ and turns \emph{inside} the grid --- too little
-              capacity; $\{2,3\}$ brackets the transition.
-        \item RHS margin reaches $1.0$, but only at $m{=}4$: $3411$,
-              \textbf{$+4.9\%$ over CP}.
-        \item Wrapper ($0.40$) and C-MICL ($0.50$) never reach $0.9$ --- both are
-              out of dial, at $\alpha{=}0$ and at the $n_{\text{cal}}$ floor.
+        \item C-MICL doesn't reach target feasibility.
+        \item Needs different parameter grids than gastric.
+        \item Proxy judge (ensemble, not actual ODE) so we can have an out-of-sample test.
     \end{itemize}
 \end{frame}
 
@@ -161,53 +153,67 @@
 % run_dial_test.py --problem reactor
 \begin{frame}{Reactor: confirmed against the ODE}
     \footnotesize
-    Same decisions, two judges: the dial was tuned against the \emph{proxy}
-    surrogate, then re-scored against the \textbf{DMA-MR ODE}. The decision does
-    not change, so the objective is identical by construction --- only feasibility
-    moves.
-    \vspace{0.4em}
+    dial$^\ast$ tuned on the \emph{proxy} surrogate,
+    re-scored on the \textbf{DMA-MR ODE}.
     {\scriptsize\setlength{\tabcolsep}{4pt}
     \begin{tabular}{llcc|cc|c}
         \toprule
-        & & \multicolumn{2}{c|}{feasibility} & \multicolumn{2}{c|}{cost (min)}
-          & \\
+        & & \multicolumn{2}{c|}{feasibility} & \multicolumn{2}{c|}{cost (min)} & \\
         method & dial$^\ast$ & proxy & \textbf{ODE} & folds & full fit & master (s) \\
         \midrule
-        nominal      & --           & 0.00 & 0.00          & $2942\pm49$ & \textbf{2936} & \textbf{0.5} \\
-        CP $\rho{=}3$ & $\tau=1.0$  & 0.90 & \textbf{1.00} & $\mathbf{3253}\pm36$ & 3305 & 16.1 \\
-        RHS margin   & $m=4.0$      & 1.00 & \textbf{1.00} & $3411\pm62$ & 3372 & 2.2 \\
-        wrapper      & \multicolumn{6}{l}{no dial$^\ast$; best $0.40$ at $\alpha{=}0$ ($\rho{=}6$ reaches $0.9$, $3281$)} \\
-        C-MICL       & \multicolumn{6}{l}{no dial$^\ast$; best $0.50$ at $\alpha{=}0.0075$, the $n_{\text{cal}}$ floor} \\
+        nominal               & --            & 0.00 & 0.00          & $2942\pm49$ & \textbf{2936} & \textbf{0.5} \\
+        CP $\rho{=}3$         & $\tau=1.0$    & 0.90 & \textbf{1.00} & $\mathbf{3253}\pm36$ & 3305 & 16.1 \\
+        wrapper $\rho{=}6$    & $\alpha=0$    & 0.90 & \textbf{1.00} & $3281\pm75$ & 3091 & 6.2 \\
+        RHS margin            & $m=4.0$       & 1.00 & \textbf{1.00} & $3411\pm62$ & 3372 & 2.2 \\
+        \midrule
+        \multicolumn{7}{l}{\emph{ceiling} (no dial$^\ast$; tested at most-feasible dial --- selected on the tuned rate)} \\
+        CP $\rho{=}2$         & $\tau=0.3$    & 0.80 & 1.00 & $3188\pm27$ & 3149 & 2.9 \\
+        wrapper $\rho{=}5$    & $\alpha=0$    & 0.70 & 1.00 & $3248\pm59$ & 3224 & 5.2 \\
+        C-MICL                & $\alpha=0.0075$ & 0.50 & 1.00$^{\dagger}$ & $3276\pm127$ & no solve & 0.7 \\
         \bottomrule
     \end{tabular}}
-    \vspace{0.4em}
-    \begin{itemize}
-        \item \textbf{CP survives the judge change} --- tuned to $0.9$ on the
-              proxy, it is $10/10$ under the ODE, at the cheapest feasible cost.
-        \item The margin gets there too, but overshoots: $+4.9\%$ cost for the
-              same $1.00$.
-        \item \textbf{Feasibility here costs $\sim$10\%} and is not optional:
-              nominal is $0/10$ on both judges.
+    \par{\scriptsize $^{\dagger}$ over the $8/10$ folds it solved; infeasible on the full fit.}
+    \begin{itemize}\footnotesize
+        \item CP, wrapper, margin reach feasibility on the ODE.
+        \item \textbf{The ODE passes every decision produced}, including those
+              the proxy scored $0.50$--$0.80$: the proxy is conservative at the
+              boundary, so here the ODE separates on \textbf{cost}, not
+              feasibility. Only nominal fails, $0/10$ on both.
+        \item C-micl infeasible (quite robust setting for $\alpha$ due to proxy).
     \end{itemize}
 \end{frame}
 
 \begin{frame}{Next steps}
     \footnotesize
     \begin{enumerate}
-        \item \textbf{Re-run both dial cells (cluster).} Reactor: the wrapper
-              moves to \emph{its own} columns $\rho\in\{5,6\}$, where it actually
-              reaches the target --- the panel here still shows it at
-              $\{2,3\}$, out of dial at $\alpha{=}0$. Gastric: still predates the
-              per-problem C-MICL $\alpha$ floor, so its C-MICL row reads ``no cell
-              cleared'' rather than a measured cap.
-        \item \textbf{Series with no dial$^\ast$ are now tested at their
-              most-feasible dial} (a \emph{ceiling}, marked separately, not a
-              protocol point). Gastric C-MICL is the exception it cannot reach:
-              nothing there cleared the solved floor at all.
-        \item Seeds: the dial grids run at seed 42 only. CP's bank is sampled, so
-              the reactor gap ($3253$ vs $3411$) wants $\ge 3$ seeds before it is
-              quoted as a margin.
-        \item WFP food basket instance.
+        \item \textbf{Freeze the code.} Dials, grids, feasibility target, reactor
+              $\rho$ columns; ceiling rows to the appendix.
+        \item \textbf{Re-run the gastric dial cell (cluster).} Larger c-micl grid
+              --- a strict superset, so no refresh and the scored cells replay
+              free. Run the test even if the target is not reached in tuning.
+        \item \textbf{Then screen the epigraph objective} (gated on 2). CP at
+              the re-run's dial$^\ast$, epigraph on, subsample, CRN-paired
+              against the arm already on disk. Nominal holds the best
+              realized-OS tail today --- worst of $10$ draws $11.14$ vs CP
+              $10.90$ --- so the prize is $0.23$ against a draw sd of $0.55$.
+              dial$^\ast$ was tuned with the epigraph off, so the screen is a
+              lower bound; escalate to a full sweep only if it moves.
+        \item \textbf{Realizations $10 \to 50$.} The tail is the headline; at
+              $10$ draws the worst case \emph{is} one draw --- a range, not a
+              bound.
+        \item \textbf{Reactor: report cost at verified feasibility.} The proxy is
+              conservative at the boundary. Measure that gap rather than tighten
+              the $0.9$ target.
+        \item \textbf{WFP food basket.} Reported by both OptiCL and C-MICL ---
+              omitting the shared benchmark reads as selection. Palatability
+              label is continuous ($6002 \times 13$), so it enters the regression
+              framework unchanged. \emph{One} learned constraint; nutrients are
+              known linear, so gastric stays the multi-constraint instance. Open:
+              diet reduction vs.\ full supply chain.
+        \item \textbf{Synthetic $\to$ appendix.} The reactor's ODE is mechanistic
+              truth; synthetic's $f_{\text{true}}$ is authored, on the instance
+              where the uncertainty radius and the generated noise are the same
+              object.
     \end{enumerate}
 \end{frame}
 
