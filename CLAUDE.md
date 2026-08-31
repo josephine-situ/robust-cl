@@ -372,23 +372,27 @@ margin, is **structural**, not evidence of stability.
   ellipsoid geometry, fixed temporal folds. Inside it the **dial cells are newest
   and the only tested ones**: gastric with all three phases, the reactor with a
   full curve, a star table and an ODE-judged test stage.
-- **The reactor dial cell is COLUMN-SUPERSEDED, not invalidated** (2026-08-28).
-  Its rows are the answer at rho columns {2, 3} for **every** method, and the
-  wrapper's default columns are now **{5, 6}** (`METHOD_RHO_COLUMNS`), so its two
-  committed wrapper series are no longer the ones the code asks for. Everything
-  else in the cell stands: `cp@3` tau*=1.0 (feas 0.9, obj 3253), `margin` m*=4.0
-  (feas 1.0, obj 3411), both `interior`; `cp@2` tops out at 0.80 and turns
-  **inside** the tau grid; `cmicl` caps at 0.50 at its n_cal=180 floor — the
-  METHOD running out, not the grid, so {2, 3} does bracket CP's transition.
-  **The re-run is a CLUSTER job**: `--drop-series wrapper@2 wrapper@3` keeps the
-  score checkpoint, so CP, margin and cmicl replay free and only the wrapper at
-  rho 5 and 6 is solved. `results/figures/fig_dial_*_reactor_*` were regenerated
-  from the committed {2, 3} curve and will need regenerating again after it.
+- **The reactor dial cell is CURRENT and complete** (re-run 2026-08-28 with
+  `--drop-series wrapper@2 wrapper@3`; figures regenerated from it). Three
+  methods have a `dial*`: `cp@3` tau*=1.0 (feas 0.9, obj 3253, `interior`),
+  `wrapper@6` alpha*=0 (feas 0.9, obj 3281, `grid_end` — **structural**, alpha=0
+  is the strictest level), `margin` m*=4.0 (feas 1.0, obj 3411, `interior`).
+  No `dial*`: `cp@2` caps at 0.80 `none_interior`; `wrapper@5` at 0.70 and
+  `cmicl` at 0.50 (n_cal=180 floor), both `none_grid_end` but both on a
+  **structural** end — the METHOD running out, not the grid. The wrapper
+  reproduces the `_wraprho456` probe exactly (0.70 / 0.90 at rho 5 / 6).
+  - **The proxy judge is CONSERVATIVE relative to the ODE.** In the test stage
+    every decision the sweep produced is ODE-feasible **10/10** — including the
+    `best_feas` cells the proxy scored 0.50–0.80 — and only `nominal` fails
+    (0/10 on both judges). So the ODE stage separates the methods on **cost**,
+    not on feasibility, and a tuning feasibility below 0.9 on this instance is
+    not evidence the decision violates truth. `cmicl` at alpha=0.0075 is the one
+    row that does not survive the refit: `full` phase `solved_frac=0`.
   - `reactor_dial_*_wraprho456.csv` is the **`--cell-tag` probe** that measured
     those columns: the wrapper alone at rho {4, 5, 6}, feasibility 0.50 / 0.70 /
-    0.90 at alpha=0, obj 3281 at rho=6 (vs CP's 3253 at rho=3). It resumes
-    nothing from the untagged cell and `run_dial_test.py` does not read it, so it
-    is the *evidence* for the column move, not a row of the new cell.
+    0.90 at alpha=0. It resumes nothing from the untagged cell and
+    `run_dial_test.py` does not read it, so it is the *evidence* for the column
+    move, superseded now by the cell itself.
 - **The gastric dial cell is still GRID-SUPERSEDED, not invalidated**: it predates
   the per-problem C-MICL alpha floor (`CMICL_ALPHA_GRID_EXTRA`), so its `cmicl`
   row is "no cell cleared solved >= 0.5" rather than a measured cap, and its star

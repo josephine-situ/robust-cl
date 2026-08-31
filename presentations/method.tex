@@ -110,29 +110,106 @@
 % ===========================================================================
 \begin{frame}{Problem settings: reactor (C-MICL)}
   \small
-  DMA-MR membrane reactor, methane $\to$ hydrogen + benzene
-  (Ovalle et al.\ 2025 App.~D.1; reactor of Carrasco \& Lima 2017).
+  DMA-MR membrane reactor, methane $\to$ hydrogen + benzene (Ovalle et al.\ 2025
+  App.~D.1). $\hat h$ predicts outlet $F_{\mathrm{C_6H_6}}$ [mg/h]; truth = the
+  ODE overleaf.
   \vspace{-0.3em}
   \[
-    \min_{x}\; c^\top x \quad\text{s.t.}\quad \hat h(x;\theta)\ge 50,
-    \qquad x=(v_0, v_{\mathrm{He}}, T, d_t, L)
+    \begin{aligned}
+      \min_{x}\;\; & c^\top x, \quad x=(v_0,\,v_{\mathrm{He}},\,T,\,d_t,\,L),
+        \quad c=\mathbf 1 \\
+      \text{s.t.}\;\; & \hat h(x;\theta)\ \ge\ 50 && \text{(D.1g --- \emph{learned})}\\
+      & 10 \le L/d_t \le 150, \qquad 20 \le v_0/L \le 120 && \text{(D.1b--e,}\\
+      & 0.75 \le v_0/v_{\mathrm{He}} \le 3, \qquad v_0 \le 1.1\,T
+        && \text{cross-multiplied}\\
+      & \ell \le x \le u && \text{$\to$ 7 linear ineqs.)}
+    \end{aligned}
   \]
-  \vspace{-1.4em}
+  \vspace{-1.1em}
+  \begin{center}\footnotesize
+  \begin{tabular}{@{}lccccc@{}}
+    \toprule
+      & $v_0$ [cm$^3$/h] & $v_{\mathrm{He}}$ [cm$^3$/h] & $T$ [K] & $d_t$ [cm] & $L$ [cm] \\
+    \midrule
+    $\ell$ & 450 & 450 & 997.18 & 0.5 & 10 \\
+    $u$    & 1500 & 1500 & 1348.12 & 2.0 & 100 \\
+    \bottomrule
+  \end{tabular}
+  \end{center}
+  \vspace{-0.5em}
+  \begin{itemize}
+    \item $n=1000$ designs uniform over the box; labels $+\,\mathcal N(0,2^2)$,
+      range $11$--$70$. Single decision, no context.
+    \item Lower bound $\Rightarrow$ $w=-1$, $\text{rhs}=-50$ in the repo's
+      $\sum_m w_mf_m\le\text{rhs}$ form.
+    \item $c$ \textbf{fixed} at ones --- a new $c$ is a different problem. Units
+      are incommensurate, so the objective is effectively $v_0+v_{\mathrm{He}}+T$.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Reactor: the ground truth is an ODE system}
+  \small
+  Carrasco \& Lima (2017), integrated along the tube, $z:0\to L$. State
+  $F(z)\in\mathbb R^{8}$: tube-side $(\mathrm{CH_4},\mathrm{C_2H_6},\mathrm{H_2},
+  \mathrm{C_6H_6})$ and the same four on the shell (sweep) side. Concentrations
+  $C_i=F^t_i/v$ with $v=v_0F^t_{\text{tot}}/F_{t0}$; cross-section
+  $A_t=\tfrac\pi4 d_t^2$, catalyst factor $\kappa=(1-\nu_b)\eta=0.45$. Two
+  equilibrium-limited reactions, as the vendored RHS writes them (self-consistent,
+  $\mathrm H$ unbalanced):
+  $2\mathrm{CH_4}\rightleftharpoons\mathrm{C_2H_6}+2\mathrm{H_2}$,
+  $3\mathrm{C_2H_6}\rightleftharpoons\mathrm{C_6H_6}+3\mathrm{H_2}$.
+  \vspace{-0.4em}
+  \[
+    r_1 = 3600\,k_1C_{\mathrm{CH_4}}\Big(1-\tfrac{k_1^{-}C_{\mathrm{C_2H_6}}C_{\mathrm{H_2}}^{2}}
+      {k_1C_{\mathrm{CH_4}}^{2}}\Big),
+    \quad
+    r_2 = 3600\,k_2C_{\mathrm{C_2H_6}}\Big(1-\tfrac{k_2^{-}C_{\mathrm{C_6H_6}}C_{\mathrm{H_2}}^{3}}
+      {k_2C_{\mathrm{C_2H_6}}^{3}}\Big)
+  \]
+  \vspace{-0.6em}
+  \[
+    \begin{aligned}
+      \tfrac{d}{dz}F^t_{\mathrm{CH_4}} &= -\kappa r_1A_t - J_{\mathrm{CH_4}}, &\quad
+      \tfrac{d}{dz}F^t_{\mathrm{H_2}} &= \kappa(r_1+r_2)A_t - J_{\mathrm{H_2}}, \\[0.15em]
+      \tfrac{d}{dz}F^t_{\mathrm{C_2H_6}} &= \kappa(\tfrac12 r_1-r_2)A_t - J_{\mathrm{C_2H_6}}, &\quad
+      \tfrac{d}{dz}F^t_{\mathrm{C_6H_6}} &= \tfrac13\kappa r_2A_t - J_{\mathrm{C_6H_6}}, \\[0.15em]
+      \tfrac{d}{dz}F^s_i &= +J_i, &\quad
+      J_i &= Q_i\,\pi d_t\big(p_{i,t}^{1/4}-p_{i,s}^{1/4}\big)
+    \end{aligned}
+  \]
+  \vspace{-0.7em}
+  \begin{itemize}\footnotesize
+    \item $J_i$ leaves the tube for the shell ($p$ in atm; $Q_i=Q$ for
+      $\mathrm{H_2}$, $Q/S$ otherwise, $S=1500$): $\mathrm{H_2}$ leaves
+      $1500\times$ faster, so Le Chatelier drives both equilibria forward --- the
+      point of the membrane.
+    \item Inlet pure methane $F_{t0}=P_tv_0/(RT)$; sweep helium
+      $F_{\mathrm{He}}=P_sv_{\mathrm{He}}/(RT)$ enters the shell \emph{total}
+      only. Oracle $h(x)=10^{3}M_B\,F^t_{\mathrm{C_6H_6}}(L)$.
+    \item RHS vendored unchanged from \texttt{opyrability} (the code C-MICL cite).
+      \texttt{solve\_ivp} at rtol$=$atol$=10^{-10}$: the defaults are $3.8$ off on
+      a Table~1 row.
+  \end{itemize}
+\end{frame}
+
+% ---------------------------------------------------------------------------
+\begin{frame}{Reactor: why this instance}
+  \small
   \begin{itemize}
     \item \textbf{Ground truth is a system of ODEs}, not a fitted model --- the only
       such oracle here, and the reason for the instance. Feasibility is
-      \emph{integrated}.
+      \emph{integrated}, so the judge carries no error of its own at the boundary,
+      which is exactly where a constrained optimum sits.
     \item \textbf{Two judges, kept apart.} ODE $\Rightarrow$ final evaluation and
       audits. Proxy ensemble (7 types, incl.\ MLP) $\Rightarrow$ $\rho$ tuning:
-      calibrating $\rho$
-      against exact truth is the same error as pinning $\mathcal D$ to synthetic's
-      known $\sigma$.
-    \item $n=1000$ uniform over the box; 4 linear ratio constraints (D.1b--e).
-      Lower bound, so $w=-1$, $\text{rhs}=-50$. $c$ \textbf{fixed} at ones --- a new
-      $c$ is a different problem.
-    \item \textbf{Design $\ne$ feasible set}: only $216/1000$ ($21.6\%$) rows meet
-      the ratio constraints, $30$ ($3.0\%$) also reach $50$. Kept --- it is what the
-      paper specifies, and it makes boundary uncertainty genuine.
+      calibrating $\rho$ against exact truth is the same error as pinning
+      $\mathcal D$ to synthetic's known $\sigma$.
+    \item \textbf{Design $\ne$ feasible set}: the $1000$ rows are uniform over the
+      box, but the optimizer lives in the box $\cap$ the ratio constraints. Only
+      $216/1000$ ($21.6\%$) rows meet the ratios, $30$ ($3.0\%$) also reach $50$.
+      Kept --- it is what the paper specifies, and it makes boundary uncertainty
+      genuine.
     \item \textbf{Published baseline}: their Fig.~1 has W-MICL --- our wrapper ---
       at $0.45$--$0.85$ ground-truth feasibility, never reaching $0.9$.
     \item Validated: RF $0.855$ vs their $0.864$, GBM $0.912$ vs $0.907$
