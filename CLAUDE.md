@@ -440,12 +440,18 @@ margin, is **structural**, not evidence of stability.
 - `src/evaluation/` — `chemo_metrics.py` (Table 6; every reported outcome uses the
   **GT ensemble**, never the embedded models) and `metrics.py` (synthetic; the
   **only** place the analytic `f_true` is allowed).
-- `experiments/method_builders.py` — **every runner builds its solvers here**
+- `src/data/instances.py` — `load_config`, the three instance builders
+  (`synth_instance` / `reactor_instance` / `gastric_instance`), the two
+  `*_model_spec` CV readers, `load_gastric_cv_configs`, `ALL_CONSTRAINTS`.
+- `src/methods/builders.py` — **every runner builds its solvers here**
   (`build_method`, `cp_solver`): the one place a solver's argument list and the
   cross-cutting decisions (single `mip_gap`, `cp_alpha` pinned at 0, the shared
   uncertainty set) live, after four near-copies each needed patching separately.
-  The *problem*-specific half stays with the problem (`_resolve_run_settings` for
-  gastric, `method_builders.synth_settings` otherwise).
+  Both settings resolvers (`gastric_settings` / `synth_settings`) and both
+  `*_build` wrappers are here too; only the knob *ranges* and the strength->knob
+  maps stay in `run_chemo_robust`, its one calibrating caller. **The sweeps
+  import no runner** (2026-09-02) — this file and `instances.py` are what
+  `run_sweep.py` / `run_all.py` were kept alive for, and both are deleted.
 
 **Frozen CV picks** (`results/cv/*_selected_configs.json`, chosen on R^2 *before*
 any robustness): gastric **XGB** for DLT/blood/constitutional/infection and
@@ -523,7 +529,7 @@ gastric only.
   sides of each split, float32 branch routing, and `IntFeasTol` pinned to `1e-9`
   because big-M turns integrality slack into `M * IntFeasTol` of x-slack. **Run
   `verify_embedding.py` after touching any of it**, and route its `--problem
-  synthetic|reactor` through `run_sweep._synth_instance` / `_reactor_instance`,
+  synthetic|reactor` through `instances.synth_instance` / `reactor_instance`,
   **not** `run_adversary_probe.build_instance`, which never loads the CV selection.
 - **`variable_lb`/`variable_ub` split by role**: treatment columns take their box
   from `X_fit` (the optimizer *chooses* them); context columns stay on train+test
@@ -543,9 +549,11 @@ gastric only.
   of contexts, under the 0.5 floor, so its star row was empty and the answer was
   known only to be "above 0.5". Budget for it: proving the marginal case infeasible
   costs **176 s** against nominal's 0.9 s.
-- **The evaluate-at-`rho*` protocol is stated in `method.tex` but NOT wired up** —
-  no runner reads `*_rho_star*.csv`; `run_chemo_robust.py` / `run_all.py` take D
-  from `config.yaml` and do not force the ellipsoid.
+- **Nothing is evaluated at `rho*`** — no runner reads `*_rho_star*.csv`, and
+  `run_chemo_robust.py` takes D from `config.yaml` without forcing the ellipsoid.
+  `method.tex` used to state the protocol anyway; since 2026-09-02 it says the
+  decisions are tested at `dial*` and calls `rho*` a reported capacity, which is
+  what the code does.
 - The *marketing* (in-LP context) setting described in the README is **not
   implemented**.
 

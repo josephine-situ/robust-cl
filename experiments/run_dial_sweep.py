@@ -122,8 +122,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.methods.cv_calibrate import (
     FoldCache, cv_score_knob, load_detail_checkpoint, append_score,
-    append_contexts,
+    append_contexts, append_judge,
 )
+from src.data.instances import load_config
 from experiments.run_rho_sweep import (
     _setup_synthetic, _setup_reactor, _setup_gastric, _variant_suffix,
     _bank_seed, _synth_n_folds,
@@ -774,6 +775,10 @@ def run(config, args):
 
     scores_path = os.path.join(OUT_DIR, f"{problem}_dial_scores{var}.csv")
     ctx_path = os.path.join(OUT_DIR, f"{problem}_dial_contexts{var}.csv")
+    # The judge audit: per-decision slack, member instability and the decision
+    # vector. Derived data like the contexts file, cleared by --refresh with it,
+    # and read only by experiments/audit_judge.py.
+    judge_path = os.path.join(OUT_DIR, f"{problem}_dial_judge{var}.csv")
     if args.refresh:
         # EVERY output of this cell, not just the two that feed the resume. A
         # --refresh that left the curve and the star behind is a trap: the curve
@@ -783,7 +788,7 @@ def run(config, args):
         # `run_dial_test.py` reads exactly that file to decide where to hold each
         # method. Deleting it up front makes a missing star an obvious failure
         # rather than a silently stale one.
-        for pth in (scores_path, ctx_path,
+        for pth in (scores_path, ctx_path, judge_path,
                     os.path.join(OUT_DIR, f"{problem}_dial_curve{var}.csv"),
                     os.path.join(OUT_DIR, f"{problem}_dial_star{var}.csv"),
                     os.path.join(OUT_DIR, f"{problem}_dial_skipped{var}.csv")):
@@ -867,6 +872,7 @@ def run(config, args):
             )
             append_score(scores_path, tag, dial, d["feas"], d["obj"], d["solved"], d)
             append_contexts(ctx_path, tag, dial, d.pop("contexts", []))
+            append_judge(judge_path, tag, dial, d.pop("judge", []))
             ckpt[ckey] = d
         else:
             print(f"\n[cell] RESUMED {cell} (from the score checkpoint)",
@@ -1405,8 +1411,7 @@ def main():
     p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json")
     args = p.parse_args()
 
-    import yaml
-    config = yaml.safe_load(open(args.config))
+    config = load_config(args.config)
 
     # Config-only, exactly as run_dial_test.py resolves it -- there is no
     # `--separation` flag on either, so the two stages cannot disagree about the
@@ -1415,7 +1420,7 @@ def main():
         config.get("methods", {}).get("cp", {}).get("separation", "auto"))
     if args.problem in ("synthetic", "reactor"):
         args.n_folds = _synth_n_folds(config, args)
-        from experiments.run_sweep import synth_model_spec, reactor_model_spec
+        from src.data.instances import synth_model_spec, reactor_model_spec
         spec = (synth_model_spec if args.problem == "synthetic"
                 else reactor_model_spec)
         args.synth_model = spec(config)[0]

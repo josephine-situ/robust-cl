@@ -253,16 +253,17 @@
 % ---------------------------------------------------------------------------
 \begin{frame}{Problem settings: comparison}
   \small
-  \begin{center}
-  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{2.9cm}>{\raggedright\arraybackslash}p{2.9cm}>{\raggedright\arraybackslash}p{3.9cm}@{}}
+  \begin{center}\footnotesize
+  \begin{tabular}{@{}>{\raggedright\arraybackslash}p{1.9cm}>{\raggedright\arraybackslash}p{2.1cm}>{\raggedright\arraybackslash}p{2.4cm}>{\raggedright\arraybackslash}p{3.4cm}@{}}
     \toprule
-    & Synthetic & Gastric \\
+    & Synthetic & Reactor & Gastric \\
     \midrule
-    Constraints / LP & 1 & 5 + objective \\
-    LPs at evaluation & 1 & many (one per arm) \\
-    Coherence & vacuous & \textbf{binding}: 6 models, one set of arms \\
-    Ground truth & exact analytic & GT ensemble, 6 models/outcome (EC.12; no MLP) \\
-    CV Folds & KFold, 5 & temporal forward-chaining, 5 \\
+    Constraints / LP & 1 & 1 & 5 + objective \\
+    LPs at evaluation & 1 & 1 & many (one per arm) \\
+    Coherence & vacuous & vacuous & \textbf{binding}: 6 models, one set of arms \\
+    Ground truth & exact analytic & \textbf{ODE integration} & GT ensemble, 6 models/outcome (EC.12; no MLP) \\
+    Calibration folds & KFold, 5 & KFold, 10 & temporal forward-chaining, \textbf{4} \\
+    Row-level train/test & none & none & 320 / 96 by year \\
     \bottomrule
   \end{tabular}
   \end{center}
@@ -301,8 +302,10 @@
     \item Each method has its own dials; we tune only $\rho$, for comparability.
     \item CP/wrapper embed scenarios as multiple \emph{constraints};
       multiple \emph{directed} scenarios $\Rightarrow$ infeasible MIP.
-    \item \textbf{Two face no $\mathcal D$}: tuned nominal ($m$, swept alone) and
-      C-MICL ($\alpha$ \emph{pinned} at $1-$target: evaluation only).
+    \item \textbf{Two face no $\mathcal D$}: tuned nominal ($m$) and C-MICL
+      ($\alpha$). Flat in $\rho$ by construction $\Rightarrow$ on the $\rho$ axis
+      they are scored once, as reference levels; on the \emph{primary} axis each
+      walks its own dial like the rest.
   \end{itemize}
   \begin{center}\small
   \begin{tabular}{@{}lll@{}}
@@ -739,8 +742,10 @@
       --- \emph{capacity}, not a frontier point.
     \item Curve is the primary reading; $\rho^\ast$ is \emph{derived} from it,
       re-derivable at a new target without re-solving.
-    \item \textbf{Evaluation runs each method at its own $\rho^\ast$}: matched
-      held-out feasibility, not a matched $\mathcal D$.
+    \item \textbf{Nothing is evaluated at $\rho^\ast$.} It answers ``how much
+      assumed uncertainty does this method absorb'' --- a question about
+      $\mathcal D$. The decisions are tested at $\text{dial}^\ast$, on the primary
+      axis, two slides on.
     \item $\tau,\alpha$: ablations at one $\rho$.
   \end{itemize}
   Both axes: train-only; \mc{one bank per $(\rho$ column, fold$)$ serves every
@@ -763,17 +768,22 @@
     Ground truth & GT ensemble, fit on all \textbf{416} arms (train + test)
       & Exact analytic constraint & \textbf{ODE integration} \\
     New train draw & $m$ of $n=320$ arms, no replacement; headline $m/n=0.5$,
-      $R=10$ draws & Fresh noise, seeded per draw & Fresh noise on cached
-      ODE design \\
+      $R=10$ draws & --- (judge reads no training row) & --- (judge reads no
+      training row) \\
     \bottomrule
   \end{tabular}
   \end{center}
   \begin{itemize}
-    \item Each method at its own $\rho^\ast$ (from the sweep), fixed before the draws.
+    \item Each method at its own $\text{dial}^\ast$, read off the star table and
+      fixed before the draws. \textbf{Not} at $\rho^\ast$ --- that is the
+      supporting axis, and no runner reads it.
     \item Uncertainty over \emph{training draws} --- distinct from the inner
       $\mathcal D$ the methods use. GT ensemble is a fixed oracle.
     \item GT is fit on a \emph{superset} of the constraint rows $\Rightarrow$ a
       single full-data draw favours nominal. Hence subsampling.
+    \item \textbf{Gastric only}, and not a plumbing limit: the other two are
+      judged by a truth that reads no training row, so a draw axis would buy a
+      spread rather than a validity their folds lack.
     \item Common random numbers across methods; \texttt{all\_constraints} only.
   \end{itemize}
   \footnotesize
@@ -794,11 +804,14 @@
       judge and cohort change there.
     \item \textbf{folds}: the sweep's folds re-solved. A rate with spread, but
       \emph{not} held out --- $\text{dial}^\ast$ was chosen on them.
-    \item \textbf{full}: one refit on all rows --- the deployed procedure, the
-      only place objectives compare directly. One \emph{bit} each.
+    \item \textbf{full}: one refit on all rows --- the deployed procedure. One
+      \emph{bit} of feasibility and one $x^\ast$ each, so it is where the
+      objectives compare with nothing conditioned away.
     \item \textbf{subsample} (gastric only): \textbf{full} over $R{=}10$
       $m$-out-of-$n$ draws ($m/n{=}0.5$ of the fit rows, CRN, fixed oracle).
-      Mean, \textbf{worst case}, 10th pct. Gastric needs it because its judge is
+      Mean, \textbf{worst case}, 10th pct --- for feasibility \emph{and} the
+      objective, each also over the \textbf{samestore} cohort (the arms every
+      series solved that draw), which is the pair that compares. Gastric needs it because its judge is
       \emph{fitted} and its test is a cohort split, so the training draw is the
       only axis neither fixed by construction nor tuned on; the reactor is judged
       by the \textbf{ODE}, so its folds are already out of sample.
@@ -840,11 +853,13 @@
       $\rho$ unexplained sd, sphere draws, coherence as a grouping. At a given
       $\rho$ the methods differ in \emph{where} robustness enters, not in the
       uncertainty each was handed.
-    \item \textbf{One parameter each}, held fixed while $\rho$ is swept. Evaluation
-      then runs each method at its own $\rho^\ast$: matched held-out feasibility,
-      \emph{not} a matched $\mathcal D$.
-    \item \textbf{Evaluate against a fixed ground truth} over repeated subsampled
-      training draws, on the cohort every method could prescribe for.
+    \item \textbf{One dial each.} Primary axis: $\rho$ fixed, every method walked
+      along its own dial, and the deliverable is the \emph{curve} in objective
+      $\times$ feasibility. Supporting axis: $\rho$ swept at fixed dials, giving
+      $\rho^\ast$ --- a capacity, reported, never evaluated at.
+    \item \textbf{Test at $\text{dial}^\ast$ against a judge the dial never
+      faced}, and on gastric over repeated subsampled training draws, on the
+      cohort every method could prescribe for.
   \end{enumerate}
 \end{frame}
 

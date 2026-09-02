@@ -8,7 +8,7 @@
 # SHARED -- problem selection
 # ===========================================================================
 problem:
-  # Instance built by run_all.py / run_cv.py / run_sweep.py / run_rho_sweep.py.
+  # Instance built by src/data/instances.py, for run_cv.py and both sweeps.
   # The reactor is selected with `--problem reactor`, not from here.
   type: "synthetic"        # "synthetic" | "gastric_cancer"
 

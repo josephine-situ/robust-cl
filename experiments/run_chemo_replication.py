@@ -11,11 +11,10 @@ import os
 import sys
 from functools import partial
 
-import yaml
-
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data.generate import gastric_cancer, filter_constraints
+from src.data.instances import ALL_CONSTRAINTS, DLT_ONLY, load_config
 from src.methods.wrapper import solve_tree_violation_wrapper
 from src.evaluation.chemo_metrics import (
     evaluate_given_table6,
@@ -25,18 +24,6 @@ from src.evaluation.chemo_metrics import (
     samestore_eval_mask,
     subset_table6_outcomes,
 )
-
-
-ALL_CONSTRAINTS = [
-    "dlt_constraint", "blood_constraint", "constitutional_constraint",
-    "infection_constraint", "gi_constraint", "os_constraint",
-]
-DLT_ONLY = ["dlt_constraint", "os_constraint"]
-
-
-def load_config(path="config.yaml"):
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
 
 
 def run_chemo_replication(config):

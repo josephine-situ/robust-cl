@@ -144,6 +144,11 @@ from src.methods.cv_calibrate import (
     make_folds, make_cv_oracle, cv_score_knob, load_detail_checkpoint,
     append_score, lookup_knob,
 )
+from src.data.instances import (
+    ALL_CONSTRAINTS, gastric_instance, load_config, load_gastric_cv_configs,
+    reactor_instance, reactor_model_spec, synth_instance, synth_model_spec,
+)
+from src.methods.builders import gastric_build, gastric_settings, synth_build
 
 DEFAULT_GRID = [0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]
 # Ablation grids, run at the CHOSEN rho rather than swept jointly with it.
@@ -254,8 +259,6 @@ def _synth_n_folds(config, args):
 
 
 def _setup_synthetic(config, args):
-    from experiments.run_sweep import _synth_instance, _synth_build, synth_model_spec
-
     seed = config["uncertainty"].get("bootstrap_seed", 42)   # data + folds
     bank_seed = _bank_seed(config, args)                     # draws from D
     # The embedded model is a CV result whenever
@@ -263,7 +266,7 @@ def _setup_synthetic(config, args):
     # synthetic), and config.yaml's hard-coded rf otherwise. Which one is in force
     # scopes the cell name -- see _variant_suffix.
     model_type, model_params, _from_cv = synth_model_spec(config, verbose=True)
-    inst = _synth_instance(config)
+    inst = synth_instance(config)
     n_kfold = _synth_n_folds(config, args)
     folds = make_folds(inst, "kfold", n_kfold=n_kfold, seed=seed)
     # Mixed-type ensemble on the noisy training labels -- deliberately NOT the
@@ -272,7 +275,7 @@ def _setup_synthetic(config, args):
     oracle = make_cv_oracle(inst)
 
     def make_build(method, uset, cp_alpha=None):
-        # _synth_build reads the uncertainty set off the config dict, so the swept
+        # synth_build reads the uncertainty set off the config dict, so the swept
         # rho is injected there rather than passed.
         cfg = json.loads(json.dumps(config))          # deep copy, config is plain data
         cfg["uncertainty"].update(
@@ -283,7 +286,7 @@ def _setup_synthetic(config, args):
         if args.match_bank:
             cfg.setdefault("methods", {}).setdefault("cp", {})["n_scenarios"] = \
                 int(cfg["uncertainty"].get("n_bootstrap", 20))
-        return _synth_build(method, cfg, model_type, model_params, bank_seed,
+        return synth_build(method, cfg, model_type, model_params, bank_seed,
                             cp_alpha=cp_alpha)
 
     return Setup(inst, folds, oracle, make_build, None, False,
@@ -294,7 +297,7 @@ def _setup_reactor(config, args):
     """The C-MICL DMA-MR instance on the rho axis.
 
     Mirrors ``_setup_synthetic`` -- single-decision, KFold folds, one learned
-    constraint -- and reuses ``_synth_build`` verbatim, because the method builders
+    constraint -- and reuses ``synth_build`` verbatim, because the method builders
     read the instance for everything problem-specific (the constraint's sign, the
     domain constraints, the variable box) and take only the model type and the
     uncertainty set as arguments.
@@ -304,14 +307,10 @@ def _setup_reactor(config, args):
     (``cv_calibrate.make_gt_oracle``) is for final evaluation and for auditing this
     proxy, which is the one thing this instance can do that gastric cannot.
     """
-    from experiments.run_sweep import (
-        _reactor_instance, _synth_build, reactor_model_spec,
-    )
-
     seed = config["uncertainty"].get("bootstrap_seed", 42)   # data + folds
     bank_seed = _bank_seed(config, args)                     # draws from D
     model_type, model_params, _from_cv = reactor_model_spec(config, verbose=True)
-    inst = _reactor_instance(config)
+    inst = reactor_instance(config)
     folds = make_folds(inst, "kfold", n_kfold=_synth_n_folds(config, args), seed=seed)
     oracle = make_cv_oracle(inst)
 
@@ -325,7 +324,7 @@ def _setup_reactor(config, args):
         if args.match_bank:
             cfg.setdefault("methods", {}).setdefault("cp", {})["n_scenarios"] = \
                 int(cfg["uncertainty"].get("n_bootstrap", 20))
-        return _synth_build(method, cfg, model_type, model_params, bank_seed,
+        return synth_build(method, cfg, model_type, model_params, bank_seed,
                             cp_alpha=cp_alpha)
 
     return Setup(inst, folds, oracle, make_build, None, False,
@@ -333,21 +332,14 @@ def _setup_reactor(config, args):
 
 
 def _setup_gastric(config, args):
-    from experiments.run_chemo_robust import (
-        _resolve_run_settings, _method_build_map, _cs_ranges, ALL_CONSTRAINTS,
-    )
-    from src.data.generate import gastric_cancer
-
-    cv_configs, gt_configs = _load_cv_configs(args)
-    settings = _resolve_run_settings(config, _chemo_args())
-    inst = gastric_cancer(fixed_constraint_configs=cv_configs,
-                          fixed_gt_ensemble_configs=gt_configs)
+    cv_configs, gt_configs = load_gastric_cv_configs(getattr(args, "cv_configs", None))
+    settings = gastric_settings(config)
+    inst = gastric_instance(cv_configs, gt_configs)
     cvc = config.get("cv_calibration", {})
     folds = make_folds(inst, cvc.get("fold_scheme", "auto"),
                        tuple(cvc.get("fold_cutoffs", (2004, 2005, 2006, 2007))),
                        int(cvc.get("n_kfold", 4)), settings["bootstrap_seed"])
     oracle = make_cv_oracle(inst, gt_specs=gt_configs)
-    ranges = _cs_ranges(settings)
 
     bank_seed = _bank_seed(config, args)
 
@@ -363,36 +355,14 @@ def _setup_gastric(config, args):
             cell["cp_n_scenarios"] = int(config["uncertainty"].get("n_bootstrap", 20))
         # None -> the pinned 0. Only the coverage-cap ablation ever sets it.
         cell["cp_alpha"] = cp_alpha
-        build, _ = _method_build_map(method, cell, ranges,
-                                     config["default_model"]["type"],
-                                     config["default_model"]["params"], None, None)
-        return build
+        return gastric_build(method, cell,
+                             config["default_model"]["type"],
+                             config["default_model"]["params"])
 
     return Setup(inst, folds, oracle, make_build, ALL_CONSTRAINTS,
                  bool(inst.context_var_indices),
                  (config["default_model"]["type"],
                   config["default_model"]["params"]), config)
-
-
-def _chemo_args():
-    """The flags ``run_chemo_robust._resolve_run_settings`` reads, at full-run values.
-
-    The sweep's parser is its own; it shares no flags with the gastric runner, and
-    its ``--methods`` means "methods to sweep", not ``methods_to_run`` (the sweep
-    builds one solver per method by name, so that key is unused here). Passing the
-    sweep namespace straight through therefore both crashed on ``args.quick`` and
-    would have silently repurposed ``--methods``. Full-run settings are what the
-    sweep wants anyway: --quick shrinks B, the anchor count and the iteration cap,
-    which would change what each rho cell measures.
-    """
-    return argparse.Namespace(
-        quick=False,
-        max_test_rows=None,
-        methods=None,
-        output=None,
-        cp_robustify_objective=None,
-        cp_eval_mode=None,
-    )
 
 
 def _variant_suffix(args):
@@ -461,18 +431,6 @@ The single-decision problems (``--problem synthetic``, ``--problem reactor``)
             + (f"_f{int(n)}" if n else "")
             + (f"_m{model}" if model else "")
             + (f"_s{int(seed)}" if seed is not None else ""))
-
-
-def _load_cv_configs(args):
-    """Frozen constraint-model / GT-ensemble configs, as run_chemo_robust reads them."""
-    cv_configs = gt_configs = None
-    base = getattr(args, "cv_configs", None)
-    if base and os.path.exists(base):
-        cv_configs = json.load(open(base))
-        gt_path = base.replace("_selected_configs", "_gt_ensemble_configs")
-        if os.path.exists(gt_path):
-            gt_configs = json.load(open(gt_path))
-    return cv_configs, gt_configs
 
 
 # ---------------------------------------------------------------------------
@@ -1006,8 +964,7 @@ def main():
     p.add_argument("--cv-configs", default="results/cv/gastric_selected_configs.json")
     args = p.parse_args()
 
-    import yaml
-    config = yaml.safe_load(open(args.config))
+    config = load_config(args.config)
 
     # Resolve the two things that scope a SYNTHETIC cell but are not flags:
     # the fold count (an implicit --n-folds, since the config default now decides
@@ -1032,7 +989,6 @@ def main():
 
     if args.problem in ("synthetic", "reactor"):
         args.n_folds = _synth_n_folds(config, args)
-        from experiments.run_sweep import synth_model_spec, reactor_model_spec
         spec = (synth_model_spec if args.problem == "synthetic"
                 else reactor_model_spec)
         args.synth_model = spec(config)[0]

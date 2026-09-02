@@ -295,8 +295,10 @@ method's feasibility–objective frontier (centered on $\theta^\ast$ via
 that $\theta^\ast$ sits somewhere sensible on its own curve.
 
 This runs as **stage 1** of the gastric pipeline; stage 2 (the CV-calibrated
-headline table + CV-centered Pareto sweep) consumes its output. See
-`experiments/submit_pipeline.sh` for the chained SLURM version.
+headline table + CV-centered Pareto sweep) consumes its output. The chained
+`submit_pipeline.sh` / `submit_cv_calibrate.sh` / `submit_cp_final.sh` scripts
+were deleted 2026-09-02 (all pre-ellipsoid); run the stages from
+`submit_chemo_robust.sh` or by hand.
 
 ### Distribution-free formalization (design notes, not implemented)
 
@@ -451,12 +453,9 @@ uv run python experiments/run_chemo_replication.py
 
 # Post-processing
 uv run python experiments/summarize_table6.py       # Table 6 CSV -> presentation .csv/.tex
-uv run python experiments/make_paper_figures.py     # fig_headline/fig_tradeoff/fig_rhs_frontier/...
 
 # SLURM
-sbatch experiments/submit_cv_calibrate.sh                 # stage 1 alone
-bash experiments/submit_pipeline.sh                       # stage 1 -> stage 2 (afterok dependency)
-sbatch experiments/submit_chemo_robust.sh                 # full run, no CV chaining
+sbatch experiments/submit_chemo_robust.sh                 # full run
 ```
 
 Uncertainty is **data-driven**: bootstrap resamples of observed training
@@ -478,30 +477,23 @@ still uses a train-only proxy oracle, matching the gastric CV path; the analytic
 truth is reserved for final evaluation only).
 
 ```bash
-# Single run, all methods
-uv run python experiments/run_all.py
+# Model-type/hyperparameter CV (run once; freezes the embedded model)
+uv run python experiments/run_cv.py --problem synthetic
 
-# Robustness-parameter CV (KFold + proxy oracle) then CV-centered Pareto
-uv run python experiments/run_sweep.py --calibrate-cv
-uv run python experiments/run_sweep.py --pareto
+# The two sweeps. Both are hours of Gurobi -- go through SLURM, not this shell.
+PROBLEM=synthetic sbatch --array=0 experiments/submit_dial_sweep.sh  # primary axis + test stage
+PROBLEMS=synthetic sbatch --array=0 experiments/submit_rho_sweep.sh  # the supporting rho axis
 
-# Label-noise sigma sweep (degradation as sigma grows)
-uv run python experiments/run_sweep.py --sweep noise
-uv run python experiments/run_sweep.py --sweep noise --plot-only   # replot existing results
-
-# Legacy Gamma sweep — see the caveat below
-uv run python experiments/run_sweep.py --sweep gamma
-uv run python experiments/run_sweep.py --sweep all    # gamma + noise
+# MIP-vs-sklearn embedding agreement on this instance
+uv run python experiments/verify_embedding.py --problem synthetic
 ```
 
-> **`--sweep gamma` is currently inert.** `run_gamma_sweep` sets
-> `config["uncertainty"]["gamma"]`, but no solver reads that key — the methods'
-> uncertainty is data-driven (bootstrap resamples), with no scalar budget
-> $\Gamma$. Every value on the grid therefore re-runs the *same* experiment, and
-> `sweep_results.csv` / `gamma_sweep.png` differ only by solver noise. It is kept
-> as a stub from the earlier budgeted-uncertainty formulation; use
-> `--sweep noise` (noise level) or `--pareto` (training draw at fixed noise) for
-> real robustness axes.
+> The older synthetic entry points (`run_all.py`, `run_sweep.py` and its noise /
+> Pareto / inert-Gamma sweeps) were **deleted 2026-09-02**: everything they
+> produced predates the ellipsoid uncertainty set and the `n_train` 200 -> 2500
+> change, and the dial sweep answers the same question under a current judge and
+> protocol. The instance and solver builders they owned now live in
+> `src/data/instances.py` and `src/methods/builders.py`.
 
 ## Configuration
 
@@ -524,11 +516,13 @@ robust-cl/
 │   ├── data/
 │   │   ├── generate.py             # ProblemInstance; synthetic_nonlinear() / gastric_cancer() builders
 │   │   ├── gastric_v11.py          # gastric cohort processing (imputation, ECOG/KPS, v11 alignment)
-│   │   └── gastric_model_specs.py  # embedded-constraint + 6-model GT-ensemble hyperparameters (paper Tables EC.10/EC.12)
+│   │   ├── gastric_model_specs.py  # embedded-constraint + 6-model GT-ensemble hyperparameters (paper Tables EC.10/EC.12)
+│   │   └── instances.py            # load_config + the three instance builders (frozen CV picks applied)
 │   ├── models/
 │   │   ├── train.py                # train/retrain models; bootstrap-sample helpers
 │   │   └── embed.py                # MIO embedding (trees/ensembles/MLP/pipelines) + rho margin tightening
 │   ├── methods/
+│   │   ├── builders.py             # config -> settings -> solver partial (the one place)
 │   │   ├── nominal.py              # shared MIP scaffolding + plain constraint learning
 │   │   ├── robust_regression.py    # label-robust training counterpart
 │   │   ├── wrapper.py              # Maragno et al. ensemble chance constraint + OptiCL tree-violation variant
@@ -542,31 +536,34 @@ robust-cl/
 │       ├── perturbations.py        # label perturbation sampling
 │       └── trust_region.py         # convex-hull trust region (gastric)
 ├── experiments/
-│   ├── run_all.py                  # single synthetic run, all methods
-│   ├── run_sweep.py                # synthetic sweeps + CV calibration + CV-centered Pareto
+│   ├── run_dial_sweep.py           # PRIMARY axis: rho fixed, each method along its own dial
+│   ├── run_dial_test.py            # test stage: hold at dial*, re-judge (folds/full/subsample)
+│   ├── run_rho_sweep.py            # supporting axis: the shared rho swept at fixed dials
+│   ├── plot_dial_sweep.py          # frontier + solved-fraction panels
+│   ├── plot_rho_sweep.py / pool_rho_seeds.py
 │   ├── run_chemo_robust.py         # gastric Table 6 comparison + CV calibration + sweeps
 │   ├── run_chemo_replication.py    # OptiCL Table 6 replication baseline only
 │   ├── run_cv.py                   # model-type/hyperparameter CV (constraint models + GT ensemble)
 │   ├── summarize_table6.py         # Table 6 CSV -> presentation-ready .csv/.tex
-│   ├── make_paper_figures.py       # gastric + synthetic paper figures
-│   ├── plot_results.py             # basic synthetic bar plot + CP convergence from cp_trace.csv
+│   ├── verify_embedding.py / run_adversary_probe.py / measure_clip_fraction.py
+│   │                               # diagnostics; each the provenance of a quoted number
 │   └── submit_*.sh                 # SLURM job scripts (see below)
 └── results/                        # CSV/figure outputs, see "Expected Outputs"
 ```
 
-**SLURM scripts**: `submit_cv_calibrate.sh` (stage 1: robustness-knob CV) →
-`submit_pipeline.sh` (chains stage 1 into stage 2 via `afterok`) →
-`submit_cp_final.sh` (stage 2 array: headline + frontiers + CV-centered
-Pareto); `submit_chemo_robust.sh` (full run, no CV chaining);
-`submit_cp_confirm_ablation.sh` (CP ablation confirmation sweep);
-`submit_chemo.sh` (legacy OptiCL replication run).
+**SLURM scripts**: `submit_dial_sweep.sh` (the primary axis + the test stage, one
+array task per problem) and `submit_rho_sweep.sh` (the supporting axis, one
+`(problem, seed)` per task) are the current experiments; then
+`submit_chemo_robust.sh` (full gastric Table 6), `submit_adversary_probe.sh`, and
+`submit_chemo.sh` (legacy OptiCL replication). Every one sources
+`_activate_env.sh`.
 
 ## Expected Outputs
 
 | Location | Contents |
 |----------|----------|
-| `results/synthetic/` | `results.csv` (single run), `noise_sweep_results.csv` + `noise_sweep.png` (noise sweep), `synthetic_pareto.csv` (CV-centered Pareto), `comparison.png` (`plot_results.py`); `sweep_results.csv` / `gamma_sweep.png` only from the inert Gamma stub |
-| `results/gastric/` | `chemo_robust_table6*.csv` (Table 6), `chemo_robust_realizations_*.csv` / `chemo_robust_robustness_summary_*.csv` (sweeps), `summary_*.csv` / `.tex` (`summarize_table6.py`), `cp_trace.csv` (`iteration, max_violation, objective`), `ccg_convergence.png` (`plot_results.py`), `prescriptions/*.csv` |
+| `results/synthetic/` | `results.csv` (single run), `noise_sweep_results.csv` + `noise_sweep.png` (noise sweep), `synthetic_pareto.csv` (CV-centered Pareto) -- all pre-ellipsoid, superseded by `results/rho_sweep/` |
+| `results/gastric/` | `chemo_robust_table6*.csv` (Table 6), `chemo_robust_realizations_*.csv` / `chemo_robust_robustness_summary_*.csv` (sweeps), `summary_*.csv` / `.tex` (`summarize_table6.py`), `cp_trace.csv` (`iteration, max_violation, objective`), `prescriptions/*.csv` |
 | `results/cv/` | `*_selected_configs.json` / `*_gt_ensemble_configs.json` (model-type CV), `*_robustness_knobs.json` / `*_robustness_cv_scores.csv` (robustness-parameter CV), SHAP plots |
 | `results/figures/` | `fig_headline`, `fig_tradeoff`, `fig_rhs_frontier`, `fig_frac_frontier`, `fig_pareto` (gastric); `fig_synthetic`, `fig_synthetic_pareto` (synthetic) — PDF + PNG |
 

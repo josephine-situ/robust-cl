@@ -142,9 +142,9 @@ def main():
     seed = int(cfg["uncertainty"].get("bootstrap_seed", 42))
     mip_gap = resolve_mip_gap(cfg)
 
-    # Same model resolution _reactor_instance uses, so the probe embeds what the
+    # Same model resolution instances.reactor_instance uses, so the probe embeds what the
     # evaluation embeds.
-    from experiments.run_sweep import reactor_model_spec
+    from src.data.instances import reactor_model_spec
     mt, mp, from_cv = reactor_model_spec(cfg, verbose=True)
     fixed_cfg = {"model_type": mt, "model_params": mp} if from_cv else None
 

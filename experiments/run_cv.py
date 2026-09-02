@@ -198,8 +198,8 @@ def _check_embeddable(model_type: str, outcome: str) -> None:
         warnings.warn(
             f"CV selected '{model_type}' for '{outcome}' which is not yet supported "
             f"for MIO embedding in embed.py (supported: {sorted(EMBEDDABLE_TYPES)}). "
-            "This config cannot be used directly in run_chemo_robust.py / run_all.py "
-            "until embed.py is extended.",
+            "This config cannot be used directly in run_chemo_robust.py or the "
+            "sweeps until embed.py is extended.",
             stacklevel=3,
         )
 
@@ -1401,11 +1401,10 @@ def main():
     if args.problem in ("synthetic", "both"):
         print(
             f"  # {out_dir}/synthetic_selected_configs.json is auto-loaded by "
-            f"run_sweep.synth_model_spec (rho sweep, knob CV, Pareto)"
+            f"src.data.instances.synth_model_spec (both sweeps, the test stage)"
         )
         print(
-            f"  python experiments/run_all.py "
-            f"--cv-configs {out_dir}/synthetic_selected_configs.json"
+            f"  python experiments/run_dial_sweep.py --problem synthetic"
         )
         if args.ensemble:
             print(

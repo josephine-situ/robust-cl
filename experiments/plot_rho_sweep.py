@@ -13,7 +13,7 @@ results/figures/:
 The rho CURVE is the primary reading and rho* the derived one, so every figure
 shows the whole axis; rho* is marked, never plotted alone. Palette = Okabe-Ito
 (colorblind-safe) and each method also carries a distinct marker, matching
-``make_paper_figures.py`` -- identity is never colour-alone.
+``plot_dial_sweep.py`` -- identity is never colour-alone.
 """
 import argparse
 import os

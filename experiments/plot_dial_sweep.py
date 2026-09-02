@@ -75,9 +75,8 @@ from matplotlib.lines import Line2D
 RES = "results/rho_sweep"
 OUT = "results/figures"
 
-# Fixed hue order, never cycled -- the same assignment plot_rho_sweep.py and
-# make_paper_figures.py use, so a method is one colour across every figure in the
-# deck. Okabe-Ito; nominal is deliberately achromatic because it is the reference
+# Fixed hue order, never cycled -- the same assignment plot_rho_sweep.py uses, so
+# a method is one colour across every figure in the deck. Okabe-Ito; nominal is deliberately achromatic because it is the reference
 # level rather than a categorical slot.
 METHODS = ["nominal", "wrapper", "margin", "cmicl", "cp"]
 LABEL = {"nominal": "Nominal", "wrapper": "Wrapper",

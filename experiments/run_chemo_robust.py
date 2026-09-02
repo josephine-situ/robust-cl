@@ -13,18 +13,20 @@ import argparse
 import json
 import os
 import sys
-import yaml
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.data.generate import gastric_cancer, filter_constraints
-from src.methods.nominal import resolve_mip_gap
+from src.data.instances import (
+    ALL_CONSTRAINTS, GASTRIC_CV_CONFIGS, GASTRIC_GT_CONFIGS,
+    constraint_names as _constraint_names, gastric_instance, load_config,
+)
 from src.methods.wrapper import (
     _coherent_bootstrap_indices,
     train_bootstrap_ensembles_for_instance,
 )
 from src.methods.cp import select_anchor_contexts
-from experiments.method_builders import build_method
+from src.methods.builders import build_method, gastric_build, gastric_settings
 from src.methods.calibrate import calibrate_strength
 from src.methods.cv_calibrate import lookup_knob
 from src.evaluation.chemo_metrics import (
@@ -38,176 +40,6 @@ from src.evaluation.chemo_metrics import (
 # Baselines whose single robustness knob is calibrated to the shared alpha.
 # cp self-regulates via its p_infeas cap; nominal has no robustness knob.
 CALIBRATED_METHODS = ["wrapper", "tree_violation", "robust_param", "robust_reg"]
-
-ALL_CONSTRAINTS = [
-    "dlt_constraint", "blood_constraint", "constitutional_constraint",
-    "infection_constraint", "gi_constraint", "os_constraint",
-]
-DLT_ONLY = ["dlt_constraint", "os_constraint"]
-
-ALL_METHODS = [
-    "nominal", "tree_violation", "robust_param", "robust_reg", "wrapper", "cp",
-    "cmicl", "margin",
-]
-
-
-def load_config(path="config.yaml"):
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
-
-
-def _resolve_run_settings(config, args):
-    chemo_cfg = config["methods"].get("chemo", {})
-    quick_cfg = chemo_cfg.get("quick", {})
-    unc = config["uncertainty"]
-
-    cp_cfg = config["methods"].get("cp", {})
-
-    if args.quick:
-        settings = {
-            "max_test_rows": quick_cfg.get("max_test_rows", 5),
-            "methods_to_run": quick_cfg.get(
-                "methods_to_run", ["nominal", "wrapper", "cp"]
-            ),
-            "constraint_modes": quick_cfg.get("constraint_modes", ["all_constraints"]),
-            "n_bootstrap": quick_cfg.get("n_bootstrap", 5),
-            "cp_max_iterations": quick_cfg.get("cp_max_iterations", 5),
-            "cp_n_candidates": quick_cfg.get("cp_n_candidates", 5),
-            "cp_k_neighbors_frac": quick_cfg.get("cp_k_neighbors_frac", 0.05),
-            "cp_k_neighbors_min": quick_cfg.get(
-                "cp_k_neighbors_min", unc.get("cp_k_neighbors_min", 100)
-            ),
-            "alpha": quick_cfg.get("alpha", unc.get("alpha", 0.0)),
-            "cp_n_anchors": quick_cfg.get("cp_n_anchors", cp_cfg.get("n_anchors", 4)),
-            "output_path": "results/gastric/chemo_robust_table6_quick.csv",
-            "prescriptions_dir": "results/gastric/prescriptions",
-        }
-    else:
-        settings = {
-            "max_test_rows": None,
-            "methods_to_run": chemo_cfg.get("methods_to_run", ALL_METHODS),
-            "constraint_modes": chemo_cfg.get(
-                "constraint_modes", ["all_constraints", "dlt_only"]
-            ),
-            "n_bootstrap": unc.get("n_bootstrap", 25),
-            "cp_max_iterations": cp_cfg.get("max_iterations", 20),
-            "cp_n_candidates": unc.get("cp_n_candidates", 20),
-            "cp_k_neighbors_frac": unc.get("cp_k_neighbors_frac", 0.1),
-            "cp_k_neighbors_min": unc.get("cp_k_neighbors_min", 100),
-            "alpha": unc.get("alpha", 0.0),
-            "cp_n_anchors": cp_cfg.get("n_anchors", 15),
-            "output_path": "results/gastric/chemo_robust_table6.csv",
-            "prescriptions_dir": "results/gastric/prescriptions",
-        }
-
-    settings["cp_anchor_source"] = cp_cfg.get("anchor_source", "train")
-    settings["cp_anchor_method"] = cp_cfg.get("anchor_method", "kmedoids")
-    # Off unless methods.cp.trace_path is set: every CP solve rewrites the same
-    # file, so over a robustness run only the last loop survives and nothing in it
-    # says which realization/RHS/mode it came from. The stdout log carries the same
-    # per-iteration numbers in context.
-    settings["cp_trace_path"] = cp_cfg.get("trace_path") or None
-    settings["cp_distance"] = cp_cfg.get("distance", "full")
-    settings["cp_dist_tol"] = cp_cfg.get("dist_tol", 1e-3)
-    settings["cp_robustify_objective"] = cp_cfg.get("robustify_objective", True)
-    settings["cp_eval_mode"] = cp_cfg.get("eval_mode", "global")
-    settings["cp_nearest_distance"] = cp_cfg.get("nearest_distance", "context")
-    settings["cp_cut_eviction"] = cp_cfg.get("cut_eviction", "reject")
-    settings["cp_scenario_source"] = cp_cfg.get("scenario_source", "noise")
-    settings["cp_d0_quantile"] = cp_cfg.get("d0_quantile", 0.9)
-    settings["cp_tolerance_basis"] = cp_cfg.get("tolerance_basis", "scale")
-    settings["cp_objective_monotone"] = cp_cfg.get("objective_monotone", False)
-    # One optimality tolerance for the whole run: CP's cut loop and final solve,
-    # the wrapper, robust_reg, nominal, and the prescribe-time re-solve. The
-    # methods are compared on their objective, so a per-method gap confounds it.
-    settings["mip_gap"] = resolve_mip_gap(config)
-    settings["cp_cut_whole_scenario"] = cp_cfg.get("cut_whole_scenario", True)
-    # Separation path: "auto" reads it off the bank's coherence (coherent -> one
-    # shared draw cut per iteration; incoherent -> the draws ranked per constraint,
-    # one model admitted for each). Gastric is where the two differ -- 5 constraints.
-    settings["cp_separation"] = cp_cfg.get("separation", "auto")
-    settings["cp_cut_rollback"] = cp_cfg.get("cut_rollback", "forward")
-    # B: CP embeds one extra scenario per iteration, so it can afford a bank far
-    # larger than the wrapper's P (which is embedded in full). --quick shrinks it.
-    settings["cp_n_scenarios"] = (
-        quick_cfg.get("cp_n_scenarios", 10) if args.quick
-        else cp_cfg.get("n_scenarios", 200)
-    )
-    # The shared uncertainty set D -- one object handed to cp, wrapper and
-    # robust_reg, so a difference between them is a difference in METHOD.
-    from src.methods.uncertainty import uncertainty_set_from_config
-    settings["uncertainty_set"] = uncertainty_set_from_config(config)
-    settings["calibration_method"] = config.get("calibration", {}).get("method", "cv")
-    settings["pareto_center_factors"] = config.get("cv_calibration", {}).get(
-        "pareto_center_factors", [0.5, 0.75, 1.0, 1.5, 2.0])
-
-    if args.max_test_rows is not None:
-        settings["max_test_rows"] = args.max_test_rows
-    if args.methods:
-        settings["methods_to_run"] = args.methods
-    if args.output:
-        settings["output_path"] = args.output
-    # CP ablation overrides (default None -> use config.yaml values).
-    if getattr(args, "cp_robustify_objective", None) is not None:
-        settings["cp_robustify_objective"] = (args.cp_robustify_objective == "true")
-    if getattr(args, "cp_eval_mode", None) is not None:
-        settings["cp_eval_mode"] = args.cp_eval_mode
-
-    settings["bootstrap_seed"] = unc.get("bootstrap_seed", 42)
-    settings["bootstrap_frac"] = unc.get("bootstrap_frac", 0.5)
-    settings["embedding_mode"] = config["methods"].get("embedding_mode", "hard")
-    settings["rf_alpha"] = config["methods"].get("chemo_wrapper", {}).get("alpha", 0.25)
-    _wrap_cfg = config["methods"]["wrapper"]
-    # P, under the name the shared builder reads. Gastric takes it from
-    # uncertainty.n_bootstrap (--quick shrinks it); the non-contextual problems take
-    # methods.wrapper.n_estimators -- see method_builders.synth_settings.
-    settings["wrapper_n_estimators"] = settings["n_bootstrap"]
-    settings["wrapper_alpha"] = _wrap_cfg.get("alpha", 0.1)
-    settings["wrapper_scenario_source"] = _wrap_cfg.get("scenario_source", "noise")
-    settings["wrapper_robustify_objective"] = _wrap_cfg.get("robustify_objective", False)
-    settings["robust_rho"] = config["methods"].get("robust_param", {}).get("rho", 0.05)
-    rr_cfg = config["methods"].get("robust_reg", {})
-    settings["robust_reg_label_eps"] = rr_cfg.get("label_eps", 0.1)
-    settings["robust_reg_budget_frac"] = rr_cfg.get("budget_frac", 0.5)
-    settings["robust_reg_K"] = rr_cfg.get("K", 5)
-    # C-MICL (src/methods/cmicl.py). Its dial is the conformal miscoverage alpha;
-    # everything below is structural and has one production value. It reads no
-    # uncertainty_set -- the only method here that does not face the shared D.
-    cm_cfg = config["methods"].get("cmicl", {})
-    settings["cmicl_alpha"] = cm_cfg.get("alpha", 0.1)
-    settings["cmicl_cal_frac"] = cm_cfg.get("cal_frac", 0.25)
-    settings["cmicl_width_model_type"] = cm_cfg.get("width_model_type") or None
-    settings["cmicl_width_model_params"] = cm_cfg.get("width_model_params") or None
-    settings["cmicl_width_floor_frac"] = cm_cfg.get("width_floor_frac", 0.05)
-    settings["cmicl_multiplicity"] = cm_cfg.get("multiplicity", "none")
-    settings["cmicl_robustify_objective"] = cm_cfg.get("robustify_objective", False)
-
-    mg_cfg = config["methods"].get("margin", {})
-    settings["margin"] = mg_cfg.get("margin", 0.5)
-    # The margin is quoted in the same units as rho and tau, so it reads the same
-    # label-scale estimator D's radius does unless told otherwise.
-    settings["margin_scale_stat"] = (mg_cfg.get("scale_stat")
-                                     or unc.get("scale_stat", "oof_sd"))
-
-    calib_cfg = config.get("calibration", {})
-    settings["calibrate_to_alpha"] = calib_cfg.get("enabled", True)
-    settings["calib_n_grid"] = calib_cfg.get("n_grid", 5)
-    settings["calib_wrapper_alpha_max"] = calib_cfg.get("wrapper_alpha_max", 0.5)
-    settings["calib_tree_alpha_max"] = calib_cfg.get("tree_alpha_max", 0.5)
-    settings["calib_rho_min"] = calib_cfg.get("rho_min", 0.001)
-    settings["calib_rho_max"] = calib_cfg.get("rho_max", 0.005)
-    settings["calib_robust_reg_eps_max"] = calib_cfg.get("robust_reg_eps_max", 0.3)
-
-    cs_cfg = config.get("conservativeness_sweep", {})
-    settings["cs_robust_param_rho_max"] = cs_cfg.get("robust_param_rho_max", 0.03)
-    settings["cs_cp_alpha_max"] = cs_cfg.get("cp_alpha_max", 0.3)
-    # CP knob is now RELATIVE (tau = fraction of the problem's iter-0 distance d0).
-    settings["cs_cp_dist_tol_rel_max"] = cs_cfg.get("cp_dist_tol_rel_max", 1.0)
-    settings["cs_cp_dist_tol_rel_min"] = cs_cfg.get("cp_dist_tol_rel_min", 0.1)
-    settings["cs_robust_reg_eps_max"] = cs_cfg.get("robust_reg_eps_max", 1.0)
-    settings["cs_wrapper_alpha_max"] = cs_cfg.get("wrapper_alpha_max", 0.5)
-    return settings
-
 
 def _build_solvers(config, settings, instance, bootstrap_cache):
     """The gastric solvers at ``config.yaml``'s own knob values (no calibration).
@@ -237,14 +69,6 @@ def _build_solvers(config, settings, instance, bootstrap_cache):
     }
 
 
-def _constraint_names(constraint_mode):
-    if constraint_mode == "all_constraints":
-        return ALL_CONSTRAINTS
-    if constraint_mode == "dlt_only":
-        return DLT_ONLY
-    raise ValueError(f"Unknown constraint mode: {constraint_mode}")
-
-
 def _method_build_map(method, settings, ranges, model_type, model_params,
                       bootstrap_cache, ensembles_cache):
     """Return ``(build, strength_to_knob)`` for a method: ``build(knob)`` -> solver_fn,
@@ -252,9 +76,10 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
     ``ranges`` supplies the knob endpoints, so the same mapping serves both
     calibration (calibration ranges) and the conservativeness sweep (wider ranges).
 
-    Only the strength->knob half is gastric-specific. ``build`` is the shared
-    ``method_builders.build_method``, the same one ``run_sweep._synth_build`` calls,
-    so the solver argument lists exist once."""
+    Only the strength->knob half is gastric-specific, and this is the only caller
+    that needs it: the sweeps are HANDED a dial and go straight to
+    ``builders.gastric_build``, which is why ``ranges`` no longer has to exist for
+    them."""
     if method == "wrapper":
         amax = ranges["wrapper_alpha_max"]
         strength_to_knob = lambda s: amax * (1.0 - s)  # s=1 strongest -> alpha_w=0
@@ -305,13 +130,8 @@ def _method_build_map(method, settings, ranges, model_type, model_params,
     else:
         raise ValueError(f"Unknown method for knob map: {method}")
 
-    # `cp_alpha` reaches CP only and is None -- the pinned 0 -- for every runner
-    # except the coverage-cap ablation, which sets settings["cp_alpha"] to walk it.
-    build = lambda knob: build_method(
-        method, knob, model_type, model_params, settings,
-        bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
-        cp_alpha=settings.get("cp_alpha"),
-    )
+    build = gastric_build(method, settings, model_type, model_params,
+                          bootstrap_cache, ensembles_cache)
     return build, strength_to_knob
 
 
@@ -432,7 +252,7 @@ def run_chemo_robust(config, args, cv_configs=None, gt_configs=None,
                      subsample_frac=None, subsample_seed=None,
                      write_output=True, tox_ub=None, conservativeness=None,
                      collect_only=False, cv_knobs=None, pareto_center_cv=False):
-    settings = _resolve_run_settings(config, args)
+    settings = gastric_settings(config, args)
     instance = gastric_cancer(
         fixed_constraint_configs=cv_configs if cv_configs else None,
         fixed_gt_ensemble_configs=gt_configs if gt_configs else None,
@@ -613,7 +433,7 @@ def run_chemo_robust_realizations(config, args, cv_configs=None, gt_configs=None
     import pandas as pd
     from src.evaluation.chemo_metrics import aggregate_realizations
 
-    settings = _resolve_run_settings(config, args)  # for shared-cohort row building
+    settings = gastric_settings(config, args)  # for shared-cohort row building
     n_real = args.n_realizations
     base_seed = config["uncertainty"].get("bootstrap_seed", 42)
     # Two sweep axes, both with common random numbers -- the subsample seed depends
@@ -834,10 +654,10 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
         make_folds, make_cv_oracle, cv_score_knob, select_knob_cv,
         load_score_checkpoint, append_score, write_knobs, knob_key,
     )
-    settings = _resolve_run_settings(config, args)
+    settings = gastric_settings(config, args)
     cvc = config.get("cv_calibration", {})
-    # run_chemo_robust.py is the gastric script (it always builds gastric, regardless
-    # of config.data.type); the synthetic robustness-parameter CV lives in run_sweep.py.
+    # run_chemo_robust.py is the gastric script: it always builds gastric,
+    # regardless of config.data.type.
     prefix = "gastric"
     scores_path = f"results/cv/{prefix}_robustness_cv_scores.csv"
     knobs_path = f"results/cv/{prefix}_robustness_knobs.json"
@@ -847,9 +667,7 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
                 os.remove(p)
                 print(f"[cv] removed {p} (--refresh-cv)")
 
-    instance = gastric_cancer(
-        fixed_constraint_configs=cv_configs, fixed_gt_ensemble_configs=gt_configs,
-    )
+    instance = gastric_instance(cv_configs, gt_configs)
     model_type = config["default_model"]["type"]
     model_params = config["default_model"]["params"]
 
@@ -923,10 +741,6 @@ def run_cv_calibration(config, args, cv_configs=None, gt_configs=None):
 
     write_knobs(knobs_path, knobs)
     return knobs
-
-
-_DEFAULT_CV_CONFIGS = "results/cv/gastric_selected_configs.json"
-_DEFAULT_GT_CONFIGS = "results/cv/gastric_gt_ensemble_configs.json"
 
 
 def main():
@@ -1066,7 +880,7 @@ def main():
         metavar="PATH",
         help=(
             f"Path to gastric_selected_configs.json from run_cv.py. "
-            f"Defaults to {_DEFAULT_CV_CONFIGS} if that file exists."
+            f"Defaults to {GASTRIC_CV_CONFIGS} if that file exists."
         ),
     )
     parser.add_argument(
@@ -1076,7 +890,7 @@ def main():
         metavar="PATH",
         help=(
             f"Path to gastric_gt_ensemble_configs.json from run_cv.py --ensemble. "
-            f"Defaults to {_DEFAULT_GT_CONFIGS} if that file exists."
+            f"Defaults to {GASTRIC_GT_CONFIGS} if that file exists."
         ),
     )
     parser.add_argument(
@@ -1099,28 +913,28 @@ def main():
         with open(args.cv_configs, "r") as f:
             cv_configs = json.load(f)
         print(f"Loaded constraint CV configs from {args.cv_configs}")
-    elif os.path.exists(_DEFAULT_CV_CONFIGS):
-        with open(_DEFAULT_CV_CONFIGS, "r") as f:
+    elif os.path.exists(GASTRIC_CV_CONFIGS):
+        with open(GASTRIC_CV_CONFIGS, "r") as f:
             cv_configs = json.load(f)
-        print(f"Auto-loaded constraint CV configs from {_DEFAULT_CV_CONFIGS}")
+        print(f"Auto-loaded constraint CV configs from {GASTRIC_CV_CONFIGS}")
     else:
         print(
-            f"No CV configs found at {_DEFAULT_CV_CONFIGS}; "
+            f"No CV configs found at {GASTRIC_CV_CONFIGS}; "
             "using fixed paper constraint models. Run experiments/run_cv.py first."
         )
 
     # --- Resolve GT ensemble configs ---
     gt_configs = None
     if not args.no_cv_configs:
-        gt_path = args.gt_cv_configs or _DEFAULT_GT_CONFIGS
+        gt_path = args.gt_cv_configs or GASTRIC_GT_CONFIGS
         if args.gt_cv_configs and os.path.exists(args.gt_cv_configs):
             with open(args.gt_cv_configs, "r") as f:
                 gt_configs = json.load(f)
             print(f"Loaded GT ensemble configs from {args.gt_cv_configs}")
-        elif not args.gt_cv_configs and os.path.exists(_DEFAULT_GT_CONFIGS):
-            with open(_DEFAULT_GT_CONFIGS, "r") as f:
+        elif not args.gt_cv_configs and os.path.exists(GASTRIC_GT_CONFIGS):
+            with open(GASTRIC_GT_CONFIGS, "r") as f:
                 gt_configs = json.load(f)
-            print(f"Auto-loaded GT ensemble configs from {_DEFAULT_GT_CONFIGS}")
+            print(f"Auto-loaded GT ensemble configs from {GASTRIC_GT_CONFIGS}")
         else:
             print(
                 f"No GT ensemble configs at {gt_path}; "

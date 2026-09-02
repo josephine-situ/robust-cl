@@ -107,11 +107,13 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.methods.cv_calibrate import _fold_instance, make_gt_oracle, GastricOracle
+from src.methods.cv_calibrate import (
+    _fold_instance, make_gt_oracle, GastricOracle, judge_audit, _fmt_x,
+)
 from src.data.generate import filter_constraints
+from src.data.instances import load_config, load_gastric_cv_configs
 from experiments.run_rho_sweep import (
     _setup_synthetic, _setup_reactor, _setup_gastric, _variant_suffix, _bank_seed,
-    _load_cv_configs,
 )
 
 OUT_DIR = "results/rho_sweep"
@@ -167,12 +169,27 @@ class TruthOracle:
         v = fn(np.asarray(x, dtype=float).ravel())
         return float(np.asarray(v).flat[0])
 
-    def feasible(self, x) -> bool:
+    def slack_parts(self, x) -> dict:
+        """``{constraint -> gt value - rhs}``: signed, > 0 is a violation."""
+        out = {}
         for c_idx, c in enumerate(self.instance.constraints):
             v = self._val(self.instance.gt_constraints[c_idx], x)
-            if not np.isfinite(v) or v - float(c.rhs) > self.tol:
-                return False
-        return True
+            out[c.name] = (float("inf") if not np.isfinite(v)
+                           else v - float(c.rhs))
+        return out
+
+    def slack(self, x) -> float:
+        """Signed distance to the binding constraint under the EXACT judge."""
+        parts = self.slack_parts(x)
+        return max(parts.values()) if parts else float("-inf")
+
+    def feasible(self, x) -> bool:
+        return self.slack(x) <= self.tol
+
+    def lomo_slacks(self, x) -> np.ndarray:
+        """Empty: an analytic judge has no ensemble members, so there is no
+        member-instability to report. See ``cv_calibrate.judge_audit``."""
+        return np.empty(0)
 
     def objective(self, x) -> float:
         return self._val(self.instance.gt_objective, x)
@@ -358,18 +375,31 @@ def _prescriptions(su, result, contextual, instance=None, rows=None):
     return out
 
 
+_NO_AUDIT = {"slack": np.nan, "binding": "", "lomo_flip": np.nan,
+             "lomo_sd": np.nan}
+
+
 def _score(su, judge, result, contextual, instance=None, rows=None):
-    """``(feasibility, objective, solved_frac, per-point records)`` under ``judge``."""
+    """``(feasibility, objective, solved_frac, per-point records)`` under ``judge``.
+
+    Each record is ``(context_idx, solved, feasible, objective, audit, x*)``.
+    The audit and the decision vector ride along rather than living in a second
+    file (as they do on the sweep side) because the points CSV is REWRITTEN on
+    every checkpoint here, not appended to -- so widening it cannot mix row
+    widths. Under the ODE or the analytic judge the two instability columns are
+    ``nan`` by construction: an exact judge has no members to disagree.
+    """
     feas, obj, recs = [], [], []
     for ci, x in _prescriptions(su, result, contextual, instance, rows):
         if x is None:
-            recs.append((ci, 0.0, np.nan, np.nan))
+            recs.append((ci, 0.0, np.nan, np.nan, _NO_AUDIT, ""))
             continue
+        aud = judge_audit(judge, x)
         f = 1.0 if judge.feasible(x) else 0.0
         o = float(judge.objective(x))
         feas.append(f)
         obj.append(o)
-        recs.append((ci, 1.0, f, o))
+        recs.append((ci, 1.0, f, o, aud, _fmt_x(x)))
     n = len(recs) or 1
     return (float(np.mean(feas)) if feas else np.nan,
             float(np.mean(obj)) if obj else np.nan,
@@ -444,7 +474,7 @@ def _subsample_phase(config, args, su, judge, judge_name, series, points, summar
     frac = float(args.subsample_frac)
     n_real = int(args.n_realizations)
     base_seed = int(config.get("uncertainty", {}).get("bootstrap_seed", 42))
-    cv_configs, gt_configs = _load_cv_configs(args)
+    cv_configs, gt_configs = load_gastric_cv_configs(getattr(args, "cv_configs", None))
     base_uset = dataclasses.replace(
         uncertainty_set_from_config(config),
         geometry="ellipsoid", coherent=bool(args.coherent),
@@ -477,13 +507,13 @@ def _subsample_phase(config, args, su, judge, judge_name, series, points, summar
                 res = res[0]
             feas, obj, solved, recs = _score(su, judge, res, su.contextual,
                                              instance=inst, rows=rows)
-            for ci, sv, fv, ov in recs:
+            for ci, sv, fv, ov, aud, xs in recs:
                 points.append(dict(problem="gastric", method=method, rho=rho,
                                    dial_name=dial_name, dial_star=dial,
                                    phase="subsample", judge=judge_name, fold=-1,
                                    realization=r, subsample_seed=sub_seed,
                                    context_idx=ci, solved=sv, feasible=fv,
-                                   objective=ov))
+                                   objective=ov, **aud, x_star=xs))
             per_real.setdefault(key, []).append((feas, obj, solved))
             dt = time.time() - t0
             print(f"[cell] END   {label:<34s} phase=subsample r={r} "
@@ -687,12 +717,12 @@ def run(config, args):
                     if isinstance(res, tuple):
                         res = res[0]
                     fe, ob, so, recs = _score(su, judge, res, su.contextual)
-                    for ci, sv, fv, ov in recs:
+                    for ci, sv, fv, ov, aud, xs in recs:
                         points.append(dict(problem=problem, method=method, rho=rho,
                                            dial_name=dial_name, dial_star=dial,
                                            phase=phase, judge=judge_name, fold=k,
                                            context_idx=ci, solved=sv, feasible=fv,
-                                           objective=ov))
+                                           objective=ov, **aud, x_star=xs))
                     if np.isfinite(fe):
                         feas_f.append(fe)
                     if np.isfinite(ob):
@@ -722,12 +752,12 @@ def run(config, args):
                 if isinstance(res, tuple):
                     res = res[0]
                 feas, obj, solved, recs = _score(su, judge, res, su.contextual)
-                for ci, sv, fv, ov in recs:
+                for ci, sv, fv, ov, aud, xs in recs:
                     points.append(dict(problem=problem, method=method, rho=rho,
                                        dial_name=dial_name, dial_star=dial,
                                        phase=phase, judge=judge_name, fold=-1,
                                        context_idx=ci, solved=sv, feasible=fv,
-                                       objective=ov))
+                                       objective=ov, **aud, x_star=xs))
                 # One refit, one decision per method: there is no spread to
                 # report on either column, which is the point of the phase.
                 spread = obj_spread = np.nan
@@ -835,8 +865,7 @@ def main():
         args.phases = (["folds", "full", "subsample"] if args.problem == "gastric"
                        else ["folds", "full"])
 
-    import yaml
-    config = yaml.safe_load(open(args.config))
+    config = load_config(args.config)
 
     # Resolved EXACTLY as run_dial_sweep.main resolves them. `_variant_suffix`
     # reads `n_folds`, `synth_model` and `separation`, and the suffix has to come
@@ -845,7 +874,7 @@ def main():
     args.separation = config.get("methods", {}).get("cp", {}).get("separation", "auto")
     if args.problem in ("synthetic", "reactor"):
         from experiments.run_rho_sweep import _synth_n_folds
-        from experiments.run_sweep import synth_model_spec, reactor_model_spec
+        from src.data.instances import synth_model_spec, reactor_model_spec
         args.n_folds = _synth_n_folds(config, args)
         spec = (synth_model_spec if args.problem == "synthetic"
                 else reactor_model_spec)

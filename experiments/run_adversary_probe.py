@@ -66,7 +66,7 @@ from src.methods.uncertainty import (
 )
 from src.utils.perturbations import l2_worst_case_shift
 from src.models.train import retrain_on_perturbed, train_model
-from experiments.run_chemo_robust import load_config
+from src.data.instances import load_config
 
 
 # ---------------------------------------------------------------------------

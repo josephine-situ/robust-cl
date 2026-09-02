@@ -51,7 +51,7 @@ from sklearn.neural_network import MLPRegressor
 from src.models.embed import embed_model, _extract_tree_structure, _parse_xgb_json_tree
 from src.models.train import train_model
 from experiments.run_adversary_probe import build_instance, outcome_rows, _unwrap
-from experiments.run_chemo_robust import load_config
+from src.data.instances import load_config
 
 
 def embedded_range_at(ml_model, x_point, var_lb, var_ub):
@@ -192,20 +192,20 @@ def boundary_points(ml_model, X, var_lb, var_ub, n_points, rng):
 def resolve_instance(config, args):
     """(instance, fallback_model_type, fallback_params, provenance_note).
 
-    Synthetic and reactor go through `run_sweep`'s builders so the model verified
+    Synthetic and reactor go through `src.data.instances` so the model verified
     is the one every method embeds. `run_adversary_probe.build_instance` cannot be
     used for them: it reads a `data.synthetic` key config.yaml does not have (so it
     silently falls back to n_train=200) and never loads the CV selection at all.
     """
     if args.problem == "synthetic":
-        from experiments.run_sweep import _synth_instance, synth_model_spec
+        from src.data.instances import synth_instance, synth_model_spec
         mt, mp, from_cv = synth_model_spec(config)
-        return (_synth_instance(config), mt, mp,
+        return (synth_instance(config), mt, mp,
                 "synthetic_selected_configs.json" if from_cv else "config.yaml")
     if args.problem == "reactor":
-        from experiments.run_sweep import _reactor_instance, reactor_model_spec
+        from src.data.instances import reactor_instance, reactor_model_spec
         mt, mp, from_cv = reactor_model_spec(config)
-        return (_reactor_instance(config), mt, mp,
+        return (reactor_instance(config), mt, mp,
                 "reactor_selected_configs.json" if from_cv else "config.yaml")
     return (build_instance(config, args), config["default_model"]["type"],
             config["default_model"]["params"], "gastric_selected_configs.json")
