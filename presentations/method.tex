@@ -836,9 +836,13 @@
     \item A series whose every dial fell under \texttt{--min-solved} has no cell
       to fall back \emph{to} and is skipped regardless --- gastric C-MICL. There
       the fix is a wider $\alpha$ grid, not a fallback.
-    \item \textbf{A fitted judge cannot score a boundary optimum.} Measurable
-      only on the reactor: the proxy agrees with the ODE on $5/5$ nominal
-      decisions yet flips $25.9\%$ of verdicts in its own $|F-50|<5$ band.
+    \item \textbf{A fitted judge cannot score a boundary optimum} --- the proxy
+      agrees with the ODE on $5/5$ nominal decisions yet flips $25.9\%$ of
+      verdicts in its own $|F-50|<5$ band. Now \emph{instrumented}: both stages
+      record per-decision \texttt{slack}, leave-one-member-out verdict flips and
+      $x^\ast$, and \texttt{audit\_judge.py} reports
+      $[\text{feas}_{\text{lo}},\text{feas}_{\text{hi}}]$ at $\kappa$ unexplained
+      sd. \textbf{Reporting only}: $\text{dial}^\ast$ stays on the point verdict.
   \end{itemize}
 \end{frame}
 
@@ -873,20 +877,23 @@
       proper-train; fit $\hat u$ there on $|y-\hat h(x)|$; on the \emph{held-out}
       calibration rows take $\hat q=s_{(k)}$,
       $k=\lceil(n_{\mathrm{cal}}{+}1)(1-\alpha)\rceil$, of
-      $s_i=|y_i-\hat h|/\max(\hat u,\mathrm{floor})$.
+      $s_i=|y_i-\hat h(x_i)|/\hat u(x_i)$ --- $\hat u$ \emph{raw}, no floor.
     \item Embed \emph{both}:
       $\sum_m[w_m\hat h_m(x)+|w_m|\hat q_m\hat u_m(x)]\le b$, intersected with
-      $[\underline y,\overline y]$.
+      $[\underline y,\overline y]$, and $\hat u_m(x)\ge0$.
     \item \textbf{$\alpha$ pinned, not tuned}: $\alpha=1-$target$=0.1$. Others
       \emph{search} for the $\rho$ delivering $0.9$; C-MICL \emph{asserts} it. So
       it enters at \textbf{evaluation}, not on the $\rho$ axis.
-    \item Paper-matched: $80/20$ split, $\hat u$ a ReLU NN $2\times32$ shared
-      across base models, $\hat q$ their $(1-\alpha)(1{+}1/N)$ quantile.
+    \item \textbf{Their implementation} (\texttt{dovallev/c-micl}), not a port:
+      $80/20$; $\hat u$ a shared $2\times32$ ReLU MLP, \emph{linear} output, not
+      CV'd.
   \end{itemize}
   \smallskip
-  \textbf{Stated, not fixed}: guarantee is \textbf{marginal} over
-  $\mathcal P_{XY}$ while $x^\ast$ is an argmin sitting \emph{on} the constraint;
-  gastric folds are \emph{temporal}, conformal needs exchangeability.
+  \textbf{Stated, not fixed}: marginal guarantee while $x^\ast$ is an argmin
+  \emph{on} the constraint; gastric folds \emph{temporal}. Linear output
+  $\Rightarrow\hat u<0$ possible, so $\hat u\ge0$ binds and $x^\ast$ sits on it
+  ($\hat u(x^\ast)=10^{-15}$): the tightening is walked off, leaving nominal's
+  $\hat h\ge b$ \emph{plus} an artifact restriction to $\{\hat u\ge0\}$.
 \end{frame}
 
 % ===========================================================================

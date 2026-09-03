@@ -41,8 +41,7 @@ Three layers, in call order::
                 cp_tolerance_basis, cp_objective_monotone, cp_cut_whole_scenario,
                 cp_separation, cp_cut_rollback
     cmicl       cmicl_cal_frac, cmicl_width_model_type, cmicl_width_model_params,
-                cmicl_width_floor_frac, cmicl_multiplicity,
-                cmicl_robustify_objective
+                cmicl_multiplicity, cmicl_robustify_objective
     margin      margin_scale_stat
 
 ``cmicl`` and ``margin`` are the two methods that read no ``uncertainty_set``.
@@ -195,7 +194,6 @@ def build_method(method, knob, model_type, model_params, settings,
             alpha=knob, cal_frac=settings["cmicl_cal_frac"],
             width_model_type=settings["cmicl_width_model_type"],
             width_model_params=settings["cmicl_width_model_params"],
-            width_floor_frac=settings["cmicl_width_floor_frac"],
             multiplicity=settings["cmicl_multiplicity"],
             seed=seed, rho=0.0,
             robustify_objective=settings["cmicl_robustify_objective"],
@@ -284,7 +282,6 @@ def synth_settings(config, seed=None):
         "cmicl_cal_frac": cm_cfg.get("cal_frac", 0.25),
         "cmicl_width_model_type": cm_cfg.get("width_model_type") or None,
         "cmicl_width_model_params": cm_cfg.get("width_model_params") or None,
-        "cmicl_width_floor_frac": cm_cfg.get("width_floor_frac", 0.05),
         "cmicl_multiplicity": cm_cfg.get("multiplicity", "none"),
         "cmicl_robustify_objective": cm_cfg.get("robustify_objective", False),
         # Defaults to uncertainty.scale_stat: the margin is quoted in the same
@@ -454,7 +451,6 @@ def gastric_settings(config, args=None):
     settings["cmicl_cal_frac"] = cm_cfg.get("cal_frac", 0.25)
     settings["cmicl_width_model_type"] = cm_cfg.get("width_model_type") or None
     settings["cmicl_width_model_params"] = cm_cfg.get("width_model_params") or None
-    settings["cmicl_width_floor_frac"] = cm_cfg.get("width_floor_frac", 0.05)
     settings["cmicl_multiplicity"] = cm_cfg.get("multiplicity", "none")
     settings["cmicl_robustify_objective"] = cm_cfg.get("robustify_objective", False)
 

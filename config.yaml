@@ -303,25 +303,31 @@ methods:
     cal_frac: 0.2          # their 80/20 train/calibration split; h is fit on the
                            # 80%, so C-MICL embeds a model trained on fewer rows
                            # than every other method here
-    # The paper's u is "a ReLU NN with two hidden layers, each with 32 units",
-    # shared across base models (Sec. 5.1). WE DELIBERATELY DO NOT USE IT, and
-    # the reason is a stack difference, not a disagreement: their ReLU-output net
-    # is non-negative by construction, while sklearn's MLPRegressor has a LINEAR
-    # output layer, so the same architecture fitted to |y - h(x)| predicts
-    # NEGATIVE widths. Measured on the reactor (n=1000, fold-free 80/20 split,
-    # seed 42): min u = -5.37, 5th pct -2.14, and 26% of calibration rows land
-    # on the floor -- which makes the score |y-h|/max(u,floor) explode, q90 of
-    # the scores 36.1 against 3.0 for the fallback, q = 27.6, and a mean
-    # half-width of 3.9 sd(y) on labels spanning 11-70. That is the floor
-    # amplifying a negative prediction, not conformal being conservative.
-    # null -> the embedded model's own type/params, which on the same split
-    # predicts min u = +0.38 and never hits the floor. Set the two keys below to
-    # reproduce the paper's architecture.
-    width_model_type: null
-    width_model_params: null
-    width_floor_frac: 0.05 # u is floored at this x the mean |residual|; a linear
-                           # or MLP width model can predict a NEGATIVE width,
-                           # which would loosen the constraint below nominal
+    # The width model u, THEIRS (github.com/dovallev/c-micl, regression.py:646).
+    # A 32x32 ReLU MLP with a LINEAR output, the same architecture for every base
+    # model, fitted to |y - h(x)| on the proper-train rows. `alpha` is their L2
+    # (0.01) and `max_iter` their 2000 epochs; sklearn's adam and lr 1e-3 already
+    # match their Adam(learning_rate=0.001).
+    #
+    # NOT cross-validated, and that is faithful: their train_model(cv=True)
+    # searches a grid of exactly ONE point, so the folds select nothing and the
+    # deployed u is a single net refit on all proper-train rows. Every grid in
+    # their file is one point, h's included -- our CV-selected h is the more
+    # tuned of the two.
+    #
+    # Their "ReLU NN" (Sec. 5.1) is ReLU in the HIDDEN layers only: the output is
+    # `model.add(Dense(1))` with no activation, i.e. linear, so u can and does
+    # predict NEGATIVE widths -- min u = -5.37 on the reactor at this
+    # architecture (n=1000, 80/20, seed 42), 26% of calibration rows. They do not
+    # guard it: the score divides by raw u, so those rows get negative scores
+    # that sink below the quantile, and the MIP instead forbids the region
+    # (u >= 0 by equality on a NonNegativeReals var). We now do exactly that --
+    # see the WIDTH MODEL section of src/methods/cmicl.py for what it costs. The
+    # repo's old `width_floor_frac` (5% of the mean |residual|, clamped in both
+    # the score and the MIP) is GONE as of 2026-09-03: one implementation of this
+    # method, and it is theirs.
+    width_model_type: mlp
+    width_model_params: {hidden_layer_sizes: [32, 32], alpha: 0.01, max_iter: 2000}
     # "none" (Ovalle et al.): each constraint marginal at 1-alpha.
     # "bonferroni": alpha/C, so the JOINT statement holds at 1-alpha. On gastric
     # that level is usually finer than n_cal can resolve, and the solve then

@@ -51,9 +51,10 @@ A killed local `run_dial_test.py` has already clobbered
 committed.
 
 **What is fine locally**: anything that reads results or is seconds long — the
-plotters, `summarize_table6.py`, `--rho-star-only`, `verify_embedding.py`, the
-`--quick` gastric path, and a `--help` or an import to check a change parses. When
-in doubt, hand the user the `sbatch` line rather than starting it here.
+plotters, `summarize_table6.py`, `--rho-star-only`, `audit_judge.py`,
+`verify_embedding.py`, the `--quick` gastric path, and a `--help` or an import to
+check a change parses. When in doubt, hand the user the `sbatch` line rather than
+starting it here.
 
 ```bash
 uv sync
@@ -64,6 +65,7 @@ uv run python experiments/summarize_table6.py           # Table 6 CSV -> .csv/.t
 uv run python experiments/run_adversary_probe.py        # is the random bank a weak adversary?
 uv run python experiments/probe_cmicl_cost_sampling.py  # does a SAMPLED c restore C-MICL's rate?
 uv run python experiments/measure_clip_fraction.py      # how much of D the label bounds remove, per rho
+uv run python experiments/audit_judge.py --problem reactor --suffix _incoh_f10_mmlp_s42  # how much of a feasibility is JUDGE
 sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu  (full gastric)
 ```
 
@@ -334,6 +336,31 @@ point**. What rescues the *ordering* is that the comparison is **paired**:
 `su.folds` is built once and `FoldCache` shares the fold instance and its bank
 across the whole dial grid.
 
+### The judge audit — how much of a feasibility is the JUDGE
+
+The tuning judge is a fitted ensemble on every problem, and a constrained optimum
+sits on the boundary where its own error decides the verdict (synthetic: 26% of
+verdicts flipped vs `f_true`; the reactor proxy under-called every series the ODE
+then passed 10/10). Both scoring paths now record, per DECISION: `slack` (signed
+distance to the binding constraint — the bit *is* `slack <= 0`), `binding` (which
+outcome it came from, so the slack is read against **that** outcome's scale),
+`lomo_flip` / `lomo_sd` (verdict instability under leave-one-**member**-out
+sub-ensembles — free, and the only judge check gastric can have), and `x_star`.
+Sweep → `{problem}_dial_judge{cell}.csv` (**its own file**: the contexts CSV's
+committed 7-column schema is appended to, so widening it would mix row widths);
+test → extra columns on `_dial_test_points` (rewritten wholesale, so it is safe).
+
+`audit_judge.py` turns those into `[feas_lo, feas_hi]` and `undecided_frac` at
+kappa in {0.25, 0.5, 1.0} unexplained sd — **`instance_label_scales`**, the same
+estimator rho/tau/`m` are quoted in, or kappa is on a different axis. It is
+**reporting only**: `dial*` stays on the point verdict, or the protocol point
+becomes a function of kappa. Under the ODE or the analytic `f_true` the `lomo_*`
+columns are **nan by construction** — an exact judge has no members to disagree —
+and that nan is the signal no audit is needed, not a missing measurement.
+**Storing `x_star` is what keeps every future judge question local**: a re-judge,
+a wider band or a two-half check needs the decision, and re-deriving it means
+re-solving the cell on the cluster.
+
 ### rho sweep specifics
 
 Grids: rho `[0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0]`, tau `[1.0, 0.1, 0.01, 0.001]`,
@@ -368,6 +395,15 @@ margin, is **structural**, not evidence of stability.
 
 ## Which results are current
 
+- **EVERY committed `cmicl` row is STALE as of 2026-09-03** — the method now runs
+  Ovalle et al.'s own width semantics (see `src/methods/cmicl.py`, "WIDTH MODEL"):
+  the score divides by **raw `u`** instead of `max(u, floor)`, the MIP constrains
+  **`u(x) >= 0`** instead of clamping the width, and `u` is their fixed **32x32**
+  net instead of the embedded model's config. All three change `q`, so a `cmicl`
+  objective, feasibility or `dial*` from before that date is against a different
+  score function. **Non-`cmicl` rows are untouched** — no other method reads any
+  of it — so the dial cells stay valid for cp/wrapper/margin/nominal and only
+  their `cmicl` series needs re-running.
 - **Only `results/rho_sweep/` and `results/figures/fig_rho_*` / `fig_dial_*`** —
   ellipsoid geometry, fixed temporal folds. Inside it the **dial cells are newest
   and the only tested ones**: gastric with all three phases, the reactor with a
@@ -539,8 +575,19 @@ gastric only.
   property of that distribution: **0.99** under `c_i ~ U(0,1)` vs **0.11** under
   `c_i ~ U(0,1)/span_i` (`probe_cmicl_cost_sampling.py`, a diagnostic that changes
   nothing in the evaluation). **Never quote a C-MICL reactor feasibility without
-  naming the `c` distribution**, and do not quote our `F_C6H6` values as
-  reproductions of theirs (Table 1 agrees to a consistent -1.6%).
+  naming the `c` distribution.** Ovalle et al.'s own draw is now known from their
+  code — `U(-4,4)` with negative components `/10`, against their `/100`-scaled
+  variables (`regression.py:713-719`) — which is **`--schemes paper`** and lands
+  *between* those two, so **neither 0.99 nor 0.11 is their number** and both
+  bullets above are superseded as answers to "does the reactor match the paper".
+- **We are on their exact reactor instance, verified 2026-09-03** against the
+  dataset in their repo: same column order `(v0, v_He, T, dt, L, F_C6H6)`, same
+  box as `DECISION_RANGES`, all seven domain constraints identical once their
+  `/100` input scaling is undone (their `L <= 1.5 dt` *is* our `L/dt <= 150`), and
+  `benzene_flow` reproduces their labels over 120 rows at a mean of **-1.37%**
+  with residual sd **1.94** — their own label noise (`noise_std: 2.0`), not our
+  ODE disagreeing. So the -1.6% Table 1 offset is real and systematic, and our
+  `F_C6H6` still should not be quoted as a reproduction of theirs.
 - **Gastric C-MICL is measured infeasible** at alpha=0.1 under both multiplicity
   settings (half-widths 1.33-1.73 sd(y), i.e. 0.38-0.50 against an rhs of 0.6, on
   five constraints at once), which is why its grid runs the **full [0.02, 1]** of a

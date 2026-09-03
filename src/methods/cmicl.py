@@ -12,7 +12,7 @@ Per learned constraint model, on that constraint's own training rows:
 2. fit ``h`` on proper-train -- this is the model that gets embedded;
 3. fit the WIDTH model ``u`` on proper-train, target ``|y - h(x)|``;
 4. score the held-out calibration rows with
-   ``s_i = |y_i - h(x_i)| / max(u(x_i), floor)`` and take the split-conformal
+   ``s_i = |y_i - h(x_i)| / u(x_i)`` and take the split-conformal
    quantile ``q = s_(k)``, ``k = ceil((n_cal + 1) * (1 - alpha_eff))``;
 5. embed ``h`` AND ``u``, and require the conservative end of the predictive
    interval to satisfy the constraint::
@@ -61,21 +61,17 @@ and not about the recipe:
   lie in the feasible region. For the reactor's lower bound `F >= 50` that is
   `h - q u >= 50`, which is exactly `w*h + |w|*q*u <= rhs` at `w = -1`,
   `rhs = -50`;
-- `cal_frac = 0.2` is their 80/20 split;
 - `alpha = 0.1` is their main-text target (they report `alpha = 0.05` in an
-  appendix), and it is pinned to `1 - feas_target` here for the same reason.
-
-**One deliberate deviation, forced by the stack.** Their `u` is "a ReLU NN with
-two hidden layers, each with 32 units", shared across base models. A ReLU OUTPUT
-layer is non-negative by construction; sklearn's `MLPRegressor` has a LINEAR
-output, so the same architecture fitted to `|y - h(x)|` predicts negative widths
--- measured on the reactor (n=1000, 80/20, seed 42): min `u = -5.37`, 5th pct
-`-2.14`, **26% of calibration rows on the floor**, score q90 **36.1** vs 3.0 for
-the fallback, `q = 27.6`, mean half-width **3.9 sd(y)** on labels spanning 11-70.
-That is the floor amplifying a negative prediction, not conformal being
-conservative. The default is therefore the embedded model's own type/params
-(`width_model_type: null`), which on the same split predicts `min u = +0.38` and
-never touches the floor. `config.yaml` says how to reproduce their architecture.
+  appendix), and it is pinned to `1 - feas_target` here for the same reason;
+- `u` is a **32x32 ReLU MLP with a LINEAR output**, the same architecture for
+  every base model, and it is **not selected** -- see WIDTH MODEL below;
+- the width is **not floored**, and the MIP instead requires `u(x) >= 0` -- see
+  WIDTH MODEL;
+- `cal_frac = 0.2` is their 80/20 split. **Their `n_cal` is 100, not 200**:
+  `regression.py:571` holds out 50% of the 1000 rows as `X_unseen` first and
+  splits 80/20 *within the remaining half*, so `h` sees 400 rows. This repo uses
+  the whole training set (800/200), which resolves two more conformal levels --
+  see `CMICL_ALPHA_GRID_EXTRA` in `run_dial_sweep.py`.
 
 **Not matched, and it is the protocol, not the method**: they average empirical
 ground-truth feasibility over **100 randomly sampled cost vectors** with the
@@ -83,19 +79,104 @@ calibration set held fixed. This repo fixes `cost_vector` at ones on purpose (a
 new `c` is a different problem, see `src/data/generate.py`), so our rate is over
 **training/calibration draws at one `c`**. Both are "empirical ground-truth
 feasibility"; they are not the same average, and a gap between the two numbers
-should be read with that in front.
+should be read with that in front. Their `c` is now known -- `U(-4, 4)` with
+negative components divided by 10, over their scaled variables
+(`regression.py:713-719`) -- and `probe_cmicl_cost_sampling.py --schemes paper`
+measures it.
 
-WIDTH MODEL
------------
+**Verified against their code** (github.com/dovallev/c-micl, `regression.py`),
+not inferred from the text. The instance is theirs to the digit: identical
+variable order `(v0, v_He, T, dt, L)`, identical box, all seven domain
+constraints identical once their `/100` input scaling is undone, and our
+vendored ODE reproduces their labels to a **-1.37% mean** offset with a residual
+sd of 1.94 that is their own label noise (`reactor.noise_std: 2.0`).
+
+WIDTH MODEL -- THEIRS, NOT OURS
+-------------------------------
 ``u`` is fit in-sample on ``h``'s own proper-train residuals, which biases it
 small. That costs nothing in validity -- split conformal keeps its coverage for
 ANY deterministic score function, and ``q`` absorbs the bias globally -- but it
-means ``u`` shapes the half-width better than it sizes it. ``width_floor_frac``
-guards the other end: a linear or MLP width model can predict a NEGATIVE width,
-which would loosen the constraint below nominal, so ``u`` is floored at
-``width_floor_frac`` of the mean absolute proper-train residual. The floor is
-applied identically when scoring the calibration rows and inside the MIP, so it
-is part of the score function rather than a post-hoc fudge.
+means ``u`` shapes the half-width better than it sizes it.
+
+The architecture is **fixed at 32x32, never cross-validated**, and that is
+faithful rather than lazy: their ``train_model(..., cv=True)`` searches a grid of
+**exactly one point** (``hidden_layer_sizes [(32,32)], alpha [0.01], epochs
+[2000]``), so the five folds it fits select nothing and the deployed ``u`` is a
+single net refit on all proper-train rows. Every grid in their file is a single
+point, ``h``'s included, so our CV-selected ``h`` is the *more* tuned of the two.
+
+**A ReLU NN with a LINEAR output layer** (``regression.py:96``,
+``model.add(Dense(1))`` with no activation), so ``u`` can and does predict
+NEGATIVE widths. Neither of the two guards this repo used to apply is theirs, and
+the three designs fail in different directions:
+
+- **theirs (what runs here now)**: score ``s = |y - h(x)| / u(x)``, unguarded, so
+  a negative ``u`` gives a NEGATIVE score which sorts to the *bottom* and can
+  never be the binding order statistic -- the row's information is silently
+  dropped and ``q = s_(k)`` comes out **lower** than it should, biasing coverage
+  DOWN. In the MIP ``u_eff`` is a NonNegativeReals variable set *equal* to the
+  network output (``regression.py:484``, ``:535``), which is not a clamp: it
+  makes every ``x`` with ``u(x) < 0`` **infeasible**, restricting the decision
+  space to wherever the width model happens to be non-negative.
+- **their notebook** (``notebooks/regression/03``): floors at an absolute
+  ``1e-6``, a divide-by-zero guard only, so a near-zero ``u`` still explodes the
+  score and inflates ``q`` for every well-fit row.
+- **this repo before 2026-09-03**: floored at 5% of the mean absolute
+  proper-train residual, applied identically in the score and in the MIP. Valid
+  (one deterministic score function in both places) and every ``x`` stayed
+  feasible, but the floored rows produced huge scores that biased ``q`` **UP** --
+  measured on the reactor at 32x32: min ``u = -5.37``, 26% of calibration rows on
+  the floor, ``q = 27.6``, mean half-width **3.9 sd(y)** on labels of 11-70.
+
+Note what the first bullet costs THEM: the score function used to calibrate
+(raw ``u``, negatives allowed) is not the one deployed in the MIP (restricted to
+``u >= 0``), and split conformal's guarantee wants the same deterministic score
+in both places. That is a real gap in the reference implementation and it is
+reported, not silently patched -- ``calibrate_conformal_model`` counts the
+negative-``u`` calibration rows and prints a warning when there are any.
+
+**``u_eff == u(x)`` with ``u_eff >= 0`` lets the optimizer WALK THE TIGHTENING
+OFF, and on the reactor it does so immediately** (measured 2026-09-03, the first
+run under these semantics). The tightening is ``q * u_eff``, which the optimizer
+wants SMALL, and the only thing stopping it at zero is where the width model
+happens to vanish. Since a linear output crosses zero -- 11/200 calibration rows
+predict ``u <= 0`` here, so the zero set cuts through the box -- the MIP parks
+``x*`` exactly on it: ``u(x*) = 1e-15`` on **every** solve, and ``q = 6.08`` is
+embedded and unused. Measured feasibility 0.00.
+
+**This is NOT "C-MICL becomes nominal".** At ``u(x*) = 0`` the *conformal* part
+of the constraint is gone -- what binds is ``h(x) >= 50``, nominal's constraint
+-- but ``u(x) >= 0`` is an ADDITIONAL constraint nominal does not have, and
+``x*`` sits **on its boundary**, so it is active, not vacuous. What runs is
+"nominal on ``h``, intersected with ``{x : u(x) >= 0}``": a strictly smaller
+feasible set, cut by where a residual regression happens to cross zero. Measured
+(``--n-instances 3 --schemes fixed_ones paper``, alpha=0.1, seed 42):
+
+    scheme/inst   objective vs nominal   F_ODE(x*)   nominal F_ODE
+    fixed_ones 0       +3.48%              47.70        45.85
+    paper 0           +11.21%              46.50        45.87
+    paper 1            +3.17%              49.15        45.87
+    paper 2            +2.27%              49.15        45.87
+
+So the restriction **costs 2-11% of objective and buys 0.6-3.3 units of truth**,
+landing short of the floor of 50 -- a weak tightening, not an absent one.
+
+**And it is arbitrary rather than accidentally protective.** The tempting reading
+is that ``u < 0`` marks an extrapolation region, so excluding it is an unintended
+trust region. Measured on the calibration rows, it is not: the 11 rows with
+``u <= 0`` have a mean TRUE ``|residual|`` of **1.900** against **1.981** for the
+189 with ``u > 0``, and sit no nearer the box faces in any load-bearing sense
+(mean distance to the nearest face 0.059 vs 0.091, and the ``u > 0`` set contains
+a row at 0.0000). The sign of ``u`` carries no information about the error there;
+it is where a mis-specified regression undershoots an ordinary residual past
+zero. Caveat: that characterises the negative region **near the data**, while
+``x*`` sits on the ``u = 0`` surface, which may be elsewhere in the box.
+
+The old floor was not only a numerical guard -- ``u_eff >= floor > 0`` is what
+made the tightening un-escapable. Their formulation has the same hole; whether it
+binds depends on whether their fitted ``u``'s zero set intersects the region
+where ``h >= 50``, which on this instance ours does. Reporting this rather than
+re-adding the floor is deliberate: the method under test is theirs.
 
 MULTIPLICITY
 ------------
@@ -165,12 +246,19 @@ def conformal_quantile(scores: np.ndarray, alpha: float) -> float:
 def calibrate_conformal_model(X, y, model_type, model_params, *,
                               alpha, cal_frac, seed,
                               width_model_type=None, width_model_params=None,
-                              width_floor_frac=0.05, label=""):
+                              label=""):
     """Fit ``h``, fit the width model ``u``, calibrate ``q``.
 
-    Returns ``(h, u, q, floor, info)``. ``h`` sees the proper-train rows ONLY --
+    Returns ``(h, u, q, info)``. ``h`` sees the proper-train rows ONLY --
     holding the calibration rows out of it is what makes their scores
     exchangeable with a fresh point's.
+
+    The score is ``|y - h(x)| / u(x)`` with ``u`` used RAW, which is Ovalle et
+    al.'s ``regression.py:665`` exactly -- no floor, no ``abs``, no epsilon. A
+    negative ``u`` therefore yields a negative score that sorts below every
+    honest one and can never be the binding order statistic, so ``q`` comes out
+    too small. That is a property of the reference implementation, not a choice
+    made here, and the ``n_neg_u`` diagnostic is how it stays visible.
     """
     X = np.asarray(X)
     y = np.asarray(y, dtype=float)
@@ -179,24 +267,26 @@ def calibrate_conformal_model(X, y, model_type, model_params, *,
     h = train_model(X[tr_idx], y[tr_idx], model_type, model_params)
 
     resid_tr = np.abs(y[tr_idx] - h.predict(X[tr_idx]))
-    # Positive unless the fit is exact; the 1e-12 keeps the score's denominator
-    # finite in that degenerate case.
-    floor = max(float(width_floor_frac) * float(np.mean(resid_tr)), 1e-12)
     u = train_model(X[tr_idx], resid_tr,
                     width_model_type or model_type,
                     width_model_params if width_model_type else model_params)
 
-    u_cal = np.maximum(u.predict(X[cal_idx]), floor)
-    scores = np.abs(y[cal_idx] - h.predict(X[cal_idx])) / u_cal
+    u_cal = np.asarray(u.predict(X[cal_idx]), dtype=float)
+    n_neg_u = int(np.sum(u_cal <= 0.0))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scores = np.abs(y[cal_idx] - h.predict(X[cal_idx])) / u_cal
+    # A 0/0 row would break the sort; an exact-zero width is an infinite score,
+    # which `conformal_quantile` can order and the caller can reject.
+    scores = np.where(np.isnan(scores), np.inf, scores)
     q = conformal_quantile(scores, alpha)
 
     half = q * float(np.mean(u_cal)) if np.isfinite(q) else float("inf")
     sd_y = float(np.std(y))
     info = {
         "n_train": int(len(tr_idx)), "n_cal": int(len(cal_idx)),
-        "alpha_eff": float(alpha), "q": q, "floor": floor,
-        "mean_width": float(np.mean(u_cal)), "mean_half_width": half,
-        "sd_y": sd_y,
+        "alpha_eff": float(alpha), "q": q,
+        "mean_width": float(np.mean(u_cal)), "min_width": float(np.min(u_cal)),
+        "n_neg_u": n_neg_u, "mean_half_width": half, "sd_y": sd_y,
     }
     print(
         f"    [cmicl] {label}: n_fit={info['n_train']} n_cal={info['n_cal']} "
@@ -204,7 +294,17 @@ def calibrate_conformal_model(X, y, model_type, model_params, *,
         f"-> mean half-width {half:.4g} ({half / max(sd_y, 1e-12):.2f} sd(y))",
         flush=True,
     )
-    return h, u, q, floor, info
+    if n_neg_u:
+        print(
+            f"    [cmicl] WARNING {label}: {n_neg_u}/{len(cal_idx)} calibration "
+            f"rows have u <= 0 (min {info['min_width']:.4g}), so their scores are "
+            f"negative and sink below the quantile -- q is biased DOWN and the "
+            f"MIP's u >= 0 constraint will exclude part of the decision space. "
+            f"This is Ovalle et al.'s behaviour (regression.py:665, :484); their "
+            f"linear output layer is what allows it.",
+            flush=True,
+        )
+    return h, u, q, info
 
 
 def solve_cmicl(instance: ProblemInstance,
@@ -214,7 +314,6 @@ def solve_cmicl(instance: ProblemInstance,
                 cal_frac: float = 0.25,
                 width_model_type: Optional[str] = None,
                 width_model_params: Optional[dict] = None,
-                width_floor_frac: float = 0.05,
                 multiplicity: str = "none",
                 seed: int = 42,
                 rho: float = 0.0,
@@ -253,7 +352,7 @@ def solve_cmicl(instance: ProblemInstance,
     )
 
     # ---- calibrate one (h, u, q) per constraint model ---------------------
-    fitted = {}          # id(model_data) -> (h, u, q, floor); u None = nominal
+    fitted = {}          # id(model_data) -> (h, u, q); u None = nominal
     warned_multi_clip = False
     config_idx = 0
     for constraint in instance.constraints:
@@ -273,15 +372,14 @@ def solve_cmicl(instance: ProblemInstance,
                 fitted[md_id] = (
                     train_model(model_data.X_train, model_data.y_train,
                                 m_type, m_params),
-                    None, 0.0, 0.0,
+                    None, 0.0,
                 )
                 continue
-            h, u, q, floor, _info = calibrate_conformal_model(
+            h, u, q, _info = calibrate_conformal_model(
                 model_data.X_train, model_data.y_train, m_type, m_params,
                 alpha=alpha_eff, cal_frac=cal_frac, seed=seed,
                 width_model_type=width_model_type,
                 width_model_params=width_model_params,
-                width_floor_frac=width_floor_frac,
                 label=constraint.name,
             )
             if not np.isfinite(q):
@@ -298,7 +396,7 @@ def solve_cmicl(instance: ProblemInstance,
                     status="infeasible", models_embedded=0,
                     solve_time=time.time() - start,
                 )
-            fitted[md_id] = (h, u, q, floor)
+            fitted[md_id] = (h, u, q)
 
     # ---- build the MIP ----------------------------------------------------
     opt = gp.Model("cmicl")
@@ -320,18 +418,27 @@ def solve_cmicl(instance: ProblemInstance,
             X_ref=model_X_ref(instance, c_idx, m_idx),
         )
 
-    def _width_var(u_model, floor, prefix, c_idx, m_idx):
-        """``max(u(x), floor)``, with NO binaries.
+    def _width_var(u_model, prefix, c_idx, m_idx):
+        """``u(x)`` held in a NONNEGATIVE variable, by EQUALITY.
 
-        ``u_eff`` enters with a positive coefficient on the ``<=`` side of every
-        constraint it appears in, so a smaller value is always weakly better for
-        the optimizer; bounding it below by both ``u(x)`` and the floor therefore
-        pins it at their max at any optimum. Same direction, same trick, for the
-        objective under ``robustify_objective``.
+        This is Ovalle et al.'s formulation verbatim (``regression.py:484``,
+        ``m.y_u = pyo.Var(within=pyo.NonNegativeReals)``, and ``:535``,
+        ``m.y_u == m.u_surrogate.outputs[0]``). It is NOT a floor: an equality
+        against a non-negative variable makes every ``x`` where the width model
+        predicts ``u(x) < 0`` **infeasible**, so the decision space is restricted
+        to wherever ``u`` happens to be non-negative. On an instance where ``u``
+        goes negative over part of the box that is a real, unannounced constraint
+        on ``x`` -- and it is also why a C-MICL solve can come back infeasible
+        with a perfectly finite ``q``.
+
+        The repo's own former alternative -- ``u_eff >= u(x)`` with ``lb=floor``,
+        which left every ``x`` feasible and clamped the width instead -- is gone
+        on purpose (2026-09-03): one implementation of this method, and it is
+        theirs.
         """
         u_raw = _embed(u_model, prefix, c_idx, m_idx)
-        u_eff = opt.addVar(lb=floor, name=f"{prefix}_ueff")
-        opt.addConstr(u_eff >= u_raw, name=f"{prefix}_ufloor")
+        u_eff = opt.addVar(lb=0.0, name=f"{prefix}_ueff")
+        opt.addConstr(u_eff == u_raw, name=f"{prefix}_ueq")
         return u_eff
 
     for c_idx, constraint in enumerate(instance.constraints):
@@ -340,14 +447,13 @@ def solve_cmicl(instance: ProblemInstance,
 
         if is_obj:
             for m_idx, model_data in enumerate(constraint.models_data):
-                h, u, q, floor = fitted[id(model_data)]
+                h, u, q = fitted[id(model_data)]
                 a = model_data.obj_weight * model_data.weight
                 h_var = _embed(h, f"cmicl_obj_c{c_idx}_m{m_idx}", c_idx, m_idx)
                 if u is None:
                     obj_terms.append(a * h_var)
                 else:
-                    u_eff = _width_var(u, floor,
-                                       f"cmicl_objw_c{c_idx}_m{m_idx}",
+                    u_eff = _width_var(u, f"cmicl_objw_c{c_idx}_m{m_idx}",
                                        c_idx, m_idx)
                     obj_terms.append(a * h_var + abs(a) * q * u_eff)
             continue
@@ -355,10 +461,10 @@ def solve_cmicl(instance: ProblemInstance,
         terms = []
         vacuous = False
         for m_idx, model_data in enumerate(constraint.models_data):
-            h, u, q, floor = fitted[id(model_data)]
+            h, u, q = fitted[id(model_data)]
             w = model_data.weight
             h_var = _embed(h, f"cmicl_c{c_idx}_m{m_idx}", c_idx, m_idx)
-            u_eff = _width_var(u, floor, f"cmicl_w_c{c_idx}_m{m_idx}",
+            u_eff = _width_var(u, f"cmicl_w_c{c_idx}_m{m_idx}",
                                c_idx, m_idx)
             terms.append(w * h_var + abs(w) * q * u_eff)
 
