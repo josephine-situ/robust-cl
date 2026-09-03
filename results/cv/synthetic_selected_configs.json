@@ -4,7 +4,8 @@
     "model_params": {
       "alpha": 0.01,
       "hidden_layer_sizes": [
-        50
+        32,
+        32
       ],
       "solver": "lbfgs",
       "random_state": 1

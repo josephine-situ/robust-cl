@@ -316,6 +316,17 @@ had already cleared the target) this dial is selected on the very quantity being
 re-reported. Never read a `best_feas` row against a `tested` one as if both were
 tuned alike.
 
+**C-MICL is ALWAYS tested at the alpha it asserts** (`config.methods.cmicl.alpha`
+= `1 - feas_target` = 0.1), as a `kind="protocol"` row *beside* its tuned one and
+**even where the sweep gave it no dial at all** — on gastric that row is the only
+C-MICL result the instance has. Every other tested dial is fitted (`dial*` on the
+curve, `best_feas` on the quantity being re-reported); this alpha is **pinned**,
+so it is the one C-MICL row whose feasibility reads directly on the method's own
+claim, and the comparison it exists for: the shared-D methods *search* for the
+setting that delivers 0.9, C-MICL *asserts* it. It is omitted only when it
+coincides with `dial*` (the tuned row already carries it) or under
+`--no-cmicl-protocol`; `--cmicl-protocol-alpha` moves it for a probe.
+
 **The fallback does not rescue a series that never SOLVED.** `best_feas_dial` is
 computed only over cells clearing `--min-solved`, so a series under that floor
 everywhere has no cell to fall back to and is skipped regardless — **gastric C-MICL
@@ -491,8 +502,14 @@ margin, is **structural**, not evidence of stability.
 
 **Frozen CV picks** (`results/cv/*_selected_configs.json`, chosen on R^2 *before*
 any robustness): gastric **XGB** for DLT/blood/constitutional/infection and
-**linear (ElasticNet)** for GI and OS; synthetic **`mlp` (50,), lbfgs, alpha
-0.01**; reactor **`mlp` (10,5,2)**. All three CV stages reproduce bit-identically,
+**linear (ElasticNet)** for GI and OS; synthetic **`mlp` (32,32), lbfgs, alpha
+0.01**; reactor **`mlp` (10,5,2)**. Synthetic's was `(50,)` until 2026-09-03,
+when Ovalle et al.'s own `(32,32)` went into the MLP grid as a candidate (the
+note beside `CV_PARAM_GRIDS`) and won by **6e-5** R^2 — a tie broken in the last
+decimal, kept only because it reproduces bit-identically AND no current
+synthetic result was against the old pick. The reactor keeps `(10,5,2)` with
+their point in the grid (every reactor CV output byte-identical) and gastric
+keeps its six. All three CV stages reproduce bit-identically,
 so a re-run that differs means a **code or label** change, not noise. `run_cv.py`
 **overwrites** those files — `git checkout` them after an inspection run unless you
 mean to re-freeze.
@@ -588,6 +605,15 @@ gastric only.
   with residual sd **1.94** — their own label noise (`noise_std: 2.0`), not our
   ODE disagreeing. So the -1.6% Table 1 offset is real and systematic, and our
   `F_C6H6` still should not be quoted as a reproduction of theirs.
+- **Their code is `https://github.com/dovallev/c-micl`**, audited 2026-09-03 at
+  commit `b44fe53`: `regression.py` is the paper's script and
+  `notebooks/regression/03` is a *second, different* implementation of the same
+  method (a `1e-6` width floor, 300 epochs, free `y_f`) — we follow the script.
+  The point-by-point diff against ours — `q` one order statistic apart, `h`
+  hand-fixed there vs CV-selected here, Keras vs sklearn `u`, their `/100`-`/10`
+  scaled units, and that neither side is Mondrian — is the **DIFFERENCES**
+  section of `src/methods/cmicl.py`. **Read it before quoting a `cmicl` number
+  as theirs.**
 - **Gastric C-MICL is measured infeasible** at alpha=0.1 under both multiplicity
   settings (half-widths 1.33-1.73 sd(y), i.e. 0.38-0.50 against an rhs of 0.6, on
   five constraints at once), which is why its grid runs the **full [0.02, 1]** of a

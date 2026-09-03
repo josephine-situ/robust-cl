@@ -92,12 +92,40 @@ CV_PARAM_GRIDS = {
         "hidden_layer_sizes": [
                 (25,), (50,),               # Your core 1-layer workhorses
                 (25, 10), (25, 25),         # 2-layer options for slightly more complexity
-                (10, 5, 2)                  # The single 3-layer test (expect this to perform poorly)
+                (10, 5, 2),                 # The single 3-layer test (expect this to perform poorly)
+                (32, 32),                   # Ovalle et al.'s own point -- see the note below
             ],
         "solver": ["lbfgs"],
         "alpha": [1e-4, 1e-3, 0.01],                     # Strong L2 regularization
     }
 }
+
+# (32, 32) is here so the grid can EXPRESS the architecture C-MICL's authors use
+# for both their `h` and their width model `u` (github.com/dovallev/c-micl @
+# b44fe53, `regression.py:617`, a Keras 32-32-1 with alpha 0.01). Without it, a
+# method whose reference implementation is that net could only ever be run here
+# on an architecture its authors never chose -- a handicap invisible in the
+# results. It is a CANDIDATE, not a pin: `alpha=0.01` was already in the grid, so
+# adding the width is all their point needs, and CV still decides. What it
+# decided (2026-09-03, this grid, re-run twice and reproducing bit-identically):
+#   reactor    (10,5,2) KEPT, mlp R^2 0.962212 -- every reactor CV output byte
+#              identical, so their point loses here and nothing is re-frozen
+#   gastric    picks unchanged (XGB x4, ElasticNet x2); (32,32) moves only the
+#              mlp column, e.g. blood -0.736 -> -0.547, still far from XGB
+#   synthetic  (32,32) WINS, 0.9639119 against (50,)'s 0.9638519, so
+#              `synthetic_selected_configs.json` is RE-FROZEN on their
+#              architecture. That margin is 6e-5 -- ~1/27 of the fold sd, a tie
+#              broken in the last decimal -- and it is kept for two reasons
+#              only: it REPRODUCES bit-identically, and no current synthetic
+#              result was against the old pick (the one synthetic sweep cell on
+#              disk predates the 2026-08-21 n_train 200 -> 2500 change and is
+#              already superseded). Had a live cell been riding on it, the right
+#              call would have been to drop the grid point rather than re-freeze
+#              a pick on 6e-5.
+# Their `solver` (Adam, 2000 epochs) is deliberately NOT added: it lost on both
+# problems at their own alpha, it doubles this grid, and an adam MLP refits ~14x
+# slower on the reactor's unscaled target -- which is what CP's B=200 bank pays,
+# per fold, per dial.
 
 # GT ensemble CV grids — deeper and richer than the embedded grids.
 # Each grid is a superset of the corresponding CV_PARAM_GRIDS entry so that
@@ -139,6 +167,7 @@ GT_CV_PARAM_GRIDS = {
             (25,), (50,), (100,),          # 1-layer, one wider than the embedded grid
             (25, 10), (25, 25), (50, 25),  # 2-layer
             (10, 5, 2),                    # the 3-layer test
+            (32, 32),                      # keeps the superset invariant above
         ],
         "solver": ["lbfgs"],
         "alpha": [1e-4, 1e-3, 0.01, 0.1],                # +1 stronger than embedded

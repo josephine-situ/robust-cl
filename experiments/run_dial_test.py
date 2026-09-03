@@ -47,6 +47,14 @@ So: read ``{problem}_dial_star{cell}.csv``, hold each method at its own
            out of sample there in the way that matters, and the phase is refused
            rather than silently skipped.
 
+**C-MICL's protocol point is always tested.** Every other method's tested dial
+is *fitted* -- ``dial*`` on the tuning curve, or ``best_feas`` where there is no
+``dial*`` -- but C-MICL's alpha is *pinned* to ``1 - feas_target``, which is the
+claim the whole comparison is about. So the stage carries a ``kind="protocol"``
+row for C-MICL at ``config.methods.cmicl.alpha`` in ADDITION to its tuned row,
+including when the sweep gave it no dial at all (gastric), and omits it only
+when it coincides with ``dial*`` or under ``--no-cmicl-protocol``.
+
 **The judge, per problem.**
 
   synthetic  ``instance.gt_constraints[0]`` -- the ANALYTIC ``f_true``. The proxy
@@ -252,8 +260,14 @@ def _judge(problem, su):
     return o, "gt_ensemble_full416"
 
 
-def _dial_star_rows(problem, var, methods, fallback_best_feas=False):
-    """(method, rho, dial_name, dial_star) per series, from the sweep's star file.
+def _dial_star_rows(problem, var, methods, fallback_best_feas=False,
+                    cmicl_protocol_alpha=None):
+    """(method, rho, dial_name, dial, kind) per series, from the sweep's star file.
+
+    Four ``kind`` values, and they are NOT interchangeable: ``tested`` (a real
+    ``dial*``), ``reference`` (``nominal``, which has no dial), ``best_feas``
+    (the fallback ceiling below) and ``protocol`` (C-MICL's asserted alpha,
+    below).
 
     Series that never reached the target carry ``dial_star = NaN`` and are
     SKIPPED with the reason printed: there is no tuned dial to test. ``nominal``
@@ -278,6 +292,26 @@ def _dial_star_rows(problem, var, methods, fallback_best_feas=False):
     ``solved_frac >= --min-solved`` guard biting at every dial, and there is no
     cell to fall back TO. Gastric C-MICL is exactly this case -- the fallback
     does not rescue it, and only a re-run on the extended alpha grid can.
+
+    ``cmicl_protocol_alpha`` adds ONE row that is selected on nothing: C-MICL at
+    the alpha it ASSERTS (``config.methods.cmicl.alpha`` = ``1 - feas_target``).
+    That point is the reason the method is in the comparison at all -- the
+    shared-D methods SEARCH for the setting that delivers the target while
+    C-MICL claims it up front -- so its tested feasibility is the direct check
+    of the claim, and it has to be reported whether or not the tuning curve
+    produced a ``dial*``. It is therefore added:
+
+    - **in addition** to the series' tuned row, never instead of it, carrying
+      ``kind="protocol"``. A ``tested`` row is the best objective among cells
+      that had already cleared the target; a ``best_feas`` row is a ceiling
+      selected on the very quantity being re-reported; this row is neither
+      tuned nor selected -- it is **pinned**, which makes it the only C-MICL row
+      whose feasibility reads directly on the method's own guarantee;
+    - **even when the series was skipped** for having no ``dial*`` and no
+      fallback cell (gastric C-MICL), which is precisely where the protocol
+      point is the only thing there is to report;
+    - and NOT duplicated when ``dial*`` already sits at that alpha -- the tuned
+      row covers it, and the caller prints that it does.
     """
     path = os.path.join(OUT_DIR, f"{problem}_dial_star{var}.csv")
     if not os.path.exists(path):
@@ -325,6 +359,25 @@ def _dial_star_rows(problem, var, methods, fallback_best_feas=False):
             continue
         out.append((m, float(r["rho"]) if np.isfinite(r["rho"]) else np.nan,
                     str(r["dial_name"]), float(r["dial_star"]), "tested"))
+
+    if cmicl_protocol_alpha is not None and (not methods or "cmicl" in methods):
+        a = float(cmicl_protocol_alpha)
+        # rho and dial_name off C-MICL's own star row where there is one. It
+        # faces no D, so that rho is NaN and `_solver_for` leaves the base
+        # uncertainty set alone -- the protocol row is a level, not a column.
+        cm = df[df["method"].astype(str) == "cmicl"]
+        rho = (float(cm.iloc[0]["rho"])
+               if len(cm) and np.isfinite(cm.iloc[0]["rho"]) else np.nan)
+        dial_name = str(cm.iloc[0]["dial_name"]) if len(cm) else "alpha"
+        if not any(m == "cmicl" and np.isclose(d, a)
+                   for m, _r, _dn, d, _k in out):
+            out.append(("cmicl", rho, dial_name, a, "protocol"))
+            # A C-MICL skip line is now only half true: the TUNED point is
+            # missing, the protocol point is not.
+            note = (" -- {}={:g} (the protocol point) is tested anyway"
+                    .format(dial_name, a))
+            skipped = [t + note if t.startswith("cmicl") else t
+                       for t in skipped]
     return out, skipped
 
 
@@ -623,6 +676,22 @@ def _subsample_phase(config, args, su, judge, judge_name, series, points, summar
     write()
 
 
+def _cmicl_protocol_alpha(config, args):
+    """The alpha C-MICL asserts, or ``None`` under ``--no-cmicl-protocol``.
+
+    ``config.methods.cmicl.alpha`` is the single source of truth -- it is pinned
+    to ``1 - feas_target`` there and documented as changeable only alongside it
+    -- so this stage and the sweep's ``must_visit`` cell cannot drift apart.
+    ``--cmicl-protocol-alpha`` overrides it for a probe.
+    """
+    if not args.cmicl_protocol:
+        return None
+    if args.cmicl_protocol_alpha is not None:
+        return float(args.cmicl_protocol_alpha)
+    return float((config.get("methods", {}).get("cmicl", {}) or {})
+                 .get("alpha", 0.1))
+
+
 def run(config, args):
     os.makedirs(OUT_DIR, exist_ok=True)
     problem = args.problem
@@ -652,8 +721,10 @@ def run(config, args):
         geometry="ellipsoid", coherent=bool(args.coherent),
     )
 
-    series, skipped = _dial_star_rows(problem, var, args.methods,
-                                      fallback_best_feas=args.fallback_best_feas)
+    series, skipped = _dial_star_rows(
+        problem, var, args.methods,
+        fallback_best_feas=args.fallback_best_feas,
+        cmicl_protocol_alpha=_cmicl_protocol_alpha(config, args))
     phases = list(args.phases)
     solve_phases = [ph for ph in phases if ph != "subsample"]
 
@@ -681,6 +752,19 @@ def run(config, args):
             print(f"[dial-test]   CEILING {m}"
                   + (f"@rho={rho:g}" if np.isfinite(rho) else "")
                   + f" at {dn}={d:g}", flush=True)
+    prot_alpha = _cmicl_protocol_alpha(config, args)
+    prot = [s for s in series if s[4] == "protocol"]
+    for m, rho, dn, d, _ in prot:
+        print(f"[dial-test] PROTOCOL POINT {m} at {dn}={d:g} -- the level "
+              f"C-MICL ASSERTS (config methods.cmicl.alpha = 1 - feas_target), "
+              f"tested in ADDITION to any tuned row. Pinned, not selected: the "
+              f"one C-MICL row whose feasibility reads directly on its own "
+              f"claim.", flush=True)
+    if not prot and prot_alpha is not None and any(s[0] == "cmicl"
+                                                   for s in series):
+        print(f"[dial-test] NOTE: C-MICL's protocol point (alpha="
+              f"{prot_alpha:g}) IS its tuned dial, so the kind='tested' row "
+              f"already carries it.", flush=True)
     for s in skipped:
         print(f"[dial-test] SKIPPING {s}", flush=True)
     print(flush=True)
@@ -828,6 +912,20 @@ def main():
                    action="store_false",
                    help="skip series with no dial* instead, reporting only "
                         "tuned protocol points")
+    p.add_argument("--cmicl-protocol-alpha", dest="cmicl_protocol_alpha",
+                   type=float, default=None,
+                   help="C-MICL is ALWAYS tested at the alpha it asserts, in "
+                        "addition to its tuned dial* (or its best_feas cell, or "
+                        "nothing at all). Default: config methods.cmicl.alpha, "
+                        "pinned there to 1 - feas_target. Those rows carry "
+                        "kind='protocol' -- pinned, selected on nothing, so "
+                        "unlike a 'tested' or 'best_feas' row the feasibility "
+                        "reads directly on the method's own guarantee.")
+    p.add_argument("--no-cmicl-protocol", dest="cmicl_protocol",
+                   action="store_false", default=True,
+                   help="drop that row and report C-MICL only where the sweep "
+                        "gave it a dial (a probe flag: the protocol point is "
+                        "the comparison C-MICL is here for)")
     p.add_argument("--phases", nargs="+", default=None,
                    choices=("folds", "full", "subsample"),
                    help="`folds` re-solves the sweep's folds under the truth "

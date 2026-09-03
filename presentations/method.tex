@@ -834,8 +834,12 @@
       $\texttt{best\_feas}$ row against a $\texttt{tested}$ one as if the two
       were tuned alike.
     \item A series whose every dial fell under \texttt{--min-solved} has no cell
-      to fall back \emph{to} and is skipped regardless --- gastric C-MICL. There
-      the fix is a wider $\alpha$ grid, not a fallback.
+      to fall back \emph{to}, so its \emph{tuned} row is skipped regardless ---
+      gastric C-MICL, where the fix is a wider $\alpha$ grid. But C-MICL is
+      \textbf{always} tested at the $\alpha$ it \emph{asserts}
+      ($1-$target$=0.1$, \texttt{kind=protocol}), in addition to any tuned row
+      and even where there is none: that level is \textbf{pinned}, not fitted,
+      so it is the one C-MICL row that reads directly on its own claim.
     \item \textbf{A fitted judge cannot score a boundary optimum} --- the proxy
       agrees with the ODE on $5/5$ nominal decisions yet flips $25.9\%$ of
       verdicts in its own $|F-50|<5$ band. Now \emph{instrumented}: both stages
@@ -884,9 +888,10 @@
     \item \textbf{$\alpha$ pinned, not tuned}: $\alpha=1-$target$=0.1$. Others
       \emph{search} for the $\rho$ delivering $0.9$; C-MICL \emph{asserts} it. So
       it enters at \textbf{evaluation}, not on the $\rho$ axis.
-    \item \textbf{Their implementation} (\texttt{dovallev/c-micl}), not a port:
-      $80/20$; $\hat u$ a shared $2\times32$ ReLU MLP, \emph{linear} output, not
-      CV'd.
+    \item \textbf{Their implementation} (\texttt{github.com/dovallev/c-micl},
+      \texttt{b44fe53}), not a port: $80/20$; $\hat u$ a shared $2\times32$ ReLU
+      MLP, \emph{linear} output, not CV'd. Diff in \texttt{cmicl.py}: $\hat q$
+      one order statistic apart, $\hat h$ hand-fixed there vs CV'd here.
   \end{itemize}
   \smallskip
   \textbf{Stated, not fixed}: marginal guarantee while $x^\ast$ is an argmin

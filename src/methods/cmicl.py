@@ -55,8 +55,9 @@ and not about the recipe:
 - the score is `s = |h(x_i) - y_i| / u(x_i)` with `u` trained on the ABSOLUTE
   RESIDUALS of `h` over the training rows (their two-step procedure) -- in-sample,
   as they specify;
-- their quantile is `Quantile(s_1..s_N; (1-alpha)(1+1/N))`, which is the
-  `ceil((N+1)(1-alpha))`-th order statistic used here -- the same number;
+- their quantile is `Quantile(s_1..s_N; ceil((N+1)(1-alpha))/N)` taken with
+  numpy's `interpolation="higher"`, which lands ONE ORDER STATISTIC ABOVE the
+  `s_(k)`, `k = ceil((N+1)(1-alpha))`, computed here -- see DIFFERENCES #1;
 - their constraint is `[h(x) +- q u(x)] subset Y`, i.e. the whole interval must
   lie in the feasible region. For the reactor's lower bound `F >= 50` that is
   `h - q u >= 50`, which is exactly `w*h + |w|*q*u <= rhs` at `w = -1`,
@@ -67,11 +68,14 @@ and not about the recipe:
   every base model, and it is **not selected** -- see WIDTH MODEL below;
 - the width is **not floored**, and the MIP instead requires `u(x) >= 0` -- see
   WIDTH MODEL;
-- `cal_frac = 0.2` is their 80/20 split. **Their `n_cal` is 100, not 200**:
-  `regression.py:571` holds out 50% of the 1000 rows as `X_unseen` first and
-  splits 80/20 *within the remaining half*, so `h` sees 400 rows. This repo uses
-  the whole training set (800/200), which resolves two more conformal levels --
-  see `CMICL_ALPHA_GRID_EXTRA` in `run_dial_sweep.py`.
+- `cal_frac = 0.2` is their 80/20 split, and their `n_cal` is close to ours:
+  their sheet is **2000 rows** (`data/unscaled_noisy_reactor_data.xlsx`,
+  `A1:F2001`), `regression.py:571` throws half of it away as `X_unseen` --
+  which is **never read again anywhere in the file** -- and splits 80/20 within
+  the rest, so `h` sees **800** rows and **`n_cal = 200`**. Ours is a CV fold of
+  a 1000-row design: 900 fold-train rows, so `h` sees 720 and `n_cal = 180`,
+  which is what sets the reactor's alpha floor (`CMICL_ALPHA_GRID_EXTRA` in
+  `run_dial_sweep.py`).
 
 **Not matched, and it is the protocol, not the method**: they average empirical
 ground-truth feasibility over **100 randomly sampled cost vectors** with the
@@ -84,12 +88,90 @@ negative components divided by 10, over their scaled variables
 (`regression.py:713-719`) -- and `probe_cmicl_cost_sampling.py --schemes paper`
 measures it.
 
-**Verified against their code** (github.com/dovallev/c-micl, `regression.py`),
-not inferred from the text. The instance is theirs to the digit: identical
+**Verified against their code** --
+`https://github.com/dovallev/c-micl` (commit `b44fe53`, 2026-07-14),
+`regression.py` -- not inferred from the text. The instance is theirs to the
+digit: identical
 variable order `(v0, v_He, T, dt, L)`, identical box, all seven domain
 constraints identical once their `/100` input scaling is undone, and our
 vendored ODE reproduces their labels to a **-1.37% mean** offset with a residual
 sd of 1.94 that is their own label noise (`reactor.noise_std: 2.0`).
+
+DIFFERENCES FROM THEIR CODE
+---------------------------
+Audited 2026-09-03 against `github.com/dovallev/c-micl` at commit `b44fe53`,
+files `regression.py` and `notebooks/regression/03_feasibility_verification.ipynb`.
+Every difference found is below; none is a disagreement about the recipe, and
+only the first three move `q` or `h`.
+
+1. **`q` is one order statistic lower here.** `regression.py:669` is the widely
+   copied conformal idiom, `np.quantile(s, ceil((n+1)(1-alpha))/n,
+   interpolation="higher")`. numpy puts a quantile at virtual index `p*(n-1)`
+   and `"higher"` rounds that up, so at `p = k/n` it returns `s_(k+1)` rather
+   than the `s_(k)` the level names: at `n=200, alpha=0.1` theirs is `s_(182)`
+   where `conformal_quantile` gives `s_(181)`. Theirs is conservative by one row
+   and BOTH are valid -- a larger `q` only over-covers -- and the gap in `q`
+   shrinks like 1/n. Kept at `s_(k)` because that is the order statistic the
+   guarantee is stated over; changing it would move every `cmicl` number again.
+2. **`h`'s hyperparameters are hand-fixed there, CV-selected here.** Their
+   `models_and_params` (`regression.py:585-621`) gives each family exactly one
+   grid point -- LinearDT `max_depth 5 / min_samples_split 10 / max_bins 40`;
+   RF `15 trees / depth 5 / min_samples_split 3 / max_features 0.6`; GBM
+   `15 trees / lr 0.2 / depth 5 / min_samples_split 5 / max_features 0.6`; MLP a
+   Keras `32-32-1` (ReLU hidden, linear output, Adam lr 1e-3, batch 32, 2000
+   epochs, L2 0.01 on the hidden kernels only) -- and they report all four
+   surrogate families separately. Ours is one model per constraint out of
+   `results/cv/*_selected_configs.json`: on the reactor sklearn
+   `MLPRegressor((10, 5, 2), solver="lbfgs", alpha=0.01)` inside
+   `Pipeline(StandardScaler, ...)`. Different family, depth, optimizer and
+   feature scaling -- so `h` is not their `h` even where both are "an MLP".
+3. **`u` is their architecture under a different trainer.** `(32,32)`,
+   `alpha=0.01`, `max_iter=2000` reproduces their grid point, but sklearn's
+   `MLPRegressor` is not Keras: `alpha` penalises EVERY layer where theirs
+   penalises only the hidden kernels, the default batch is `min(200, n)` against
+   their 32, `max_iter` is a CAP that `tol=1e-4` / `n_iter_no_change=10`
+   normally stops early against their fixed 2000 epochs, and
+   `train_model(normalize=True)` standardises the features where they hand the
+   net their own `/100` scaling. Same shape of `u`, a differently fitted `u`.
+4. **Units.** They train and optimize on scaled columns -- inputs `/100` except
+   `dt`, labels `/10`, hence the floor `min_req = 5.0` and a cost vector that
+   multiplies scaled `x` (`regression.py:563-565`, `:724`). We stay in physical
+   units with `rhs = 50`. `q` is a ratio and carries over; big-M widths, the
+   net's conditioning and the meaning of a cost coefficient do not.
+5. **Their MIP also forces `h(x) >= 0`** (`m.y_f` is `NonNegativeReals`,
+   `regression.py:485`); ours leaves `h` free. Inert on the reactor, where
+   `h >= 50 + q u >= 0` already, and it would bite only on a constraint with a
+   non-positive rhs. Their own notebook declares `y_f` free, so this one is not
+   consistent even inside their repo.
+6. **Their big-M box is the data hull of whichever split trained the model** --
+   `np.min/np.max` over `X_train` for C-MICL but over `X_rest` for MICL
+   (`regression.py:697-707`) -- and `x` carries no bound of its own beyond
+   `NonNegativeReals`. Ours is `DECISION_RANGES` for every method, so their
+   C-MICL and MICL do not optimize over the same box and ours do. Numerically it
+   is a rounding difference on this instance: their sampled hull matches
+   `DECISION_RANGES` to under 0.1% per face. It is a difference in what defines
+   the box, not in where the box is.
+7. **Solver settings**: theirs `MIPGap 0.01`, `Threads 8` (`:734-735`); ours the
+   single `optimization.mip_gap` every method here shares, which is what keeps
+   the objective column comparable across methods (CLAUDE.md, Conventions).
+8. **Their notebook is a third implementation**, not a demo of the script:
+   `notebooks/regression/03` floors the width at `np.maximum(u, 1e-6)` in the
+   SCORE while still embedding `u >= 0`, trains both nets 300 epochs on Keras
+   defaults, and leaves `y_f` free. We follow the script -- it is what produced
+   the paper's numbers.
+9. **Neither implementation is Mondrian.** The paper's guarantee rests on a
+   Mondrian (group-conditional) conformal set plus conditional independence of
+   coverage and feasibility; `regression.py` calibrates ONE global quantile, and
+   their notebook says as much ("this notebook's simplified (non-Mondrian)
+   conformal set"). `conformal_quantile` here is global too, so this gap is
+   SHARED -- worth naming, because it is a reason an empirical rate can sit
+   below `1 - alpha` without either implementation being wrong.
+
+**Ours, with no counterpart in their code** (this repo's problems need them):
+the `multiplicity="bonferroni"` joint level, the label-range clip and its
+vacuous-constraint drop, one calibration split shared across a problem's
+outcomes, `q = inf` refused instead of a numpy error when `k > n_cal`, and alpha
+walked as a DIAL rather than fixed at `{0.1, 0.05}`.
 
 WIDTH MODEL -- THEIRS, NOT OURS
 -------------------------------

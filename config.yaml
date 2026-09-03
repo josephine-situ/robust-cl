@@ -303,7 +303,8 @@ methods:
     cal_frac: 0.2          # their 80/20 train/calibration split; h is fit on the
                            # 80%, so C-MICL embeds a model trained on fewer rows
                            # than every other method here
-    # The width model u, THEIRS (github.com/dovallev/c-micl, regression.py:646).
+    # The width model u, THEIRS (https://github.com/dovallev/c-micl @ b44fe53,
+    # regression.py:644-657; the full diff is cmicl.py's DIFFERENCES section).
     # A 32x32 ReLU MLP with a LINEAR output, the same architecture for every base
     # model, fitted to |y - h(x)| on the proper-train rows. `alpha` is their L2
     # (0.01) and `max_iter` their 2000 epochs; sklearn's adam and lr 1e-3 already
