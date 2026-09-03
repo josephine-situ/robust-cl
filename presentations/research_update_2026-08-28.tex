@@ -198,12 +198,15 @@
               $10.90$ --- so the prize is $0.23$ against a draw sd of $0.55$.
               dial$^\ast$ was tuned with the epigraph off, so the screen is a
               lower bound; escalate to a full sweep only if it moves.
-        \item \textbf{Realizations $10 \to 50$.} The tail is the headline; at
+        \item \textbf{Realizations $10 \to 50$.} (Reactor) The tail is the headline; at
               $10$ draws the worst case \emph{is} one draw --- a range, not a
               bound.
+        \item \textbf{Reactor: run at multiple costs}.
         \item \textbf{Reactor: report cost at verified feasibility.} The proxy is
               conservative at the boundary. Measure that gap rather than tighten
-              the $0.9$ target.
+              the $0.9$ target --- now instrumented (\texttt{slack}, LOMO flips,
+              $x^\ast$ per decision; \texttt{audit\_judge.py}); needs a cell
+              re-run to populate.
         \item \textbf{WFP food basket.} Reported by both OptiCL and C-MICL ---
               omitting the shared benchmark reads as selection. Palatability
               label is continuous ($6002 \times 13$), so it enters the regression
@@ -214,6 +217,10 @@
               truth; synthetic's $f_{\text{true}}$ is authored, on the instance
               where the uncertainty radius and the generated noise are the same
               object.
+        \item \textbf{Write paper.} Potential stories: CP / RHS margin generalizes
+              well to multiple constraints, maintaining feasibility. CP best worst-
+              case feasibility (can be solved offline). Formally extend C-MICL
+              to multiple constraints?
     \end{enumerate}
 \end{frame}
 

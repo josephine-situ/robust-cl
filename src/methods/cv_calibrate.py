@@ -89,10 +89,54 @@ class GastricOracle:
         self.os_model = os_model
         self.tox_ub = float(tox_ub)
 
-    def feasible(self, x: np.ndarray) -> bool:
+    def slack_parts(self, x: np.ndarray) -> dict:
+        """``{outcome -> prediction - tox_ub}``: signed, > 0 is a violation."""
         xr = np.atleast_2d(x)
-        return all(float(m.predict(xr)[0]) <= self.tox_ub + 1e-9
-                   for m in self.tox_models.values())
+        return {name: float(m.predict(xr)[0]) - self.tox_ub
+                for name, m in self.tox_models.items()}
+
+    def slack(self, x: np.ndarray) -> float:
+        """Signed distance to the BINDING constraint: > 0 is a violation.
+
+        The verdict is defined as ``slack <= 0`` so the two cannot drift apart.
+        Recorded per decision because the bit alone cannot separate a miss of
+        0.001 from one of 0.5, and a fitted judge's error at the boundary is of
+        the same order as the margins it decides (see ``SyntheticOracle``'s
+        KNOWN LIMITATION). Without the distance there is no way to ask, after
+        the fact, which verdicts this judge was entitled to make.
+        """
+        parts = self.slack_parts(x)
+        return max(parts.values()) if parts else float("-inf")
+
+    def feasible(self, x: np.ndarray) -> bool:
+        return self.slack(x) <= 1e-9
+
+    def lomo_slacks(self, x: np.ndarray) -> np.ndarray:
+        """Slack under each leave-one-MEMBER-out sub-ensemble.
+
+        Member ``i`` is the same model CLASS in every outcome's ensemble (the
+        EC.12 order is shared), so dropping it everywhere asks one question:
+        would this class's absence have changed the verdict? A uniform average
+        whose verdict flips when one of six members leaves is not a reliable
+        judge at that point -- and this is the only such check available on
+        gastric, which has no ground truth to audit against.
+
+        Costs ``k`` extra predictions on one row: the members are already fit.
+        Empty when the members are not exposed or not aligned across outcomes.
+        """
+        xr = np.atleast_2d(x)
+        per_outcome = []
+        for m in self.tox_models.values():
+            members = getattr(m, "models", None)
+            if not members:
+                return np.empty(0)
+            per_outcome.append(
+                np.array([float(mm.predict(xr)[0]) for mm in members]))
+        k = len(per_outcome[0])
+        if k < 2 or any(len(p) != k for p in per_outcome):
+            return np.empty(0)
+        return np.array([max(float(np.delete(p, i).mean()) - self.tox_ub
+                             for p in per_outcome) for i in range(k)])
 
     def objective(self, x: np.ndarray) -> float:
         return float(self.os_model.predict(np.atleast_2d(x))[0])
@@ -131,15 +175,35 @@ class SyntheticOracle:
     objective_sense = "min"
 
     def __init__(self, model, rhs: float, cost_vector: np.ndarray,
-                 weight: float = 1.0):
+                 weight: float = 1.0, name: str = ""):
         self.model = model
         self.rhs = float(rhs)
         self.weight = float(weight)
         self.cost_vector = np.asarray(cost_vector, dtype=float)
+        self.name = str(name)
+
+    def slack(self, x: np.ndarray) -> float:
+        """Signed distance to the constraint: > 0 is a violation. See
+        :meth:`GastricOracle.slack` for why the distance is kept."""
+        pred = float(self.model.predict(np.atleast_2d(x))[0])
+        return self.weight * pred - self.rhs
+
+    def slack_parts(self, x: np.ndarray) -> dict:
+        return {self.name: self.slack(x)}
 
     def feasible(self, x: np.ndarray) -> bool:
-        pred = float(self.model.predict(np.atleast_2d(x))[0])
-        return self.weight * pred <= self.rhs + 1e-9
+        return self.slack(x) <= 1e-9
+
+    def lomo_slacks(self, x: np.ndarray) -> np.ndarray:
+        """Slack under each leave-one-MEMBER-out sub-ensemble -- see
+        :meth:`GastricOracle.lomo_slacks`. Empty when there is nothing to drop."""
+        members = getattr(self.model, "models", None) or []
+        if len(members) < 2:
+            return np.empty(0)
+        xr = np.atleast_2d(x)
+        preds = np.array([float(m.predict(xr)[0]) for m in members])
+        return np.array([self.weight * float(np.delete(preds, i).mean()) - self.rhs
+                         for i in range(len(preds))])
 
     def objective(self, x: np.ndarray) -> float:
         return float(np.dot(self.cost_vector, np.asarray(x, dtype=float)))
@@ -155,20 +219,100 @@ class ReactorODEOracle:
     """
     objective_sense = "min"
 
-    def __init__(self, rhs: float, cost_vector: np.ndarray, weight: float = -1.0):
+    def __init__(self, rhs: float, cost_vector: np.ndarray, weight: float = -1.0,
+                 name: str = ""):
         self.rhs = float(rhs)
         self.weight = float(weight)
         self.cost_vector = np.asarray(cost_vector, dtype=float)
+        self.name = str(name)
 
-    def feasible(self, x: np.ndarray) -> bool:
+    def slack(self, x: np.ndarray) -> float:
+        """Signed distance to the requirement, INTEGRATED: > 0 is a violation.
+
+        ``+inf`` on a design the ODEs cannot integrate -- unusable, not merely
+        violating, and the same verdict :meth:`feasible` gave it before.
+        """
         from src.data.dma_mr import benzene_flow
         flow = benzene_flow(np.asarray(x, dtype=float).ravel())
         if not np.isfinite(flow):
-            return False          # an unusable design, not a feasible one
-        return self.weight * flow <= self.rhs + 1e-9
+            return float("inf")
+        return self.weight * flow - self.rhs
+
+    def slack_parts(self, x: np.ndarray) -> dict:
+        return {self.name: self.slack(x)}
+
+    def feasible(self, x: np.ndarray) -> bool:
+        return self.slack(x) <= 1e-9
+
+    def lomo_slacks(self, x: np.ndarray) -> np.ndarray:
+        """Empty: an integrated judge has no members to drop, and no error of
+        its own to diagnose. The audit columns are ``nan`` under this judge --
+        which is the point of having it."""
+        return np.empty(0)
 
     def objective(self, x: np.ndarray) -> float:
         return float(np.dot(self.cost_vector, np.asarray(x, dtype=float)))
+
+
+# ---------------------------------------------------------------------------
+# Judge audit -- what the verdict bit cannot say
+# ---------------------------------------------------------------------------
+JUDGE_AUDIT_KEYS = ("slack", "binding", "lomo_flip", "lomo_sd")
+
+
+def _fmt_x(x) -> str:
+    """The decision vector as one ``;``-joined cell.
+
+    Stored because every judge question that has needed answering so far --
+    would a wider band have covered the flips, does a two-half judge agree,
+    what does the ODE say -- needs the DECISION, and re-deriving it means
+    re-solving the cell on the cluster. At ~10 significant digits a re-judge
+    reproduces the original verdict; one column keeps every future audit local.
+    """
+    return ";".join(f"{v:.10g}" for v in np.asarray(x, dtype=float).ravel())
+
+
+def judge_audit(oracle, x) -> dict:
+    """The judge's own uncertainty at one decision, for the audit CSVs.
+
+    Three numbers beside the verdict bit, all free at scoring time:
+
+    ``slack``      signed distance to the binding constraint, > 0 a violation.
+                   The bit is ``slack <= 0``; the DISTANCE is what lets an
+                   abstention band be applied afterwards, at any width, without
+                   re-solving anything (see ``experiments/audit_judge.py``).
+    ``binding``    which outcome that slack came from -- gastric decides five
+                   constraints at once, and the scale the slack must be read
+                   against is the BINDING outcome's, not a problem-wide one.
+    ``lomo_flip``  fraction of leave-one-member-out sub-ensembles whose verdict
+                   differs from the full average's. A uniform average that flips
+                   when one member leaves is not a reliable judge at that point.
+    ``lomo_sd``    sd of the sub-ensemble slacks: the same instability as a
+                   magnitude rather than a rate.
+
+    ``nan`` for the last two under an EXACT judge (the ODE, the analytic
+    ``f_true``), which has no members and no error of its own to diagnose --
+    the nan is the signal that no audit is needed, not a missing measurement.
+    """
+    slack_fn = getattr(oracle, "slack", None)
+    if slack_fn is None:                       # a judge that only votes
+        return {"slack": float("nan"), "binding": "",
+                "lomo_flip": float("nan"), "lomo_sd": float("nan")}
+    parts = getattr(oracle, "slack_parts", lambda _x: {})(x)
+    sl = float(slack_fn(x))
+    binding = max(parts, key=parts.get) if parts else ""
+    lomo = getattr(oracle, "lomo_slacks", lambda _x: np.empty(0))(x)
+    lomo = np.asarray(lomo, dtype=float)
+    if lomo.size < 2:
+        return {"slack": sl, "binding": binding,
+                "lomo_flip": float("nan"), "lomo_sd": float("nan")}
+    # Verdict under each sub-ensemble, against the full average's verdict. The
+    # same 1e-9 tolerance every `feasible` uses, so a flip is a real inversion
+    # and not a tolerance artefact.
+    full = sl <= 1e-9
+    flip = float(np.mean((lomo <= 1e-9) != full))
+    return {"slack": sl, "binding": binding,
+            "lomo_flip": flip, "lomo_sd": float(np.std(lomo))}
 
 
 def _single_outcome_gt_specs(gt_specs, json_path, outcome, fallback) -> list:
@@ -251,7 +395,8 @@ def make_cv_oracle(instance: ProblemInstance, gt_specs=None, verbose: bool = Tru
         print(f"    [oracle] {label}: {len(specs)}-model ensemble "
               f"({', '.join(s['model_type'] for s in specs)}) on n="
               f"{len(md.y_train)} noisy labels", flush=True)
-    return SyntheticOracle(model, c.rhs, instance.cost_vector, weight=md.weight)
+    return SyntheticOracle(model, c.rhs, instance.cost_vector,
+                           weight=md.weight, name=c.name)
 
 
 def make_gt_oracle(instance: ProblemInstance):
@@ -267,7 +412,7 @@ def make_gt_oracle(instance: ProblemInstance):
     if c.name != REACTOR_OUTCOME:
         return None
     return ReactorODEOracle(c.rhs, instance.cost_vector,
-                            weight=c.models_data[0].weight)
+                            weight=c.models_data[0].weight, name=c.name)
 
 
 # ---------------------------------------------------------------------------
@@ -474,6 +619,11 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
     # 3-tuple so existing callers are untouched.
     statuses, master_times, test_times, test_points = [], [], [], []
     contexts = []          # (fold, context_idx, solved, feasible, objective)
+    # Judge-audit rows, one per DECISION (never per unsolved context -- there is
+    # no decision to audit). Kept in their own list, and their own file, so the
+    # context CSV's committed 7-column schema is untouched and a resumed run
+    # cannot append rows of two different widths to it.
+    judge_rows = []        # (fold, context_idx, slack, binding, flip, sd, x*)
     for k, (train_idx, val_idx) in enumerate(folds):
         if label:
             print(f"  [fold {k + 1}/{len(folds)}] {label} "
@@ -519,11 +669,17 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
                     # Unsolvable: excluded from both means, counted in solved_frac.
                     contexts.append((k, ctx_id, 0.0, float("nan"), float("nan")))
                     continue
+                aud = judge_audit(oracle, x_opt)
+                # The bit stays the score: `slack <= 0` IS `feasible`, so the
+                # curve is bit-identical to before this audit existed.
                 f = 1.0 if oracle.feasible(x_opt) else 0.0
                 o = float(oracle.objective(x_opt))
                 feas_vals.append(f)
                 obj_vals.append(o)
                 contexts.append((k, ctx_id, 1.0, f, o))
+                judge_rows.append((k, ctx_id, aud["slack"], aud["binding"],
+                                   aud["lomo_flip"], aud["lomo_sd"],
+                                   _fmt_x(x_opt)))
             test_times.append(_time.time() - _t1)
             test_points.append(n_total)
             if feas_vals:
@@ -561,10 +717,14 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
                       and status_k != "infeasible"
                       and obj_v is not None and np.isfinite(float(obj_v)))
             if solved:
+                aud = judge_audit(oracle, x_opt)
                 f = 1.0 if oracle.feasible(x_opt) else 0.0
                 o = float(oracle.objective(x_opt))
                 fold_feas.append(f)
                 fold_obj.append(o)
+                judge_rows.append((k, -1, aud["slack"], aud["binding"],
+                                   aud["lomo_flip"], aud["lomo_sd"],
+                                   _fmt_x(x_opt)))
             else:
                 f = o = float("nan")
             fold_solved.append(1.0 if solved else 0.0)
@@ -589,7 +749,8 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
         # Per-point, so gastric's 96 contexts and synthetic's single decision are
         # comparable numbers rather than a fold total dominated by cohort size.
         "test_time_per_point_s": float(np.sum(test_times)) / n_pts,
-        **({"contexts": contexts} if return_contexts else {}),
+        **({"contexts": contexts, "judge": judge_rows}
+           if return_contexts else {}),
     }
 
 
@@ -777,6 +938,38 @@ def append_contexts(path: str, method: str, knob: float, contexts) -> None:
             w.writerow(list(CONTEXT_COLS))
         for fold, ctx, solved, feas, obj in contexts:
             w.writerow([method, knob, fold, ctx, solved, feas, obj])
+
+
+JUDGE_COLS = ("method", "knob", "fold", "context_idx", "slack", "binding",
+              "lomo_flip", "lomo_sd", "x_star")
+
+
+def append_judge(path: str, method: str, knob: float, rows) -> None:
+    """Append one cell's judge-audit rows to ``{problem}_dial_judge{cell}.csv``.
+
+    One row per DECISION -- an unsolved context has nothing to audit -- keyed by
+    the same ``(method, knob, fold, context_idx)`` as ``append_contexts``, so
+    the two files join. Its own file rather than four more columns on the
+    context CSV: that schema is committed on both problems, and the two writers
+    append, so a resumed cell would otherwise be mixing row widths inside one
+    file.
+
+    Nothing here is a score. The verdict the curve uses is the ``feasible``
+    column next door; these are the numbers that say how much of that verdict
+    the judge was entitled to (see :func:`judge_audit`), and they are read by
+    ``experiments/audit_judge.py``, never by the sweep.
+    """
+    import csv
+    if not rows:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    new = not os.path.exists(path)
+    with open(path, "a", newline="") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(list(JUDGE_COLS))
+        for fold, ctx, slack, binding, flip, sd, xs in rows:
+            w.writerow([method, knob, fold, ctx, slack, binding, flip, sd, xs])
 
 
 def _migrate_score_header(path: str, header: list) -> None:
