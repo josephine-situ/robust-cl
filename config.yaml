@@ -34,6 +34,17 @@ reactor:
   # Calibrated to reproduce their model fit only (our 5-fold CV R^2 0.958 vs
   # their 0.954); the paper states only that noise "was added".
   noise_std: 2.0
+  # c in `min c'x`. "balanced" = 1/span_i over dma_mr.DECISION_RANGES, so each of
+  # the five design variables contributes ONE unit of objective across its own box
+  # width and the objective reads in box-widths. Under the old "ones" the raw units
+  # are not commensurate -- v0 and v_He span 1050 each against dt's 1.5 -- so dt
+  # carried 0.06% of the objective range and the comparison was effectively over
+  # (v0, v_He, T). NOT C-MICL's per-instance draw: theirs is an average over 100
+  # cost vectors, measured by probe_cmicl_cost_sampling.py --schemes paper, and a
+  # single draw from it is neither their protocol nor balanced (their seed-0 draw
+  # puts 70% of the span on v_He). "ones" reproduces reactor results before
+  # 2026-09-03; an explicit 5-list is read in DECISION_NAMES order.
+  cost_vector: "balanced"
   # Embedded-model fallback for the reactor; overrides default_model below.
   # results/cv/reactor_selected_configs.json wins over both when present.
   model:

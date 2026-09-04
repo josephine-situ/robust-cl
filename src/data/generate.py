@@ -516,13 +516,21 @@ def reactor_micl(n_train: int = 1000,
     labels on their natural scale (benzene flow); the weight only applies at
     embedding time.
 
-    ``cost_vector`` is FIXED, defaulting to ones. C-MICL redraws it per instance,
-    but a new ``c`` is a different optimization problem, not a new sample of this
-    one, so redrawing would confound the rho axis with problem-to-problem variation.
-    Note the raw units are not commensurate -- ``T ~ 1e3`` and ``v0 ~ 1e3`` dominate
-    ``dt ~ 1`` in ``sum(x)`` -- so with ones the objective is effectively about
-    ``v0``, ``v_He`` and ``T``. That is a real property of the stated formulation,
-    not a bug, but pass an explicit ``cost_vector`` to weight the variables evenly.
+    ``cost_vector`` is FIXED for the life of a result set. C-MICL redraws it per
+    instance, but a new ``c`` is a different optimization problem, not a new sample
+    of this one, so redrawing would confound the rho axis with problem-to-problem
+    variation. Their averaging protocol is reproduced separately and deliberately,
+    by ``experiments/probe_cmicl_cost_sampling.py --schemes paper``.
+
+    It defaults to ones HERE, which is what every reactor result before 2026-09-03
+    was produced under, but production now passes an explicit balanced vector:
+    ``src.data.instances.reactor_cost_vector`` resolves ``reactor.cost_vector:
+    "balanced"`` to ``1 / span_i`` over :data:`~src.data.dma_mr.DECISION_RANGES`.
+    The reason is the one this docstring already gave -- the raw units are not
+    commensurate, ``T ~ 1e3`` and ``v0 ~ 1e3`` dominating ``dt ~ 1`` in ``sum(x)``
+    -- but the size of it was only measured later: under ones ``dt`` carries
+    **0.06%** of the objective's range across the box and ``L`` 3.5%, so the method
+    comparison ran on three of the five variables. Balanced makes each 20%.
 
     ``noise_std = 2.0`` because the paper says only that "Gaussian noise was added"
     without a level; 2.0 reproduces their reported ReLU-NN performance (our 5-fold

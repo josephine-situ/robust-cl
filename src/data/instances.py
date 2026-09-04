@@ -137,12 +137,60 @@ def reactor_model_spec(config, path=None, verbose=False):
     return default_t, default_p, False
 
 
+def reactor_cost_vector(spec):
+    """``c`` in ``min c'x`` for the reactor, from ``reactor.cost_vector``.
+
+    ``"balanced"`` (production since 2026-09-03) is ``1 / span_i`` over
+    :data:`~src.data.dma_mr.DECISION_RANGES`, so each design variable contributes
+    exactly ONE unit of objective across its own box width and the objective is
+    read in box-widths rather than in whichever raw unit happens to be largest.
+
+    WHY IT MOVED OFF ONES. The five raw units are not commensurate: ``v0`` and
+    ``v_He`` span 1050 each and ``T`` 351, against ``dt``'s 1.5 and ``L``'s 90. Under
+    ones ``dt`` therefore carried **0.06%** of the objective's range across the box
+    and ``L`` 3.5%, so the method comparison was effectively over three of the five
+    variables. `reactor_micl`'s own docstring named this and pointed at the fix
+    ("pass an explicit ``cost_vector`` to weight the variables evenly"). Balanced
+    makes each of the five 20%.
+
+    NOT the C-MICL draw, and deliberately. Ovalle et al. redraw ``c`` per instance
+    and average over 100 of them (``regression.py:713-719``, reproduced by
+    ``experiments/probe_cmicl_cost_sampling.py --schemes paper``); a SINGLE draw
+    from that scheme is one arbitrary instance rather than their protocol, and
+    their seed-0 draw is itself unbalanced -- ``v_He`` takes 70% of the objective
+    span and ``L`` 0.2%. Alignment with the paper is the probe's job, where ``c``
+    varies by construction; this is the fixed instance the dial sweep compares
+    methods on.
+
+    ``"ones"`` or null reproduces every reactor result before 2026-09-03. An
+    explicit 5-list is taken in ``DECISION_NAMES`` order.
+    """
+    import numpy as np
+    from src.data.dma_mr import DECISION_NAMES, DECISION_RANGES
+
+    if spec is None or (isinstance(spec, str) and spec.lower() == "ones"):
+        return None            # reactor_micl's own default
+    if isinstance(spec, str):
+        if spec.lower() != "balanced":
+            raise ValueError(
+                f"unknown reactor.cost_vector {spec!r}: expected 'balanced', "
+                f"'ones', or an explicit {len(DECISION_NAMES)}-list")
+        return np.array([1.0 / (hi - lo) for lo, hi in
+                         (DECISION_RANGES[k] for k in DECISION_NAMES)])
+    c = np.asarray(spec, dtype=float).ravel()
+    if c.size != len(DECISION_NAMES):
+        raise ValueError(f"reactor.cost_vector has {c.size} entries, expected "
+                         f"{len(DECISION_NAMES)} ({', '.join(DECISION_NAMES)})")
+    return c
+
+
 def reactor_instance(config, cv_path=None, verbose=False):
     """The DMA-MR instance, carrying the CV-selected embedded model if there is one.
 
     The ODE dataset is cached on disk (see ``generate._reactor_dataset``), so this
     is cheap after the first call even though each oracle evaluation is a stiff ODE
-    solve.
+    solve. The dataset does NOT depend on ``c`` -- the cost vector reaches only the
+    objective, so changing it does not invalidate the cache.
     """
     from src.data.generate import reactor_micl
     rc = config.get("reactor", {})
@@ -153,6 +201,7 @@ def reactor_instance(config, cv_path=None, verbose=False):
         seed=int(config["uncertainty"].get("bootstrap_seed", 42)),
         fixed_constraint_config=({"model_type": mt, "model_params": mp}
                                  if from_cv else None),
+        cost_vector=reactor_cost_vector(rc.get("cost_vector", "balanced")),
     )
 
 

@@ -142,8 +142,11 @@
       range $11$--$70$. Single decision, no context.
     \item Lower bound $\Rightarrow$ $w=-1$, $\text{rhs}=-50$ in the repo's
       $\sum_m w_mf_m\le\text{rhs}$ form.
-    \item $c$ \textbf{fixed} at ones --- a new $c$ is a different problem. Units
-      are incommensurate, so the objective is effectively $v_0+v_{\mathrm{He}}+T$.
+    \item $c$ \textbf{fixed} at $1/\mathrm{span}_i$ --- a new $c$ is a different
+      problem. Raw units are incommensurate ($v_0,v_{\mathrm{He}}$ span $1050$ vs
+      $d_t$'s $1.5$), so under ones $d_t$ carried $0.06\%$ of the objective range;
+      balanced gives each variable $20\%$. \emph{Not} C-MICL's per-instance draw
+      --- theirs is an average over $100$ cost vectors.
   \end{itemize}
 \end{frame}
 

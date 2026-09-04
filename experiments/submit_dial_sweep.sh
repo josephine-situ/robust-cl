@@ -12,6 +12,28 @@
 # large-memory gap. At 16G/16cpu it is 1G/core and fits wherever the cores do.
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=16
+# THE GUROBI LICENSE ALLOWS TWO CONCURRENT SESSIONS, and one task = one session.
+#
+# `%2` caps the tasks running at once WITHIN ONE ARRAY JOB. That is the whole cap
+# only while the sweep is submitted as a single array job. It is NOT a global cap:
+# two `sbatch --array=0` submissions (say the reactor and gastric split apart so
+# each gets its own 12h wall) are two SEPARATE jobs, `%2` applies to each of them
+# independently, and nothing stops all of them running at once. Splitting the
+# sweep and the test stage into their own submissions makes that four jobs.
+#
+# `--dependency=singleton` closes it: SLURM runs at most ONE job with this
+# (job-name, user) pair at a time, so every further submission QUEUES instead of
+# starting. Combined with `%2` the worst case is one job x two tasks = exactly two
+# sessions, however many times this script is submitted. It also removes the need
+# to hand-chain the test stage with `--dependency=afterok:<jobid>`: submit it
+# right after the sweep and it waits.
+#
+# CAVEATS. (1) A `--dependency=...` passed on the sbatch COMMAND LINE REPLACES
+# this one -- use `--dependency=singleton,afterok:<jobid>` if you need both.
+# (2) It is keyed on the JOB NAME, so it does not see submit_rho_sweep.sh
+# (job-name `rho-sweep`) or a Gurobi run on a login node / laptop. Those still
+# have to be counted by hand.
+#SBATCH --dependency=singleton
 #SBATCH --array=0-1%2
 #SBATCH --output=logs/dial_sweep_%A_%a.out
 #SBATCH --error=logs/dial_sweep_%A_%a.err
@@ -410,6 +432,17 @@ fi
 
 # Examples. --array MUST match PROBLEMS; narrowing PROBLEMS without it leaves
 # tasks that exit 0 with "nothing to do".
+#
+#   THE 2026-09-03 FREEZE RUN, both problems, one job, two Gurobi sessions. The
+#   reactor takes the whole rho span because its {2,3}/{5,6} columns were measured
+#   under `cost_vector` at ones and do not transfer to the balanced c; gastric is
+#   unaffected by that change and takes the defaults. RUN_TEST=0 splits the test
+#   stage off so each stage gets its own 12h wall -- the second submission QUEUES
+#   behind the first on --dependency=singleton, so it is safe to send both now.
+#     RHO_COLUMNS_REACTOR="1 2 3 4 5 6" SEARCH=grid EXTRA_ARGS=--refresh \
+#       RUN_TEST=0 sbatch experiments/submit_dial_sweep.sh
+#     RUN_SWEEP=0 sbatch experiments/submit_dial_sweep.sh
+#
 #   sbatch experiments/submit_dial_sweep.sh                                  # gastric + reactor
 #   PROBLEM=gastric sbatch --array=0 experiments/submit_dial_sweep.sh        # gastric only
 #   RHO_COLUMNS_REACTOR="1 2 3 4" sbatch experiments/submit_dial_sweep.sh    # the whole rho span

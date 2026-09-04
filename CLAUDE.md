@@ -419,7 +419,15 @@ margin, is **structural**, not evidence of stability.
   ellipsoid geometry, fixed temporal folds. Inside it the **dial cells are newest
   and the only tested ones**: gastric with all three phases, the reactor with a
   full curve, a star table and an ODE-judged test stage.
-- **The reactor dial cell is CURRENT and complete** (re-run 2026-08-28 with
+- **The reactor dial cell is STALE as of 2026-09-03 — a different instance.**
+  `reactor.cost_vector` moved from ones to `1/span_i` (balanced), so `x*`, every
+  objective and every feasibility below is against a different optimization
+  problem, and the rho columns quoted here were the crossings under ones. The
+  numbers are kept as the record of the ones-instance, not as current results;
+  the replacement is the full-span re-run (`RHO_COLUMNS_REACTOR="1 2 3 4 5 6"`),
+  from which both `DEFAULT_RHO_COLUMNS["reactor"]` and `METHOD_RHO_COLUMNS` must
+  be re-derived. Everything from the ones-instance follows:
+- **[SUPERSEDED — ones instance] The reactor dial cell** (re-run 2026-08-28 with
   `--drop-series wrapper@2 wrapper@3`; figures regenerated from it). Three
   methods have a `dial*`: `cp@3` tau*=1.0 (feas 0.9, obj 3253, `interior`),
   `wrapper@6` alpha*=0 (feas 0.9, obj 3281, `grid_end` — **structural**, alpha=0
@@ -587,8 +595,23 @@ gastric only.
 - **`variable_lb`/`variable_ub` split by role**: treatment columns take their box
   from `X_fit` (the optimizer *chooses* them); context columns stay on train+test
   **deliberately** — the box only has to contain them, and the split is temporal.
-- **The reactor's `cost_vector` is FIXED at ones** (a new `c` is a different
-  problem, not a new sample of this one), and C-MICL's reactor feasibility is a
+- **The reactor's `cost_vector` is FIXED — at `1/span_i` since 2026-09-03**
+  (`reactor.cost_vector: "balanced"`, resolved by `instances.reactor_cost_vector`).
+  A new `c` is a different problem, not a new sample of this one, so it is fixed
+  for the life of a result set — but it is **no longer ones**: the raw units are
+  not commensurate (`v0`, `v_He` span 1050 each, `T` 351, against `dt`'s 1.5), so
+  under ones `dt` carried **0.06%** of the objective range and `L` 3.5%, and the
+  comparison ran on three of the five variables. Balanced gives each 20% and puts
+  the objective in box-widths, range `[4.143, 9.143]` where ones gave
+  `[1908, 4450]`. **Every reactor number from before 2026-09-03 is against a
+  different objective** — feasibility included, since `x*` moves. `"ones"`
+  reproduces them. This is NOT C-MICL's per-instance draw and deliberately so:
+  theirs is an average over 100 cost vectors, which is the probe's job (below),
+  and their seed-0 draw is itself unbalanced (`v_He` 70% of the span, `L` 0.2%).
+  D is untouched — rho is in units of `scale(y)*sqrt(n)` on the benzene labels —
+  so the tau/alpha/margin/cmicl grids stay placed, but **every measured rho column
+  does not transfer** (see `METHOD_RHO_COLUMNS`).
+- C-MICL's reactor feasibility is a
   property of that distribution: **0.99** under `c_i ~ U(0,1)` vs **0.11** under
   `c_i ~ U(0,1)/span_i` (`probe_cmicl_cost_sampling.py`, a diagnostic that changes
   nothing in the evaluation). **Never quote a C-MICL reactor feasibility without

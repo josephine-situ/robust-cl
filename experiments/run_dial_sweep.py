@@ -181,6 +181,18 @@ DEFAULT_RHO_COLUMNS = {"gastric": [0.5, 1.0], "reactor": [2.0, 3.0],
 #
 # --rho-columns overrides BOTH: it puts every method on the given columns, which
 # is what a span probe (`--rho-columns 1 2 3 4`) wants.
+#
+# !! BOTH REACTOR ENTRIES ARE STALE AS OF 2026-09-03 !! Every crossing quoted above
+# -- CP's at 2/3, the wrapper's at 5/6 -- was measured with `cost_vector` at ones,
+# where v0 and v_He carried 83% of the objective span. Production is now
+# `reactor.cost_vector: "balanced"` (1/span_i, each variable 20%), so x* trades
+# differently and the rho at which each method crosses the 0.9 target moves by an
+# unmeasured amount. D itself is UNCHANGED -- rho is in units of scale(y)*sqrt(n)
+# on the benzene labels, which c does not touch -- so the tau/alpha/margin/cmicl
+# grids stay correctly placed; it is only WHICH COLUMN brackets each transition
+# that is now unknown. Re-derive both from the full-span run
+# (`RHO_COLUMNS_REACTOR="1 2 3 4 5 6"`) before trusting a reactor run that does
+# not pass --rho-columns.
 METHOD_RHO_COLUMNS = {"reactor": {"wrapper": [5.0, 6.0]}}
 
 
