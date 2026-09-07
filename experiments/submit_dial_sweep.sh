@@ -87,8 +87,8 @@ export NUMEXPR_NUM_THREADS="${NTHREADS}"
 #
 #   method      dial      rho columns                       notes
 #   -------------------------------------------------------------------------
-#   cp          tau       gastric {0.5,1.0}, reactor {2,3}  ONE fixed tau grid
-#   wrapper     alpha     same                              P is a bank prefix
+#   cp          tau       gastric {0.5,1.0}, reactor {1,2}  ONE fixed tau grid
+#   wrapper     alpha     gastric same, reactor {3,4}       P is a bank prefix
 #   margin      m         --                                faces no D
 #   cmicl       alpha     --                                alpha=0.1 = protocol
 #   nominal     none      --                                one reference point
@@ -433,15 +433,22 @@ fi
 # Examples. --array MUST match PROBLEMS; narrowing PROBLEMS without it leaves
 # tasks that exit 0 with "nothing to do".
 #
-#   THE 2026-09-03 FREEZE RUN, both problems, one job, two Gurobi sessions. The
-#   reactor takes the whole rho span because its {2,3}/{5,6} columns were measured
-#   under `cost_vector` at ones and do not transfer to the balanced c; gastric is
-#   unaffected by that change and takes the defaults. RUN_TEST=0 splits the test
-#   stage off so each stage gets its own 12h wall -- the second submission QUEUES
-#   behind the first on --dependency=singleton, so it is safe to send both now.
-#     RHO_COLUMNS_REACTOR="1 2 3 4 5 6" SEARCH=grid EXTRA_ARGS=--refresh \
-#       RUN_TEST=0 sbatch experiments/submit_dial_sweep.sh
-#     RUN_SWEEP=0 sbatch experiments/submit_dial_sweep.sh
+#   THE 2026-09-04 REACTOR FULL-SPAN RUN -- the balanced-c re-measurement both
+#   DEFAULT_RHO_COLUMNS["reactor"] and METHOD_RHO_COLUMNS were re-derived from.
+#   SCOPED TO THE REACTOR, and the scoping is the whole lesson: all three
+#   settings are right for the reactor (a new instance, so the old cell is
+#   incomparable and no monotonicity may be assumed) and all three are WRONG for
+#   gastric, which the balanced c does not touch. Sent UNSCOPED on 2026-09-03 it
+#   cost two 12h jobs: --refresh threw away a gastric checkpoint whose non-cmicl
+#   cells still reproduce bit-identically AND deleted its 4 cp_alpha_ablation
+#   rows, then SEARCH=grid sent the freed C-MICL series down the whole 16-alpha
+#   grid including the expensive tail, and the job walled before writing a star
+#   table. PROBLEM=reactor makes PROBLEMS a ONE-element list, so the reactor is
+#   task 0 there: `--array=0`, NOT `--array=1`.
+#     PROBLEM=reactor RHO_COLUMNS_REACTOR="1 2 3 4 5 6" SEARCH=grid \
+#       EXTRA_ARGS=--refresh RUN_TEST=0 \
+#       sbatch --array=0 experiments/submit_dial_sweep.sh
+#     RUN_SWEEP=0 PROBLEM=reactor sbatch --array=0 experiments/submit_dial_sweep.sh
 #
 #   sbatch experiments/submit_dial_sweep.sh                                  # gastric + reactor
 #   PROBLEM=gastric sbatch --array=0 experiments/submit_dial_sweep.sh        # gastric only

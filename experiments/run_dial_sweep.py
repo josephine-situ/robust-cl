@@ -12,8 +12,8 @@ The grid::
 
     method      dial      rho columns                       notes
     ---------------------------------------------------------------------------
-    cp          tau       gastric {0.5, 1.0}, reactor {2,3}  ONE fixed tau grid
-    wrapper     alpha     same                               P is a bank prefix
+    cp          tau       gastric {0.5, 1.0}, reactor {1,2}  ONE fixed tau grid
+    wrapper     alpha     gastric same, reactor {3,4}        P is a bank prefix
     margin      m         --                                 faces no D
     cmicl       alpha     --                                 alpha=0.1 = protocol
     nominal     none      --                                 one reference point
@@ -155,45 +155,49 @@ BANK_KWARG = {"cp": "cp_bank", "wrapper": "bank"}
 # doubling into a rho sweep by the back door.
 #   gastric  0.5 / 1.0 -- where CP's committed curve is strongest, and the point
 #            below it. Both are headline columns now, not sensitivity checks.
-#   reactor  2 / 3 -- MEASURED, not guessed. rho=1 and 2 were the original pair
-#            because nominal misses the benzene target by ~4 units of F and
-#            rho=1 buys ~2.2; the 2026-08-27 run at {3, 4} then showed rho=3 is
-#            already past the edge (CP delivers feasibility 0.9 at the LOOSEST
-#            tau on the grid and 1.0 everywhere below it), so 4 only buys
-#            objective CP is not being asked to pay. 2/3 brackets the transition
-#            instead of sitting above it. --rho-columns overrides.
-DEFAULT_RHO_COLUMNS = {"gastric": [0.5, 1.0], "reactor": [2.0, 3.0],
+#   reactor  1 / 2 -- MEASURED on the BALANCED-c instance, by the 2026-09-04
+#            full-span run (rho 1..6, --search grid, every column walked whole).
+#            CP caps at feasibility 0.300 at rho=1 (tau=0.1, none_interior) and
+#            first delivers the 0.9 target at rho=2 (tau*=0.3), so 1/2 brackets
+#            its transition; 3..6 all deliver (0.9, 1.0, 1.0, 1.0) and only buy
+#            objective CP is not being asked to pay. The old pair was {2, 3},
+#            measured under `cost_vector` at ones -- SUPERSEDED by this run, not
+#            a second measurement of the same thing. --rho-columns overrides.
+DEFAULT_RHO_COLUMNS = {"gastric": [0.5, 1.0], "reactor": [1.0, 2.0],
                        "synthetic": [0.5, 1.0]}
 
 # PER-METHOD overrides of the above, for the case where one method's usable range
 # simply is not the shared one. Only entry: the reactor's wrapper.
 #
-# The shared {2, 3} brackets CP's transition, but the wrapper never gets there --
+# MEASURED on the same 2026-09-04 full-span run as the default above (balanced c,
+# rho 1..6, --search grid), which is where both entries have to come from: a
+# crossing is a property of the instance, and the ones-c pair ({2,3} for CP,
+# {5,6} for the wrapper) does not transfer to the balanced one.
+#
+# The shared {1, 2} brackets CP's transition, but the wrapper never gets there --
 # it is out of DIAL at alpha=0 (where all P=20 models must hold; there is no
-# stricter level) at feasibility 0.10 on rho=2 and 0.40 on rho=3. Its alpha=0 end
-# only clears the 0.9 target at rho=6, measured on the 2026-08-28 {4,5,6} probe:
-# 0.50 / 0.70 / 0.90 as rho goes 4 / 5 / 6. So on the shared column the wrapper
-# has no dial* at all, and reporting it there measures the column rather than the
-# method. {5, 6} brackets ITS transition the way {2, 3} brackets CP's -- and the
-# comparison the deliverable makes is at equal FEASIBILITY, not at equal rho, so
-# the two methods sitting on different columns is the point rather than a
-# confound. The cost of that capacity is what the curve then shows.
+# stricter level) at feasibility 0.00 on rho=1 and 0.10 on rho=2. Its alpha=0 end
+# first clears the 0.9 target at rho=4: 0.40 / 0.90 as rho goes 3 / 4. So on the
+# shared column the wrapper has no dial* at all, and reporting it there measures
+# the column rather than the method. {3, 4} brackets ITS transition the way
+# {1, 2} brackets CP's -- and the comparison the deliverable makes is at equal
+# FEASIBILITY, not at equal rho, so the two methods sitting on different columns
+# is the point rather than a confound. The cost of that capacity is what the
+# curve then shows.
+#
+# Its dial* on rho=4 sits ON the alpha=0 grid end, and that end is STRUCTURAL --
+# no level asks for more than all P models to hold -- so `grid_end` there is the
+# METHOD running out, not a reason to widen. rho=5 is the first column where it
+# turns interior (alpha*=0.05).
 #
 # --rho-columns overrides BOTH: it puts every method on the given columns, which
-# is what a span probe (`--rho-columns 1 2 3 4`) wants.
-#
-# !! BOTH REACTOR ENTRIES ARE STALE AS OF 2026-09-03 !! Every crossing quoted above
-# -- CP's at 2/3, the wrapper's at 5/6 -- was measured with `cost_vector` at ones,
-# where v0 and v_He carried 83% of the objective span. Production is now
-# `reactor.cost_vector: "balanced"` (1/span_i, each variable 20%), so x* trades
-# differently and the rho at which each method crosses the 0.9 target moves by an
-# unmeasured amount. D itself is UNCHANGED -- rho is in units of scale(y)*sqrt(n)
-# on the benzene labels, which c does not touch -- so the tau/alpha/margin/cmicl
-# grids stay correctly placed; it is only WHICH COLUMN brackets each transition
-# that is now unknown. Re-derive both from the full-span run
-# (`RHO_COLUMNS_REACTOR="1 2 3 4 5 6"`) before trusting a reactor run that does
-# not pass --rho-columns.
-METHOD_RHO_COLUMNS = {"reactor": {"wrapper": [5.0, 6.0]}}
+# is what a span probe (`--rho-columns 1 2 3 4 5 6`) wants, and is how these two
+# entries were re-derived. Re-derive them again after any change that moves x* --
+# a new cost_vector, a new box, a new embedded model -- since D staying fixed
+# (rho is in units of scale(y)*sqrt(n) on the benzene labels, which c does not
+# touch) keeps the tau/alpha/margin/cmicl grids placed but says nothing about
+# WHICH COLUMN brackets a transition.
+METHOD_RHO_COLUMNS = {"reactor": {"wrapper": [3.0, 4.0]}}
 
 
 def _rho_columns_for(problem, methods, override):

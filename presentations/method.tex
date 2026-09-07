@@ -705,12 +705,12 @@
 % ===========================================================================
 \begin{frame}{Calibration: primary axis is each method's own dial}
   Held-out CV, after model selection. $\rho$ \textbf{fixed} at two columns
-  (gastric $0.5,1$; reactor $2,3$, and $5,6$ for the wrapper); each walks
+  (gastric $0.5,1$; reactor $1,2$, and $3,4$ for the wrapper); each walks
   \emph{its own} dial.
   \begin{itemize}
     \item \textbf{A method may take its OWN columns.} The wrapper on the
-      reactor is out of \emph{dial} at $\alpha{=}0$ on $\{2,3\}$ (all $P{=}20$
-      models must hold; only $0.40$), and first clears $0.9$ at $\rho{=}6$. Not
+      reactor is out of \emph{dial} at $\alpha{=}0$ on $\{1,2\}$ (all $P{=}20$
+      models must hold; only $0.10$), and first clears $0.9$ at $\rho{=}4$. Not
       a confound --- the comparison is at equal \textbf{feasibility}, not equal
       $\rho$, so the extra capacity is priced by the curve; reporting it on a
       column where it has no $\text{dial}^\ast$ would measure the column.
@@ -837,8 +837,9 @@
       $\texttt{best\_feas}$ row against a $\texttt{tested}$ one as if the two
       were tuned alike.
     \item A series whose every dial fell under \texttt{--min-solved} has no cell
-      to fall back \emph{to}, so its \emph{tuned} row is skipped regardless ---
-      gastric C-MICL, where the fix is a wider $\alpha$ grid. But C-MICL is
+      to fall back \emph{to}, so its \emph{tuned} row is skipped regardless: the
+      fix there is a grid reaching where the method first solves, not a
+      fallback. But C-MICL is
       \textbf{always} tested at the $\alpha$ it \emph{asserts}
       ($1-$target$=0.1$, \texttt{kind=protocol}), in addition to any tuned row
       and even where there is none: that level is \textbf{pinned}, not fitted,

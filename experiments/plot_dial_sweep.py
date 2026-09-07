@@ -28,8 +28,8 @@ Encoding decisions, each load-bearing:
   rho variation of a method is its own series (dark + solid for the larger rho,
   light + dashed for the smaller) inside the method's own hue, so the eye groups
   by method first. The shade is relative to that METHOD's own columns, because
-  methods need not share them -- on the reactor the wrapper runs at rho 5/6 where
-  CP runs at 2/3, and reading the split off the panel's global max would draw
+  methods need not share them -- on the reactor the wrapper runs at rho 3/4 where
+  CP runs at 1/2, and reading the split off the panel's global max would draw
   both of CP's columns as the same light dashed series.
   The RHS margin used to be a second blue one shade off CP's, which put the
   contribution and the baseline it has to beat in one colour family; it is
@@ -159,7 +159,7 @@ def _series(main):
             continue
         # Dark+solid is the method's OWN larger column, not the panel's largest
         # rho. Methods may sit on different columns (`METHOD_RHO_COLUMNS`: the
-        # wrapper runs at rho 5/6 on the reactor where CP runs at 2/3), and a
+        # wrapper runs at rho 3/4 on the reactor where CP runs at 1/2), and a
         # global max would then render BOTH of CP's columns as the light dashed
         # one -- two distinct series drawn identically.
         own = sorted({float(r) for r in g_m["rho"].dropna().unique()})

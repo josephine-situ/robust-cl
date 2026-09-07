@@ -156,31 +156,35 @@ grid|). The rho sweep is where `--seed` is swept.
 
 | method | dial | rho columns | notes |
 |---|---|---|---|
-| `cp` | tau | gastric {0.5, 1.0}, reactor {2, 3} | **one fixed tau grid**, same on every column |
-| `wrapper` | alpha | gastric {0.5, 1.0}, **reactor {5, 6}** | its P models are a prefix of CP's bank |
+| `cp` | tau | gastric {0.5, 1.0}, reactor {1, 2} | **one fixed tau grid**, same on every column |
+| `wrapper` | alpha | gastric {0.5, 1.0}, **reactor {3, 4}** | its P models are a prefix of CP's bank |
 | `margin` | m | — | scored once; faces no D |
 | `cmicl` | alpha | — | scored once; alpha = `1 - feas_target` is the protocol point |
 | `nominal` | none | — | single reference point |
 | `robust_reg` | — | — | **dropped**: its dial IS rho, so at fixed rho it has none |
 
-**The reactor's rho columns are {2, 3} for CP and {5, 6} for the wrapper, measured
-rather than guessed.** CP's were {1, 2} on the reasoning that nominal misses the
-benzene target by ~4 units of `F` and rho=1 buys ~2.2; the run at {3, 4} then showed
-rho=3 is already **past** the transition — CP delivers 0.9 at the loosest tau on the
-grid and 1.0 everywhere below it — so 4 only buys objective CP is not being asked to
-pay. {2, 3} brackets the transition instead of sitting above it.
+**The reactor's rho columns are {1, 2} for CP and {3, 4} for the wrapper, measured
+on the BALANCED-`c` instance** by the 2026-09-04 full-span run (rho 1-6, every
+column walked whole under `--search grid`). CP caps at 0.300 at rho=1
+(`none_interior`) and first delivers 0.9 at rho=2 (tau*=0.3), so {1, 2} brackets its
+transition; 3-6 all deliver and only buy objective CP is not being asked to pay. The
+ones-`c` pair was {2, 3} / {5, 6} — **superseded, not a second measurement**: a
+crossing is a property of the instance, so both entries have to be re-derived from a
+full-span run after anything that moves `x*`.
 
 **`METHOD_RHO_COLUMNS` is where a method's columns diverge from the shared ones**
-(2026-08-28), and the wrapper on the reactor is the only entry. On {2, 3} it is out
+(2026-08-28), and the wrapper on the reactor is the only entry. On {1, 2} it is out
 of **dial**, not out of grid: alpha=0 already requires all P=20 models to hold and
-there is no stricter level, yet it reaches only 0.10 (rho=2) and 0.40 (rho=3). Its
-alpha=0 end first clears 0.9 at rho=6 (0.50 / 0.70 / 0.90 as rho goes 4 / 5 / 6), so
-{5, 6} brackets **its** transition the way {2, 3} brackets CP's. **This is not a
-confound**: the deliverable compares at equal held-out *feasibility*, not at equal
-rho, so the price of that extra capacity is exactly what the curve is measuring —
-and reporting the wrapper on a column where it has no `dial*` measures the column
-instead of the method. `--rho-columns 1 2 3 4` overrides **both** and puts every
-method on the given span.
+there is no stricter level, yet it reaches only 0.00 (rho=1) and 0.10 (rho=2). Its
+alpha=0 end first clears 0.9 at rho=4 (0.40 / 0.90 as rho goes 3 / 4), so {3, 4}
+brackets **its** transition the way {1, 2} brackets CP's; its `dial*` at rho=4 sits
+on the alpha=0 end, which is **structural**, and rho=5 is the first column where it
+turns interior (alpha*=0.05). **This is not a confound**: the deliverable compares
+at equal held-out *feasibility*, not at equal rho, so the price of that extra
+capacity is exactly what the curve is measuring — and reporting the wrapper on a
+column where it has no `dial*` measures the column instead of the method.
+`--rho-columns 1 2 3 4 5 6` overrides **both** and puts every method on the given
+span.
 
 **Moving a method's columns drops its old series**, which `_guard_curve_rewrite`
 refuses by default. **`--drop-series wrapper@2 wrapper@3`** is the narrow
@@ -329,8 +333,9 @@ coincides with `dial*` (the tuned row already carries it) or under
 
 **The fallback does not rescue a series that never SOLVED.** `best_feas_dial` is
 computed only over cells clearing `--min-solved`, so a series under that floor
-everywhere has no cell to fall back to and is skipped regardless — **gastric C-MICL
-is exactly this**, and its fix is a wider alpha grid, not a fallback. The skip
+everywhere has no cell to fall back to and is skipped regardless. **Gastric C-MICL
+was exactly this** until the alpha grid was widened past 0.5 — a fallback was never
+the fix, a grid that reaches where the method first solves was. The skip
 message distinguishes the three states (column absent → old star file; column empty
 → nothing cleared `--min-solved`; a real number → a fallback point).
 
@@ -351,8 +356,9 @@ across the whole dial grid.
 
 The tuning judge is a fitted ensemble on every problem, and a constrained optimum
 sits on the boundary where its own error decides the verdict (synthetic: 26% of
-verdicts flipped vs `f_true`; the reactor proxy under-called every series the ODE
-then passed 10/10). Both scoring paths now record, per DECISION: `slack` (signed
+verdicts flipped vs `f_true`; the reactor proxy under-calls the ODE on three
+series and over-calls it on one — see the reactor cell below). Both scoring
+paths now record, per DECISION: `slack` (signed
 distance to the binding constraint — the bit *is* `slack <= 0`), `binding` (which
 outcome it came from, so the slack is read against **that** outcome's scale),
 `lomo_flip` / `lomo_sd` (verdict instability under leave-one-**member**-out
@@ -414,49 +420,71 @@ margin, is **structural**, not evidence of stability.
   objective, feasibility or `dial*` from before that date is against a different
   score function. **Non-`cmicl` rows are untouched** — no other method reads any
   of it — so the dial cells stay valid for cp/wrapper/margin/nominal and only
-  their `cmicl` series needs re-running.
+  their `cmicl` series needs re-running. **Already re-run under the new
+  semantics**: the reactor dial cell's whole `cmicl` series (2026-09-04, plus its
+  ODE test rows) and gastric's six scored alphas. Every other committed `cmicl`
+  row — the rho sweeps, `results/gastric/`, `results/synthetic/` — is the old
+  floored-`u` score function.
 - **Only `results/rho_sweep/` and `results/figures/fig_rho_*` / `fig_dial_*`** —
   ellipsoid geometry, fixed temporal folds. Inside it the **dial cells are newest
-  and the only tested ones**: gastric with all three phases, the reactor with a
-  full curve, a star table and an ODE-judged test stage.
-- **The reactor dial cell is STALE as of 2026-09-03 — a different instance.**
-  `reactor.cost_vector` moved from ones to `1/span_i` (balanced), so `x*`, every
-  objective and every feasibility below is against a different optimization
-  problem, and the rho columns quoted here were the crossings under ones. The
-  numbers are kept as the record of the ones-instance, not as current results;
-  the replacement is the full-span re-run (`RHO_COLUMNS_REACTOR="1 2 3 4 5 6"`),
-  from which both `DEFAULT_RHO_COLUMNS["reactor"]` and `METHOD_RHO_COLUMNS` must
-  be re-derived. Everything from the ones-instance follows:
-- **[SUPERSEDED — ones instance] The reactor dial cell** (re-run 2026-08-28 with
-  `--drop-series wrapper@2 wrapper@3`; figures regenerated from it). Three
-  methods have a `dial*`: `cp@3` tau*=1.0 (feas 0.9, obj 3253, `interior`),
-  `wrapper@6` alpha*=0 (feas 0.9, obj 3281, `grid_end` — **structural**, alpha=0
-  is the strictest level), `margin` m*=4.0 (feas 1.0, obj 3411, `interior`).
-  No `dial*`: `cp@2` caps at 0.80 `none_interior`; `wrapper@5` at 0.70 and
-  `cmicl` at 0.50 (n_cal=180 floor), both `none_grid_end` but both on a
-  **structural** end — the METHOD running out, not the grid. The wrapper
-  reproduces the `_wraprho456` probe exactly (0.70 / 0.90 at rho 5 / 6).
-  - **The proxy judge is CONSERVATIVE relative to the ODE.** In the test stage
-    every decision the sweep produced is ODE-feasible **10/10** — including the
-    `best_feas` cells the proxy scored 0.50–0.80 — and only `nominal` fails
-    (0/10 on both judges). So the ODE stage separates the methods on **cost**,
-    not on feasibility, and a tuning feasibility below 0.9 on this instance is
-    not evidence the decision violates truth. `cmicl` at alpha=0.0075 is the one
-    row that does not survive the refit: `full` phase `solved_frac=0`.
-  - `reactor_dial_*_wraprho456.csv` is the **`--cell-tag` probe** that measured
-    those columns: the wrapper alone at rho {4, 5, 6}, feasibility 0.50 / 0.70 /
-    0.90 at alpha=0. It resumes nothing from the untagged cell and
-    `run_dial_test.py` does not read it, so it is the *evidence* for the column
-    move, superseded now by the cell itself.
-- **The gastric dial cell is still GRID-SUPERSEDED, not invalidated**: it predates
-  the per-problem C-MICL alpha floor (`CMICL_ALPHA_GRID_EXTRA`), so its `cmicl`
-  row is "no cell cleared solved >= 0.5" rather than a measured cap, and its star
-  table carries the flat `bound="none"` that cannot tell `none_interior` from
-  `none_grid_end`. **Re-run it WITHOUT `--refresh`** — the new grid is a strict
-  superset and the scoring rule is unchanged, so the search replays the existing
-  rows free and spends its budget only on the new cells. Its C-MICL row is also
-  the one series `--fallback-best-feas` cannot help: nothing cleared
-  `--min-solved`, so there is no cell to fall back to.
+  and the only tested ones**: the reactor complete (full curve, star table,
+  ODE-judged test stage), gastric tested on all three phases but at the
+  2026-08-27 star — its curve has since been re-run and has no star (below).
+- **The reactor dial cell is CURRENT, complete and tested** — the balanced-`c`
+  re-run of 2026-09-04 (rho 1-6, `--refresh --search grid`, every column walked
+  whole) plus the ODE test stage of 2026-09-07. The objective is a **min** in
+  box-widths now, so no number here is comparable to a ones-`c` one. At the two
+  reported columns: `cp@2` tau*=0.3 (feas 0.9, obj 5.816, `interior`),
+  `wrapper@4` alpha*=0 (feas 0.9, obj 5.885, `grid_end` — **structural**, alpha=0
+  is the strictest level), `margin` m*=4.0 (feas 1.0, obj 6.043, `interior`),
+  against `nominal` 0.0 / 5.506 — so at equal tuned feasibility **CP is cheaper
+  than the wrapper** (5.816 vs 5.885) and both beat the margin. CP delivers on
+  every column 2-6, the wrapper on 4-6 (alpha* 0 / 0.05 / 0.15). No `dial*`:
+  `cp@1` (best 0.300, `none_interior`), `wrapper@1`/`@2`/`@3` (0.00 / 0.10 / 0.40
+  at alpha=0, a **structural** end) and `cmicl` (best 0.100 at alpha=0.3,
+  `none_interior`, n_cal=180 floor). The cell holds the **whole span** for both
+  methods, a superset of the reported columns, so a re-run on the defaults trips
+  `_guard_curve_rewrite` — re-run it with `RHO_COLUMNS_REACTOR="1 2 3 4 5 6"`.
+  - **The ODE separates the methods on feasibility, not only on cost.** The old
+    "proxy is uniformly conservative, every decision ODE-feasible 10/10" reading
+    died with the ones instance. The proxy still *under*-calls three series
+    (`cp@1` 0.30->0.70, `wrapper@2` 0.10->0.70, `wrapper@3` 0.40->0.90 on folds)
+    but it **over-calls** `wrapper@6` (1.00->0.90), and the ODE failures are
+    real: `nominal` 0/10, `wrapper@1` 0/10 folds and 0/1 on `full`, `wrapper@2`
+    0/1 on `full` despite 0.70 on folds, `cmicl` 0.10 at its `best_feas`
+    alpha=0.3 and **0.20 at its protocol alpha=0.1**. Every other tuned `dial*`
+    row is ODE-feasible 10/10. So a tuning feasibility below 0.9 can no longer
+    be waved off as the proxy being harsh.
+  - `reactor_dial_*_wraprho456.csv` is a **ones-`c`** `--cell-tag` probe of the
+    wrapper at rho {4, 5, 6}. It was the evidence for the old {5, 6}; the
+    full-span run replaced it, so it is dead and reads on no current instance.
+- **The gastric dial cell is PARTIALLY RE-RUN and has NO star table.** The
+  reactor recipe of 2026-09-03 was sent unscoped and gastric inherited
+  `--refresh --search grid`; both 12h jobs walled inside C-MICL's tail. What is
+  on disk is a 73-cell curve: cp/wrapper/margin/nominal **complete** on the
+  widened grids, `cmicl` scored only at its six least-robust alphas (1.0 down to
+  0.6), and the **4 `cp_alpha_ablation` rows deleted** by the refresh. With no
+  `_dial_star` file the test stage cannot run at all.
+  - **C-MICL's `dial*` is nonetheless already settled at alpha=0.6** (feas 0.919,
+    obj 9.7814, solved 0.893): every *less* robust cell is scored and falls short
+    (0.844 / 0.800 / 0.743 / 0.703 / 0.703 at alpha 0.7 / 0.8 / 0.9 / 0.95 / 1.0)
+    and objective monotonicity in the dial is structural, so no cell in the
+    unscored alpha<0.6 tail can beat it. That tail buys frontier points at the
+    saturation end; it cannot move the star row. **The widened grid did fix what
+    the old one could not measure** — this series used to clear `--min-solved`
+    nowhere.
+  - **The widened grids move exactly one other star**: `wrapper@1.0` alpha* 0.4 ->
+    0.6. So the 2026-08-27 test rows still sit at the current `dial*` for
+    `cp@0.5`, `cp@1.0`, `wrapper@0.5` and `margin`, and **not** for `wrapper@1.0`;
+    none of them carries a C-MICL row (the cell had no C-MICL `dial*` then, and
+    the `kind="protocol"` row postdates that run).
+  - **Finish it resumed and capped, NEVER with `--refresh`**: every scored cell
+    replays free (`visit` charges budget only when a cell is not on the
+    checkpoint), so `PROBLEM=gastric MAX_EVALS=4 RUN_TEST=0 sbatch --array=0
+    experiments/submit_dial_sweep.sh` bounds the new C-MICL work to the alpha=0.1
+    `must_visit` plus ~3 fill cells, restores the ablation rows (on by default,
+    walked whole, unaffected by `MAX_EVALS`) and ends with the star written. The
+    test stage then goes as its own `RUN_SWEEP=0 PROBLEM=gastric` submission.
 - **No gastric result outside those dial cells is current** (2026-08-21): the
   production draw is now **incoherent** and DLT is **derived** rather than drawn,
   so the default cell is `_incoh` and the committed `_coh` curves are neither the
@@ -609,8 +637,9 @@ gastric only.
   theirs is an average over 100 cost vectors, which is the probe's job (below),
   and their seed-0 draw is itself unbalanced (`v_He` 70% of the span, `L` 0.2%).
   D is untouched — rho is in units of `scale(y)*sqrt(n)` on the benzene labels —
-  so the tau/alpha/margin/cmicl grids stay placed, but **every measured rho column
-  does not transfer** (see `METHOD_RHO_COLUMNS`).
+  so the tau/alpha/margin/cmicl grids stay placed, but **no measured rho column
+  transfers**: both were re-derived on the balanced instance by the 2026-09-04
+  full-span run — CP {1, 2}, wrapper {3, 4} (see `METHOD_RHO_COLUMNS`).
 - C-MICL's reactor feasibility is a
   property of that distribution: **0.99** under `c_i ~ U(0,1)` vs **0.11** under
   `c_i ~ U(0,1)/span_i` (`probe_cmicl_cost_sampling.py`, a diagnostic that changes
@@ -637,14 +666,16 @@ gastric only.
   scaled units, and that neither side is Mondrian — is the **DIFFERENCES**
   section of `src/methods/cmicl.py`. **Read it before quoting a `cmicl` number
   as theirs.**
-- **Gastric C-MICL is measured infeasible** at alpha=0.1 under both multiplicity
-  settings (half-widths 1.33-1.73 sd(y), i.e. 0.38-0.50 against an rhs of 0.6, on
-  five constraints at once), which is why its grid runs the **full [0.02, 1]** of a
-  miscoverage level — where it *first solves* is the result. On the 2026-08-27 run
-  alpha 0.1 and 0.3 solved **nothing** and 0.5 (the old grid top) solved **13.8%**
-  of contexts, under the 0.5 floor, so its star row was empty and the answer was
-  known only to be "above 0.5". Budget for it: proving the marginal case infeasible
-  costs **176 s** against nominal's 0.9 s.
+- **Gastric C-MICL only solves at a loose alpha**, which is why its grid runs the
+  **full [0.02, 1]** of a miscoverage level — where it *first solves* is the
+  result. Measured under Ovalle et al.'s raw-`u` semantics (2026-09-04): alpha=0.6
+  solves **89.3%** of contexts and delivers (feas 0.919), and where the protocol
+  alpha=0.1 lands is **unmeasured** — that tail is the part of the grid the walled
+  job never scored. The older reading — infeasible at alpha=0.1 under both
+  multiplicity settings, half-widths 1.33-1.73 sd(y) against an rhs of 0.6 on five
+  constraints at once, 13.8% solved at alpha=0.5 — is the **floored-`u`** regime
+  and does not carry over. Budget for it either way: a cell that proves infeasible
+  cost **176 s** against nominal's 0.9 s.
 - **Nothing is evaluated at `rho*`** — no runner reads `*_rho_star*.csv`, and
   `run_chemo_robust.py` takes D from `config.yaml` without forcing the ellipsoid.
   `method.tex` used to state the protocol anyway; since 2026-09-02 it says the
