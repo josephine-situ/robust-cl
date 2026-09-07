@@ -180,6 +180,7 @@ export NUMEXPR_NUM_THREADS="${NTHREADS}"
 #   {problem}_dial_star<cell>.csv     DERIVED -- each series' protocol point
 #   {problem}_dial_skipped<cell>.csv  cells the search did not score, and why
 #   {problem}_dial_scores<cell>.csv   resume checkpoint, keyed (method@rho, dial)
+#   {problem}_dial_budget<cell>.json  MAX_EVALS charged per series, so far
 #
 # Then:
 #   python experiments/plot_dial_sweep.py --all --suffix _incoh
@@ -244,8 +245,10 @@ CMICL_ALPHA_GRID="${CMICL_ALPHA_GRID:-}"
 #                       filling the band around it. A cell scoring feasibility 0
 #                       prunes everything LESS robust; one below MIN_SOLVED prunes
 #                       everything MORE robust. Cells already on the checkpoint
-#                       are free. Unscored cells go to {problem}_dial_skipped*.csv
-#                       with the reason, never into the curve as NaN rows.
+#                       are free, and the budget is a TOTAL over runs of the
+#                       cell (see MAX_EVALS). Unscored cells go to
+#                       {problem}_dial_skipped*.csv with the reason, never into
+#                       the curve as NaN rows.
 #   grid                Walk the whole grid.
 #
 # adaptive ASSUMES the dial is monotone -- feasibility rising with robustness, the
@@ -254,6 +257,13 @@ CMICL_ALPHA_GRID="${CMICL_ALPHA_GRID:-}"
 # the signal to re-run that series with SEARCH=grid, which assumes nothing.
 SEARCH="${SEARCH:-adaptive}"
 # Cells scored per series under adaptive. Empty = ceil(log2 n) + 2, floored at 4.
+# A TOTAL over every run of the cell, not per job: the charge is persisted in
+# {problem}_dial_budget<cell>.json, so an attempt REQUEUED after a preemption
+# resumes the budget instead of re-arming it (without that, each attempt would
+# find the previous attempt's cells free on the checkpoint and buy a fresh
+# budget's worth, walking the dial further than the run asked for -- with enough
+# preemptions, all the way to SEARCH=grid). Raise it to buy more cells later;
+# --refresh zeroes it with the rest of the cell.
 MAX_EVALS="${MAX_EVALS:-}"
 FEAS_TARGET="${FEAS_TARGET:-0.9}"
 MIN_SOLVED="${MIN_SOLVED:-0.5}"
@@ -449,6 +459,16 @@ fi
 #       EXTRA_ARGS=--refresh RUN_TEST=0 \
 #       sbatch --array=0 experiments/submit_dial_sweep.sh
 #     RUN_SWEEP=0 PROBLEM=reactor sbatch --array=0 experiments/submit_dial_sweep.sh
+#
+#   PREEMPTABLE. mit_normal is 12h and often full; mit_preemptable is 2 days
+#   with idle capacity, and preemption is cheap here because append_score banks
+#   every finished cell, so a --requeue attempt replays them free. Ask for a LONG
+#   WALL rather than a big budget there: a single cell longer than the wall is
+#   never checkpointed, so every attempt re-solves it from scratch. MAX_EVALS is
+#   a total over runs, so the requeue does not re-arm it.
+#     PROBLEM=gastric MAX_EVALS=2 RUN_TEST=0 sbatch \
+#       --partition=mit_preemptable --requeue --time=1-00:00:00 \
+#       --mem=8G --array=0 experiments/submit_dial_sweep.sh
 #
 #   sbatch experiments/submit_dial_sweep.sh                                  # gastric + reactor
 #   PROBLEM=gastric sbatch --array=0 experiments/submit_dial_sweep.sh        # gastric only

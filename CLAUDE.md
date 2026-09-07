@@ -26,8 +26,10 @@ which results are current, and the traps that reading the code would not reveal 
 the code itself is well commented, so don't restate it here.
 
 Dated `research_update_YYYY-MM-DD.tex` decks carry the numbers; a new deck
-supersedes the last rather than editing it. Current is **2026-08-28** (the dial
-sweep, 8 frames, complete); **2026-08-19** is the last rho-sweep deck.
+supersedes the last rather than editing it. Current is **2026-09-08** (4 frames:
+what changed since 08-28, the reactor's balanced-`c` ODE test stage, gastric as
+**TBD placeholders** pending the cluster run, next steps); **2026-08-28** is the
+last complete dial-sweep deck and **2026-08-19** the last rho-sweep deck.
 **Known gaps = the "Next steps" frame of the current deck** — keep the two in step.
 
 ## Environment & commands
@@ -143,8 +145,8 @@ wants a subset — one method, or a rho column outside the shared grid — takes
 untagged one, and `run_dial_test.py` does not look for it (same as `_sep*`).
 `--refresh` skips the guard, having already deleted the curve on purpose.
 
-**`--refresh` clears EVERY output of the cell** (scores, contexts, curve, star,
-skipped). Pass it whenever a previous run of the same cell is **not comparable** —
+**`--refresh` clears EVERY output of the cell** (scores, contexts, judge, curve,
+star, skipped, and the `_dial_budget` sidecar). Pass it whenever a previous run of the same cell is **not comparable** —
 a changed grid, a changed scoring rule. The star table is written once at the *end*
 of the sweep, so a refreshed run that timed out leaves the **previous** star on
 disk, which is the file `run_dial_test.py` reads.
@@ -214,7 +216,24 @@ m=1.5), the reactor's CP (delivering at the old max tau=1.0) and gastric's wrapp
   delivering interval's **least-robust end** (the protocol point) and spends the
   rest of `--max-evals` filling the band around it — the deliverable is a *curve*,
   so a bare bisection answers the wrong question. Checkpointed cells are free;
-  C-MICL's protocol point is a `must_visit`, scored even when it does not solve.
+  C-MICL's protocol point is a `must_visit`, scored even when it does not solve
+  and **even when the budget is already spent** — it is asserted, not chosen.
+- **`--max-evals` is a TOTAL over runs of the cell**, not per process
+  (`{problem}_dial_budget{cell}.json`, written after every charged cell,
+  2026-09-07). A **requeued** job — `mit_preemptable`, a node failure, any
+  `--requeue` — restarts the script from line 1 and finds the previous attempt's
+  cells free on the checkpoint, so a per-process count re-armed the whole budget
+  on every attempt and walked the dial further than the run asked for (enough
+  preemptions and it becomes `--search grid`). Raise the number to buy more
+  cells later; the run prints what each series has already spent. A cell whose
+  sidecar is missing reads as unspent, so this is invisible to every cell whose
+  checkpoint predates it.
+- **On a preemptable partition, ask for a long wall rather than a big budget.**
+  The checkpoint is per cell, so a preemption costs only the in-flight cell —
+  but a single cell longer than the wall is never checkpointed, and every
+  attempt re-solves it from scratch. The curve and star are written at the *end*
+  of a run, so the star lands on whichever attempt reaches it: a small
+  `--max-evals` gives every attempt a short path to one.
 - The prunes rest on **structural** monotonicity of objective and solvability (each
   dial nests the optimizer's feasible set), *not* on held-out feasibility, whose
   monotonicity is empirical. So the order check reports two things: a **violation**

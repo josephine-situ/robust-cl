@@ -63,15 +63,21 @@ Four things this file exists to get right, in the order they had to be fixed:
    what the objective pays for). The search bisects to bracket that end, then
    spends the rest of ``--max-evals`` filling the band around it -- the
    deliverable is a CURVE, so resolution goes where the frontier bends and none
-   of it into the two dead tails. That let the grids get FINER at lower cost
-   (``TAU_GRID`` is half-decades where it was decades) and then WIDER at lower
-   cost again (2026-08-27: every grid now spans its dial's full usable range,
+   of it into the two dead tails. Searching let the grids get FINER at lower
+   cost (``TAU_GRID`` is half-decades where it was decades) and then WIDER at
+   lower cost again (2026-08-27: every grid now spans its dial's full usable range,
    because bracketing is O(log n) and the dead tails are pruned unscored). Every
    old value is still in every grid, so an existing checkpoint resumes rather
    than being orphaned. Widening was not cosmetic -- on the 2026-08-27 curves the
    reactor's margin, the reactor's CP and gastric's wrapper each had their
    protocol point pinned at ``bound="grid_end"``, and gastric's C-MICL had no
    protocol point at all because it first solves above the old grid top.
+
+   The budget is a TOTAL over every run of the cell, kept in
+   ``{problem}_dial_budget{cell}.json``: a job requeued after a preemption
+   restarts this script from line 1 and finds the previous attempt's cells free
+   on the checkpoint, so a per-process count would re-arm the whole budget on
+   every attempt and walk the dial further than the run asked for.
 
    This ASSUMES the dial is monotone, which the rho axis is not always (CP's dip
    at rho=0.5 on gastric; robust_reg's feasibility falling with rho) and which
@@ -98,6 +104,8 @@ Outputs, all scoped by the same cell suffix ``run_rho_sweep`` uses
   ``{problem}_dial_curve{cell}.csv``    THE primary output; what the plot reads
   ``{problem}_dial_star{cell}.csv``     derived: each series' protocol point
   ``{problem}_dial_skipped{cell}.csv``  cells the search did not score, and why
+  ``{problem}_dial_budget{cell}.json``  --max-evals charged per series, so the
+                                        budget survives a requeue
   ``{problem}_cp_alpha{cell}.csv``      the coverage-cap ablation
 
 Usage::
@@ -112,6 +120,7 @@ Usage::
 
 import argparse
 import dataclasses
+import json
 import os
 import sys
 
@@ -573,7 +582,8 @@ def _order_check(dname, dial_at, seq, seen, detail, target, min_solved,
 
 
 def _search_dials(method, grid, evaluate, known, target, min_solved,
-                  max_evals=None, must_visit=(), label="", n_folds=0):
+                  max_evals=None, must_visit=(), label="", n_folds=0,
+                  spent_prior=0, on_spend=None):
     """Walk one series' dial grid in the order the answers actually decide.
 
     **This assumes the dial is monotone**, in both directions at once: held-out
@@ -605,6 +615,18 @@ def _search_dials(method, grid, evaluate, known, target, min_solved,
     resumed run both re-reads its own answers and starts with the window already
     narrowed.
 
+    The budget is CUMULATIVE OVER RUNS of this cell, not per process. A requeued
+    job -- preemption on `mit_preemptable`, a node failure, any `--requeue` --
+    restarts the script from line 1, and every cell an earlier attempt scored is
+    on the checkpoint and therefore free, so a per-process count would re-arm the
+    whole budget on every attempt and walk further down the dial than the run
+    asked for (with enough preemptions, all the way to `--search grid`).
+    ``spent_prior`` is what earlier attempts already charged for THIS series,
+    read back from the budget sidecar, and ``on_spend`` persists each new charge
+    as it is made -- so an attempt killed mid-cell still records what it bought.
+    To buy more cells later, raise ``--max-evals``: it is a total, so the run
+    prints what each series has already spent.
+
     ``must_visit`` names dial values scored whatever the search thinks -- C-MICL's
     protocol point ``1 - target``, which is asserted rather than chosen and has to
     be on the record even when it does not solve.
@@ -626,18 +648,24 @@ def _search_dials(method, grid, evaluate, known, target, min_solved,
               else max(4, int(np.ceil(np.log2(max(n, 2)))) + 2))
 
     seen, detail = {}, {}
-    spent = 0
+    # `spent` is the CUMULATIVE charge against the budget (see the docstring);
+    # `charged` is what THIS run paid, which is what the log line reports.
+    spent = int(spent_prior)
+    charged = 0
     # The HARD prune bounds: the two rules that exclude a cell outright rather
     # than merely deprioritise it. Nothing outside them is ever scored.
     keep_lo, keep_hi = 0, n - 1
 
     def visit(pos):
-        nonlocal spent, keep_lo, keep_hi
+        nonlocal spent, charged, keep_lo, keep_hi
         dial = dial_at(pos)
         free = known(dial)
         d = evaluate(dial)
         if not free:
             spent += 1
+            charged += 1
+            if on_spend is not None:
+                on_spend(spent)
         v = _verdict(d, target, min_solved)
         seen[pos], detail[pos] = v, d
         if v == "dead":
@@ -703,7 +731,8 @@ def _search_dials(method, grid, evaluate, known, target, min_solved,
             why = (f"pruned: more robust than {dname}={dial_at(keep_hi + 1):.5g}, "
                    f"which fell below the solved floor")
         else:
-            why = f"not reached: eval budget {budget} spent"
+            why = (f"not reached: eval budget {budget} spent "
+                   f"(cumulative over runs of this cell)")
         skipped.append(dict(dial=dial_at(pos), robustness_rank=pos, reason=why))
 
     # ---- did the order the pruning rests on hold? -------------------------
@@ -712,14 +741,45 @@ def _search_dials(method, grid, evaluate, known, target, min_solved,
 
     pruned = sum(1 for r in skipped if r["reason"].startswith("pruned"))
     info = dict(n_grid=n, n_evaluated=len(seen), spent=spent, budget=budget,
+                spent_here=charged, spent_prior=int(spent_prior),
                 skipped=skipped, n_pruned=pruned,
                 n_unreached=len(skipped) - pruned, violations=viol,
                 wobbles=wobble, keep_lo=keep_lo, keep_hi=keep_hi)
+    prior = (f", {spent_prior} of it in earlier runs" if spent_prior else "")
     print(f"[search] {label or method}: evaluated {len(seen)}/{n} cells "
-          f"({spent} solved, {len(seen) - spent} resumed; budget {budget}); "
+          f"({charged} solved here, {len(seen) - charged} resumed; budget "
+          f"{budget} total, {spent} spent{prior}); "
           f"pruned {pruned}, not reached {len(skipped) - pruned}", flush=True)
     _report_order(label or method, viol, wobble)
     return seen, detail, info
+
+
+def _load_budget(path):
+    """``{series tag: cells charged}`` so far for this cell, or empty.
+
+    Its own small JSON file rather than a column on the score checkpoint: that
+    CSV's schema is committed and appended to, so widening it would mix row
+    widths, and the budget is bookkeeping about the RUN rather than a score.
+    A missing file reads as "nothing spent", which is what makes this change
+    invisible to a cell whose checkpoint predates it -- and to every fresh cell.
+    """
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as fh:
+            return {str(k): int(v) for k, v in json.load(fh).items()}
+    except (ValueError, OSError, TypeError) as exc:
+        # Never fatal: a corrupt sidecar costs at most one budget's worth of
+        # extra cells, where refusing to run costs the whole job.
+        print(f"[dial-sweep] unreadable budget sidecar {path} ({exc}); "
+              f"treating every series as unspent", flush=True)
+        return {}
+
+
+def _save_budget(path, spent):
+    """Rewritten after EVERY charged cell -- a killed job must keep the count."""
+    with open(path, "w") as fh:
+        json.dump(spent, fh, indent=1, sort_keys=True)
 
 
 def _report_order(label, viol, wobble):
@@ -790,6 +850,9 @@ def run(config, args):
     var = _variant_suffix(args) + _cell_tag_token(args)
 
     scores_path = os.path.join(OUT_DIR, f"{problem}_dial_scores{var}.csv")
+    # How much of --max-evals each series has already spent, over every run of
+    # this cell. Cleared with the rest of the cell by --refresh.
+    budget_path = os.path.join(OUT_DIR, f"{problem}_dial_budget{var}.json")
     ctx_path = os.path.join(OUT_DIR, f"{problem}_dial_contexts{var}.csv")
     # The judge audit: per-decision slack, member instability and the decision
     # vector. Derived data like the contexts file, cleared by --refresh with it,
@@ -804,7 +867,7 @@ def run(config, args):
         # `run_dial_test.py` reads exactly that file to decide where to hold each
         # method. Deleting it up front makes a missing star an obvious failure
         # rather than a silently stale one.
-        for pth in (scores_path, ctx_path, judge_path,
+        for pth in (scores_path, ctx_path, judge_path, budget_path,
                     os.path.join(OUT_DIR, f"{problem}_dial_curve{var}.csv"),
                     os.path.join(OUT_DIR, f"{problem}_dial_star{var}.csv"),
                     os.path.join(OUT_DIR, f"{problem}_dial_skipped{var}.csv")):
@@ -812,6 +875,7 @@ def run(config, args):
                 os.remove(pth)
                 print(f"[dial-sweep] --refresh: removed {pth}", flush=True)
     ckpt = load_detail_checkpoint(scores_path) if not args.refresh else {}
+    budget_spent = _load_budget(budget_path) if not args.refresh else {}
     # A stale `{problem}_tau_probe{cell}.json` from the removed grid-placement
     # probe is deleted rather than ignored: leaving it implies the grid still
     # comes from an iteration-0 distance, and it does not.
@@ -968,12 +1032,17 @@ def run(config, args):
                                     budget=len(grid), skipped=[], n_pruned=0,
                                     n_unreached=0, violations=viol, wobbles=wob)
             return
+        def _spend(total, _t=tag):
+            budget_spent[_t] = int(total)
+            _save_budget(budget_path, budget_spent)
+
         _, _, info = _search_dials(
             method, grids[key], ev,
             known=lambda d, _t=tag: (_t, float(d)) in ckpt,
             target=float(args.feas_target), min_solved=float(args.min_solved),
             max_evals=args.max_evals, must_visit=must_visit, label=tag,
-            n_folds=n_folds_res)
+            n_folds=n_folds_res, spent_prior=budget_spent.get(tag, 0),
+            on_spend=_spend)
         info["search"] = "adaptive"
         search_info[key] = info
         for r in info["skipped"]:
@@ -1398,7 +1467,11 @@ def main():
     p.add_argument("--max-evals", type=int, default=None,
                    help="cells scored per series under --search adaptive "
                         "(default ceil(log2 n) + 2, floored at 4). Cells already "
-                        "on the score checkpoint are free and do not count")
+                        "on the score checkpoint are free and do not count. A "
+                        "TOTAL over every run of the cell, not per process: the "
+                        "charge is persisted in {problem}_dial_budget{cell}.json "
+                        "so a requeued job does not re-arm the whole budget. "
+                        "Raise it to buy more cells later; --refresh zeroes it")
     p.add_argument("--feas-target", type=float, default=0.9,
                    help="held-out feasibility target (default 0.9). Also fixes "
                         "C-MICL's protocol point at 1 - target")
