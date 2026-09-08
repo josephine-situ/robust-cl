@@ -42,6 +42,7 @@ from gurobipy import GRB
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    configure_solver_log,
     DEFAULT_MIP_GAP,
     SolutionResult,
     resolve_constraint_config,
@@ -100,7 +101,7 @@ class IncrementalMaster:
         self.d = instance.n_features
         self.rho = rho
         self.opt = gp.Model("cp_incremental_master")
-        self.opt.Params.OutputFlag = 0
+        configure_solver_log(self.opt, "cp")
         # Gap for the CUT LOOP. 0.01 (1%) was far too loose on gastric: the
         # objective is ~10, so 1% is ~0.1, while the scenario distances being
         # separated are ~0.007 -- cuts an order of magnitude below the solver's own
@@ -111,7 +112,6 @@ class IncrementalMaster:
         # the prescriptions are made at.
         self.mip_gap = mip_gap
         self.opt.Params.MIPGap = mip_gap
-        self.opt.Params.MIPFocus = 1
         self.opt.Params.Threads = 0
 
         self.x = build_decision_vars(self.opt, instance)

@@ -4,6 +4,10 @@ Nominal constraint learning: single model, no robustness.
 min c'x  s.t.  f(x; theta*) <= b,  x in X
 """
 
+import io
+import os
+import time
+
 import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
@@ -26,6 +30,19 @@ from src.utils.trust_region import add_trust_region
 # the floor for everyone. Override once, via `optimization.mip_gap` in config.yaml.
 DEFAULT_MIP_GAP = 1e-4
 
+# MIPFocus, DualReductions and everything else are left at GUROBI'S DEFAULTS on
+# purpose. `MIPFocus = 1` ("find feasible solutions quickly, care less about the
+# bound") stood at all seven method sites until 2026-09-07. It suits a MASTER
+# solve, which wants one good feasible point -- but the model object it is set on
+# is reused by `solve_for_context`, so every per-context prescribe inherited a
+# setting chosen for a different question, and those prescribes are mostly
+# INFEASIBILITY PROOFS, where there is no incumbent to find and all the work is in
+# the bound. Gastric C-MICL is the case that exposed it: an MIP 8x SMALLER than
+# the wrapper's in variables (2.9k vs 24k) and 12x smaller in constraints, taking
+# 48.8 s per prescribe against the wrapper's 1.1 s.
+#
+# The gap is the ONE solver setting that is still pinned, for the reason above it.
+
 
 def resolve_mip_gap(config: dict) -> float:
     """The one MIP gap for a run, from ``optimization.mip_gap``.
@@ -38,6 +55,49 @@ def resolve_mip_gap(config: dict) -> float:
         return float(opt_cfg["mip_gap"])
     cp_cfg = ((config or {}).get("methods", {}) or {}).get("cp", {}) or {}
     return float(cp_cfg.get("mip_gap", DEFAULT_MIP_GAP))
+
+
+# --- Solver logging ---------------------------------------------------------
+# Every solver used to set ``OutputFlag = 0``, which made a long solve entirely
+# opaque: the 2026-09-07 gastric run sat three hours inside ONE cmicl cell with
+# `solving...` as its last stdout line, and nothing short of `sstat` could tell a
+# working solve from a wedged one. The log is ON now, but it goes to its OWN FILE
+# rather than to stdout -- a sweep prints 73 cells of structure that a B&B log
+# would bury, and the file is the part that answers the question (the gap column
+# says whether the bound is actually moving).
+#
+# ONE FILE PER (tag, process). Gurobi APPENDS to an existing LogFile (verified
+# 2026-09-07), so every model a task builds under one tag lands in one file in
+# order, while the pid keeps two concurrent array tasks out of each other's way.
+# Each solve writes its own header, its model size, and -- usefully, given how
+# easily a non-default is forgotten -- a `Non-default parameters:` block, so the
+# file states the settings that were actually in force instead of leaving them to
+# be read off the source.
+#
+# A marker line is appended before the handoff because Gurobi does not write the
+# model NAME into the log, so without it a solve cannot be attributed to a cell.
+#
+# ROBCL_GRB_LOG=0 restores the old silence; ROBCL_GRB_LOG_DIR moves the directory
+# (default logs/gurobi/, gitignored -- these files get large).
+def configure_solver_log(model, tag: str = "solve", note: str = "") -> None:
+    """Point ``model``'s Gurobi log at logs/gurobi/, keeping stdout clean."""
+    if os.environ.get("ROBCL_GRB_LOG", "1") == "0":
+        model.Params.OutputFlag = 0
+        return
+    log_dir = os.environ.get("ROBCL_GRB_LOG_DIR") or os.path.join("logs", "gurobi")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        path = os.path.join(log_dir, f"{tag}_{os.getpid()}.log")
+        with io.open(path, "a", encoding="utf-8") as fh:
+            head = f"{tag} {note}".strip()
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            print("", file=fh)
+            print(f"===== {head} @ {stamp} =====", file=fh)
+        model.Params.LogToConsole = 0
+        model.Params.LogFile = path
+    except OSError:
+        # A read-only or full filesystem must not kill hours of solving.
+        model.Params.OutputFlag = 0
 
 
 @dataclass
@@ -279,9 +339,8 @@ def solve_nominal(instance: ProblemInstance,
     trained_constraints = train_constraint_models(instance, model_type, model_params)
 
     opt = gp.Model("nominal")
-    opt.Params.OutputFlag = 0
+    configure_solver_log(opt, "nominal")
     opt.Params.MIPGap = mip_gap
-    opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)
     models_embedded, _, obj_terms = embed_constraints(

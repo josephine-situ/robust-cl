@@ -74,6 +74,7 @@ from gurobipy import GRB
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    configure_solver_log,
     DEFAULT_MIP_GAP,
     SolutionResult,
     resolve_constraint_config,
@@ -194,9 +195,8 @@ def solve_margin(instance: ProblemInstance,
     ]
 
     opt = gp.Model("margin")
-    opt.Params.OutputFlag = 0
+    configure_solver_log(opt, "margin")
     opt.Params.MIPGap = mip_gap
-    opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, tightened)
     models_embedded, _, obj_terms = embed_constraints(

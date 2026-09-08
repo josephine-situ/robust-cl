@@ -145,7 +145,6 @@ def solve_for_context(result, instance: ProblemInstance, context_row: np.ndarray
         val = float(context_row[c_idx])
         result.x[c_idx].lb = val
         result.x[c_idx].ub = val
-    result.opt.Params.DualReductions = 0
     # Gap left as built: every method's model carries the run's single
     # `optimization.mip_gap`, so prescriptions are made at the optimality the
     # solves (and CP's cuts) were generated at.
@@ -259,6 +258,14 @@ def evaluate_prescribed_table6(
             status_str = "optimal"
         elif status == 3:
             status_str = "infeasible"
+        elif status == 4:
+            # INF_OR_UNBD. `DualReductions = 0` used to stand above this loop to
+            # force the 3-vs-5 split, at the cost of disabling presolve
+            # reductions on every prescribe -- and it bought only this WORD: the
+            # accounting below keys on `x_opt is None`, never on the code. Every
+            # decision variable is boxed, so unbounded is unreachable here and
+            # this is an infeasible model presolve declined to separate.
+            status_str = "infeasible (presolve: inf_or_unbd)"
         elif status == 9:
             status_str = "time_limit"
         else:

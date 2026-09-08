@@ -91,7 +91,6 @@ def evaluate_prescriptive_performance(solver_fn: Callable,
                     result.x[c_idx].ub = val
 
                 # Re-optimize for new context bounds
-                result.opt.Params.DualReductions = 0
                 # Prescribe at the gap the model was BUILT at (left untouched here).
                 # This used to coarsen to 1% for multi-row evaluation, which put
                 # every method's prescriptions an order of magnitude looser than its

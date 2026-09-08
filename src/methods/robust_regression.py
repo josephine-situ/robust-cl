@@ -34,6 +34,7 @@ from sklearn.preprocessing import StandardScaler
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    configure_solver_log,
     DEFAULT_MIP_GAP,
     SolutionResult,
     build_decision_vars,
@@ -94,7 +95,7 @@ def _label_robust_linear(X, y, params, eps_abs, gamma,
     m = gamma / eps_abs if eps_abs > 0 else 0.0        # number of fully-shifted points
 
     qp = gp.Model("robust_reg_linear")
-    qp.Params.OutputFlag = 0
+    configure_solver_log(qp, "robust_reg_fit")
     beta = qp.addVars(p, lb=-GRB.INFINITY, name="beta")
     b0 = qp.addVar(lb=-GRB.INFINITY, name="b0")
     r = qp.addVars(n, lb=-GRB.INFINITY, name="r")
@@ -372,9 +373,8 @@ def solve_robust_regression(
             trained_constraints.append(row)
 
     opt = gp.Model("robust_regression")
-    opt.Params.OutputFlag = 0
+    configure_solver_log(opt, "robust_reg")
     opt.Params.MIPGap = mip_gap
-    opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)
     models_embedded, _, obj_terms = embed_constraints(

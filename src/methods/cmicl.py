@@ -281,6 +281,7 @@ from gurobipy import GRB
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    configure_solver_log,
     DEFAULT_MIP_GAP,
     SolutionResult,
     resolve_constraint_config,
@@ -482,9 +483,8 @@ def solve_cmicl(instance: ProblemInstance,
 
     # ---- build the MIP ----------------------------------------------------
     opt = gp.Model("cmicl")
-    opt.Params.OutputFlag = 0
+    configure_solver_log(opt, "cmicl")
     opt.Params.MIPGap = mip_gap
-    opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)
     models_embedded = 0

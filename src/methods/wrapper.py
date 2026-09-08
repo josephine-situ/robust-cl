@@ -13,6 +13,7 @@ from typing import Optional
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    configure_solver_log,
     DEFAULT_MIP_GAP,
     SolutionResult,
     resolve_constraint_config,
@@ -229,9 +230,8 @@ def solve_wrapper(instance: ProblemInstance,
         trained_constraints.append(row)
 
     opt = gp.Model("wrapper")
-    opt.Params.OutputFlag = 0
+    configure_solver_log(opt, "wrapper")
     opt.Params.MIPGap = mip_gap
-    opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)
     P = n_bootstrap
@@ -377,9 +377,8 @@ def solve_tree_violation_wrapper(instance: ProblemInstance,
     trained_constraints = train_constraint_models(instance, model_type, model_params)
 
     opt = gp.Model("tree_violation_wrapper")
-    opt.Params.OutputFlag = 0
+    configure_solver_log(opt, "wrapper_tree")
     opt.Params.MIPGap = mip_gap
-    opt.Params.MIPFocus = 1
 
     x = build_decision_vars(opt, instance)
     models_embedded, _, obj_terms = embed_constraints(
