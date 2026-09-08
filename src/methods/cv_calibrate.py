@@ -657,11 +657,34 @@ def cv_score_knob(build_solver: Callable[[float], Callable], knob: float,
         statuses.append(str(getattr(result, "status", "unknown")))
         if contextual:
             feas_vals, obj_vals, n_total = [], [], 0
+            # An infeasible MASTER settles every context in advance. The master
+            # has the context columns FREE inside a box that contains every
+            # context row (`variable_lb`/`variable_ub` split by role), so pinning
+            # one can only RESTRICT the feasible set: no pinned context is
+            # feasible when the free one is not. Without this the prescribe loop
+            # spends one MIP per context rediscovering that a row at a time --
+            # ~33 per fold on gastric, and at C-MICL's tight alphas each of those
+            # is its own infeasibility proof over five 32x32 big-M ReLU nets.
+            #
+            # The rows written below are exactly the ones the loop wrote before
+            # (`x_opt is None` for every context, so `feas_vals`/`obj_vals` stay
+            # empty and `solved_frac` is 0.0), so this changes NO number -- only
+            # how long it takes to reach it. CP's `max_iterations` /
+            # `coverage_cap` / `cycle_detected` are a real INCUMBENT and are
+            # deliberately NOT caught here; only "infeasible" is.
+            master_infeasible = str(getattr(result, "status", "")) == "infeasible"
+            if master_infeasible and val_rows is not None and len(val_rows):
+                print(f"    [{label or 'cell'}] master infeasible -- skipping "
+                      f"{len(val_rows)} prescribe solves (no pinned context can "
+                      f"be feasible)", flush=True)
             # TEST-POINT phase: one prescribe solve per held-out context.
             _t1 = _time.time()
             for ci, row in enumerate(val_rows):
                 n_total += 1
-                _, x_opt = solve_for_test_cohort(result, fi, row)
+                if master_infeasible:
+                    x_opt = None
+                else:
+                    _, x_opt = solve_for_test_cohort(result, fi, row)
                 # The row's index in base.X_train, NOT its position in the fold --
                 # it is what makes a context the same patient across cells.
                 ctx_id = int(val_idx[ci])

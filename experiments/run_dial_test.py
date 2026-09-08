@@ -421,6 +421,17 @@ def _prescriptions(su, result, contextual, instance=None, rows=None):
     from src.evaluation.chemo_metrics import solve_for_test_cohort
     inst = su.instance if instance is None else instance
     rows = getattr(su, "_test_rows", None) if rows is None else rows
+    # The same implication `cv_calibrate` uses on the tuning side: the master
+    # solves with the context columns FREE inside a box that contains every
+    # context row, so pinning one only restricts. An infeasible master therefore
+    # leaves nothing to prescribe, and `None` per context is exactly what the
+    # loop below returned one solve at a time. It matters most here: the gastric
+    # `subsample` phase is 10 realizations x 96 arms per series.
+    if (str(getattr(result, "status", "")) == "infeasible"
+            and rows is not None and len(rows)):
+        print(f"  [test] master infeasible -- skipping {len(rows)} prescribe "
+              f"solves (no pinned context can be feasible)", flush=True)
+        return [(ci, None) for ci in range(len(rows))]
     out = []
     for ci, row in enumerate(rows):
         _, x = solve_for_test_cohort(result, inst, row)
