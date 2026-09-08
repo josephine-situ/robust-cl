@@ -74,6 +74,7 @@ from gurobipy import GRB
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    built_not_solved,
     configure_solver_log,
     DEFAULT_MIP_GAP,
     SolutionResult,
@@ -155,7 +156,8 @@ def solve_margin(instance: ProblemInstance,
                  rho: float = 0.0,
                  embedding_mode: str = "hard",
                  rf_alpha: float = 0.25,
-                 mip_gap: float = DEFAULT_MIP_GAP) -> SolutionResult:
+                 mip_gap: float = DEFAULT_MIP_GAP,
+                 solve_master: bool = True) -> SolutionResult:
     """Nominal, solved against ``rhs - margin * scale(y_c)`` on every constraint.
 
     ``margin`` is the single dial, in unexplained-sd units (see the module
@@ -212,6 +214,9 @@ def solve_margin(instance: ProblemInstance,
 
     print(f"    [margin] MIP built ({models_embedded} models embedded; "
           f"{opt.NumVars} vars / {opt.NumConstrs} constrs); solving...", flush=True)
+    if not solve_master:
+        # Contextual, non-CP: the built model is all `solve_for_context` needs.
+        return built_not_solved(opt, x, models_embedded, start)
     opt.optimize()
     elapsed = time.time() - start
 

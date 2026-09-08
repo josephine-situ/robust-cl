@@ -34,6 +34,7 @@ from sklearn.preprocessing import StandardScaler
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    built_not_solved,
     configure_solver_log,
     DEFAULT_MIP_GAP,
     SolutionResult,
@@ -299,6 +300,7 @@ def solve_robust_regression(
         uncertainty_set=None,
         scale_stat: str = None,
         mip_gap: float = DEFAULT_MIP_GAP,
+        solve_master: bool = True,
         **_ignored) -> SolutionResult:
     """Train a label-robust model per outcome (Bertsimas et al. counterpart), embed
     them nominally, and solve the constraint-learning MIP.
@@ -385,6 +387,9 @@ def solve_robust_regression(
     add_problem_constraints(opt, x, instance)
     build_and_set_objective(opt, x, instance, obj_terms)
 
+    if not solve_master:
+        # Contextual, non-CP: the built model is all `solve_for_context` needs.
+        return built_not_solved(opt, x, models_embedded, start)
     opt.optimize()
     elapsed = time.time() - start
 

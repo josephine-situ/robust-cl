@@ -13,6 +13,7 @@ from typing import Optional
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    built_not_solved,
     configure_solver_log,
     DEFAULT_MIP_GAP,
     SolutionResult,
@@ -137,7 +138,8 @@ def solve_wrapper(instance: ProblemInstance,
                   bank=None,
                   robustify_objective: bool = False,
                   coherent: Optional[bool] = None,
-                  mip_gap: float = DEFAULT_MIP_GAP) -> SolutionResult:
+                  mip_gap: float = DEFAULT_MIP_GAP,
+                  solve_master: bool = True) -> SolutionResult:
     """Maragno et al.'s wrapper: at least ``(1 - alpha)`` of P plausible
     relabelings must satisfy the constraints at ``x``.
 
@@ -335,6 +337,9 @@ def solve_wrapper(instance: ProblemInstance,
         f"{opt.NumVars} vars / {opt.NumConstrs} constrs); solving...",
         flush=True,
     )
+    if not solve_master:
+        # Contextual, non-CP: the built model is all `solve_for_context` needs.
+        return built_not_solved(opt, x, models_embedded, start)
     opt.optimize()
     elapsed = time.time() - start
 
@@ -364,7 +369,8 @@ def solve_tree_violation_wrapper(instance: ProblemInstance,
                                  model_params: dict = None,
                                  alpha: float = 0.25,
                                  rho: float = 0.0,
-                                 mip_gap: float = DEFAULT_MIP_GAP) -> SolutionResult:
+                                 mip_gap: float = DEFAULT_MIP_GAP,
+                                 solve_master: bool = True) -> SolutionResult:
     """OptiCL chemo-style wrapper with per-tree RF chance constraints."""
     import time
     from src.methods.nominal import train_constraint_models
@@ -392,6 +398,9 @@ def solve_tree_violation_wrapper(instance: ProblemInstance,
         f"    [tree_violation] MIP built ({models_embedded} tree/model embeds); solving...",
         flush=True,
     )
+    if not solve_master:
+        # Contextual, non-CP: the built model is all `solve_for_context` needs.
+        return built_not_solved(opt, x, models_embedded, start)
     opt.optimize()
     elapsed = time.time() - start
 

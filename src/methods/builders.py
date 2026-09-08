@@ -123,7 +123,8 @@ def cp_solver(settings, model_type, model_params, cp_dist_tol_rel=None,
 
 
 def build_method(method, knob, model_type, model_params, settings,
-                 bootstrap_cache=None, ensembles_cache=None, cp_alpha=None):
+                 bootstrap_cache=None, ensembles_cache=None, cp_alpha=None,
+                 solve_master=True):
     """Return the solver ``partial`` for ``method`` at its single knob value.
 
     One knob per method, in its own native units: CP ``tau``
@@ -148,18 +149,18 @@ def build_method(method, knob, model_type, model_params, settings,
     if method == "nominal":
         return partial(
             solve_nominal, model_type=model_type, model_params=model_params,
-            rho=0.0, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap,
+            rho=0.0, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap, solve_master=solve_master,
         )
     if method == "robust_param":
         # Nominal plus leaf-margin tightening: the knob IS rho.
         return partial(
             solve_nominal, model_type=model_type, model_params=model_params,
-            rho=knob, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap,
+            rho=knob, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap, solve_master=solve_master,
         )
     if method == "tree_violation":
         return partial(
             solve_tree_violation_wrapper, model_type=model_type,
-            model_params=model_params, alpha=knob, rho=0.0, mip_gap=mip_gap,
+            model_params=model_params, alpha=knob, rho=0.0, mip_gap=mip_gap, solve_master=solve_master,
         )
     if method == "robust_reg":
         return partial(
@@ -168,7 +169,7 @@ def build_method(method, knob, model_type, model_params, settings,
             budget_frac=settings["robust_reg_budget_frac"],
             K=settings["robust_reg_K"], seed=seed, rho=0.0,
             embedding_mode=em, rf_alpha=rf_alpha,
-            uncertainty_set=settings["uncertainty_set"], mip_gap=mip_gap,
+            uncertainty_set=settings["uncertainty_set"], mip_gap=mip_gap, solve_master=solve_master,
         )
     if method == "wrapper":
         return partial(
@@ -183,7 +184,7 @@ def build_method(method, knob, model_type, model_params, settings,
             scenario_source=settings["wrapper_scenario_source"],
             uncertainty_set=settings["uncertainty_set"],
             robustify_objective=settings["wrapper_robustify_objective"],
-            mip_gap=mip_gap,
+            mip_gap=mip_gap, solve_master=solve_master,
         )
     if method == "cmicl":
         # The one method with no uncertainty_set argument: C-MICL's tightening
@@ -197,7 +198,7 @@ def build_method(method, knob, model_type, model_params, settings,
             multiplicity=settings["cmicl_multiplicity"],
             seed=seed, rho=0.0,
             robustify_objective=settings["cmicl_robustify_objective"],
-            mip_gap=mip_gap,
+            mip_gap=mip_gap, solve_master=solve_master,
         )
     if method == "margin":
         # Feasibility-tuned nominal: same fit, same MIP, rhs moved in by
@@ -207,7 +208,7 @@ def build_method(method, knob, model_type, model_params, settings,
         return partial(
             solve_margin, model_type=model_type, model_params=model_params,
             margin=knob, scale_stat=settings["margin_scale_stat"], seed=seed,
-            rho=0.0, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap,
+            rho=0.0, embedding_mode=em, rf_alpha=rf_alpha, mip_gap=mip_gap, solve_master=solve_master,
         )
     if method == "cp":
         return cp_solver(settings, model_type, model_params,
@@ -519,4 +520,8 @@ def gastric_build(method, settings, model_type, model_params,
         method, knob, model_type, model_params, settings,
         bootstrap_cache=bootstrap_cache, ensembles_cache=ensembles_cache,
         cp_alpha=settings.get("cp_alpha"),
+        # Contextual problems never read the master's own solution, so the
+        # sweeps switch it off per cell. Absent -> True, which is what
+        # run_chemo_robust (Table 6) and the single-decision builds keep.
+        solve_master=settings.get("solve_master", True),
     )

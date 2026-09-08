@@ -281,6 +281,7 @@ from gurobipy import GRB
 
 from src.data.generate import ProblemInstance
 from src.methods.nominal import (
+    built_not_solved,
     configure_solver_log,
     DEFAULT_MIP_GAP,
     SolutionResult,
@@ -401,7 +402,8 @@ def solve_cmicl(instance: ProblemInstance,
                 seed: int = 42,
                 rho: float = 0.0,
                 robustify_objective: bool = False,
-                mip_gap: float = DEFAULT_MIP_GAP) -> SolutionResult:
+                mip_gap: float = DEFAULT_MIP_GAP,
+                solve_master: bool = True) -> SolutionResult:
     """Ovalle et al.'s conformal MICL: embed the conservative end of a
     split-conformal predictive interval instead of the point prediction.
 
@@ -594,6 +596,9 @@ def solve_cmicl(instance: ProblemInstance,
         f"{opt.NumVars} vars / {opt.NumConstrs} constrs); solving...",
         flush=True,
     )
+    if not solve_master:
+        # Contextual, non-CP: the built model is all `solve_for_context` needs.
+        return built_not_solved(opt, x, models_embedded, start)
     opt.optimize()
     elapsed = time.time() - start
 

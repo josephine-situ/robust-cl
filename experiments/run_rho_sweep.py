@@ -355,6 +355,15 @@ def _setup_gastric(config, args):
             cell["cp_n_scenarios"] = int(config["uncertainty"].get("n_bootstrap", 20))
         # None -> the pinned 0. Only the coverage-cap ablation ever sets it.
         cell["cp_alpha"] = cp_alpha
+        # GASTRIC IS THE CONTEXTUAL PROBLEM, so no method's master solution is
+        # ever read here: every score comes from prescribing per context onto
+        # the built model (`solve_for_context`). Skipping the master solve was
+        # 24 min across the committed dial curve, ~21 of it the wrapper's.
+        # build_method routes this to the non-CP methods only -- CP's master
+        # solve IS its cut loop, and the cuts have to exist before a context
+        # is pinned. The single-decision setups do not set it (the master IS
+        # the prescription there), and neither does run_chemo_robust.
+        cell["solve_master"] = False
         return gastric_build(method, cell,
                              config["default_model"]["type"],
                              config["default_model"]["params"])

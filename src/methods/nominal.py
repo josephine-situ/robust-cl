@@ -113,6 +113,39 @@ class SolutionResult:
     iterations: Optional[int] = None
 
 
+
+def built_not_solved(opt, x, models_embedded, start):
+    """A master that was BUILT and deliberately NOT solved.
+
+    On a CONTEXTUAL problem nothing reads this master's own solution: the dial
+    sweep, the test stage and the legacy calibration all discard it and prescribe
+    per context, pinning the context columns onto this same model object
+    (`chemo_metrics.solve_for_context`). Two paths DO need the master solved and
+    neither comes through here -- CP, whose master solve IS the cut loop (the cuts
+    must be in the model before any context is pinned), and the SINGLE-DECISION
+    problems, where the master IS the prescription. Everywhere else it was 24
+    minutes of solving across the whole gastric curve for an answer nobody reads.
+
+    ``x_opt`` is None rather than zeros ON PURPOSE. Every solver's infeasible
+    branch returns ``np.zeros(n_features)``, which is FINITE, so a finiteness
+    check alone would score a phantom decision at the origin (the trap documented
+    in ``run_dial_test._decisions``). None makes every such check fail closed.
+
+    ``status="not_solved"`` is its own word because it is neither "optimal" nor
+    "infeasible" and the ``_dial_curve`` status column has to distinguish all
+    three. It also means `cv_calibrate`'s master-infeasible prescribe guard
+    cannot fire on this path: there is no master verdict for it to read.
+    """
+    return SolutionResult(
+        x_opt=None,
+        obj_value=float("nan"),
+        status="not_solved",
+        models_embedded=models_embedded,
+        solve_time=time.time() - start,
+        opt=opt,
+        x=x,
+    )
+
 def resolve_constraint_config(instance: ProblemInstance,
                               config_idx: int,
                               default_type: str,
@@ -326,7 +359,8 @@ def solve_nominal(instance: ProblemInstance,
                   rho: float = 0.0,
                   embedding_mode: str = "hard",
                   rf_alpha: float = 0.25,
-                  mip_gap: float = DEFAULT_MIP_GAP) -> SolutionResult:
+                  mip_gap: float = DEFAULT_MIP_GAP,
+                  solve_master: bool = True) -> SolutionResult:
     """Solve the nominal constraint learning problem."""
     import time
 
@@ -354,6 +388,9 @@ def solve_nominal(instance: ProblemInstance,
         f"    [nominal] MIP built ({models_embedded} models embedded); solving...",
         flush=True,
     )
+    if not solve_master:
+        # Contextual, non-CP: the built model is all `solve_for_context` needs.
+        return built_not_solved(opt, x, models_embedded, start)
     opt.optimize()
     elapsed = time.time() - start
 
