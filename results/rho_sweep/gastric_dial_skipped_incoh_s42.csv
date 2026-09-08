@@ -1,0 +1,7 @@
+problem,method,rho,dial_name,search,dial,robustness_rank,reason
+gastric,cmicl,,alpha,adaptive,0.2,9,not reached: eval budget 4 spent (cumulative over runs of this cell)
+gastric,cmicl,,alpha,adaptive,0.15,10,not reached: eval budget 4 spent (cumulative over runs of this cell)
+gastric,cmicl,,alpha,adaptive,0.075,12,"pruned: more robust than alpha=0.1, which fell below the solved floor"
+gastric,cmicl,,alpha,adaptive,0.05,13,"pruned: more robust than alpha=0.1, which fell below the solved floor"
+gastric,cmicl,,alpha,adaptive,0.03,14,"pruned: more robust than alpha=0.1, which fell below the solved floor"
+gastric,cmicl,,alpha,adaptive,0.02,15,"pruned: more robust than alpha=0.1, which fell below the solved floor"
