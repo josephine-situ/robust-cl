@@ -26,9 +26,10 @@ which results are current, and the traps that reading the code would not reveal 
 the code itself is well commented, so don't restate it here.
 
 Dated `research_update_YYYY-MM-DD.tex` decks carry the numbers; a new deck
-supersedes the last rather than editing it. Current is **2026-09-08** (4 frames:
-what changed since 08-28, the reactor's balanced-`c` ODE test stage, gastric as
-**TBD placeholders** pending the cluster run, next steps); **2026-08-28** is the
+supersedes the last rather than editing it. Current is **2026-09-08** (5 frames:
+what changed since 08-28, the reactor's balanced-`c` ODE test stage, gastric's
+completed sweep with its folds+full test rows, gastric's tuning frontier, next
+steps); **2026-08-28** is the
 last complete dial-sweep deck and **2026-08-19** the last rho-sweep deck.
 **Known gaps = the "Next steps" frame of the current deck** — keep the two in step.
 
@@ -67,6 +68,7 @@ uv run python experiments/summarize_table6.py           # Table 6 CSV -> .csv/.t
 uv run python experiments/run_adversary_probe.py        # is the random bank a weak adversary?
 uv run python experiments/probe_cmicl_cost_sampling.py  # does a SAMPLED c restore C-MICL's rate?
 uv run python experiments/measure_clip_fraction.py      # how much of D the label bounds remove, per rho
+sbatch experiments/submit_{u_trainer,h32,shipped_data,paper_units,balanced_check}.sh  # CLUSTER: the C-MICL width-model probes -- what u's trainer, h's shape, their rows and their units are each worth
 uv run python experiments/audit_judge.py --problem reactor --suffix _incoh_f10_mmlp_s42  # how much of a feasibility is JUDGE
 sbatch experiments/submit_chemo_robust.sh               # 12h, 128G, 16 cpu  (full gastric)
 ```
@@ -208,7 +210,7 @@ m=1.5), the reactor's CP (delivering at the old max tau=1.0) and gastric's wrapp
 | `cp` tau | 10 … 1e-4 | bottom is the **mip_gap floor** `_resolve_tolerance` clamps to, so nothing below it is a distinct tolerance and a lower grid value would be a *mislabelled* tau; top is well above any iteration-0 distance, where CP stops before any cut and its curve meets nominal |
 | `wrapper` alpha | 0 … 0.95 | only multiples of **1/P** (=0.05) are distinct levels; 0.95 = "1 of the P models must hold". **1.0 is excluded**: it requires none, removing the learned constraint entirely — weaker than nominal, not a looser wrapper |
 | `margin` m | 0 … 5 | m=0 **is** nominal; the top is set by the reactor (`s_c`=2.19, so m=5 is `F_C6H6 >= 60.9`). Large m goes **infeasible, not conservative**, which shows as a falling solved fraction under `--min-solved` |
-| `cmicl` alpha | 1.0 … **per-problem floor** | 1.0 is `q = s_(1)`, the smallest nonconformity score — a real, very loose tightening, not a removed constraint (`conformal_quantile` takes `k = max(ceil((n+1)(1-alpha)), 1)`). The bottom is set by **n_cal, not by taste**: `k > n_cal` returns `inf` and fails the solve, so the finest certifiable level is `1/(n_cal+1)`, and only alphas landing on **distinct k** are distinct levels. Gastric `n_cal=80` → 0.02 already *is* `s_(80)` and nothing below it differs; reactor `n_cal=180` → two more levels exist, so `CMICL_ALPHA_GRID_EXTRA` adds **0.0075, 0.015** (k=180, 179) there. Synthetic is **unmeasured** — read `n_cal=` off a fold before extending it |
+| `cmicl` alpha | 1.0 … **per-problem floor** | 1.0 is `q = s_(1)`, the smallest nonconformity score — a real, very loose tightening, not a removed constraint (`conformal_quantile` takes `k = max(ceil((n+1)(1-alpha)), 1)`). The bottom is set by **n_cal, not by taste**: `k > n_cal` returns `inf` and fails the solve, so the finest certifiable level is `1/(n_cal+1)`, and only alphas landing on **distinct k** are distinct levels. Reactor `n_cal=180` every fold → two more levels exist, so `CMICL_ALPHA_GRID_EXTRA` adds **0.0075, 0.015** (k=180, 179) there. **Gastric's n_cal is per-fold and SMALL — 35 / 42 / 48 / 56** across the four expanding-window folds (`n_fit` 140 / 166 / 193 / 222), *not* the 80 this table claimed until 2026-09-08. The floor is set by the **smallest** fold, so it is `1/36 = 0.0278`, and the grid's **0.02 bottom sits below it: `inf` on three of the four folds** (k=36>35, 43>42, 49>48; only n_cal=56 resolves). Invisible in the committed cell because the adaptive search PRUNED 0.02 — but `--search grid` walks every cell and fires the guard (`[cmicl] INFEASIBLE: ... needs ceil((n_cal+1)*(1-0.02)) <= n_cal ... has 35`), which reads as "the method cannot solve" when it means "this level is not certifiable at this n_cal". The protocol alpha=0.1 is safe on all four (k=33 <= 35). Synthetic is **unmeasured** — read `n_cal=` off a fold before extending it |
 
 - **The grid is SEARCHED, not walked** (`--search adaptive`, default): cells are
   ordered by robustness (`ROBUSTNESS_SIGN`), feasibility 0 prunes the less-robust
@@ -439,11 +441,24 @@ margin, is **structural**, not evidence of stability.
   objective, feasibility or `dial*` from before that date is against a different
   score function. **Non-`cmicl` rows are untouched** — no other method reads any
   of it — so the dial cells stay valid for cp/wrapper/margin/nominal and only
-  their `cmicl` series needs re-running. **Already re-run under the new
-  semantics**: the reactor dial cell's whole `cmicl` series (2026-09-04, plus its
-  ODE test rows) and gastric's six scored alphas. Every other committed `cmicl`
+  their `cmicl` series needs re-running. Every other committed `cmicl`
   row — the rho sweeps, `results/gastric/`, `results/synthetic/` — is the old
   floored-`u` score function.
+- **And STALE AGAIN as of 2026-09-22** — `width_model_params` now carries
+  **`batch_size: 32`**, so `u` is fitted differently and `q` moves with it. This
+  supersedes the 2026-09-04 reactor re-run and gastric's six scored alphas:
+  **no committed `cmicl` row is current.** The change is not cosmetic — it is
+  the difference between C-MICL delivering and not. On the reactor's `scaled`
+  draw at N=100 (`submit_balanced_check.sh`, job 23497509) ground-truth
+  feasibility goes **0.45 → 0.83**, because sklearn's default batch leaves the
+  fitted width surface with a dip the optimizer walks straight into: mean
+  `u(x*)` 0.044 with **98%** of optima under 0.1 and the minimum pinned at 0 by
+  the MIP's `u >= 0`, against 1.539 / **0%** / 0.553 at batch 32. Under Ovalle
+  et al.'s own draw the same change reads 0.53 → 0.81 (job 22854117), with the
+  negative-width count on the calibration set going 9/200 → **0/200**. The
+  reasoning, and why their other two trainer differences are *not* adopted, is
+  the comment above `width_model_params` in `config.yaml`. **Non-`cmicl` rows
+  are untouched** — nothing else reads the width model.
 - **Only `results/rho_sweep/` and `results/figures/fig_rho_*` / `fig_dial_*`** —
   ellipsoid geometry, fixed temporal folds. Inside it the **dial cells are newest
   and the only tested ones**: the reactor complete (full curve, star table,
@@ -477,33 +492,47 @@ margin, is **structural**, not evidence of stability.
   - `reactor_dial_*_wraprho456.csv` is a **ones-`c`** `--cell-tag` probe of the
     wrapper at rho {4, 5, 6}. It was the evidence for the old {5, 6}; the
     full-span run replaced it, so it is dead and reads on no current instance.
-- **The gastric dial cell is PARTIALLY RE-RUN and has NO star table.** The
-  reactor recipe of 2026-09-03 was sent unscoped and gastric inherited
-  `--refresh --search grid`; both 12h jobs walled inside C-MICL's tail. What is
-  on disk is a 73-cell curve: cp/wrapper/margin/nominal **complete** on the
-  widened grids, `cmicl` scored only at its six least-robust alphas (1.0 down to
-  0.6), and the **4 `cp_alpha_ablation` rows deleted** by the refresh. With no
-  `_dial_star` file the test stage cannot run at all.
-  - **C-MICL's `dial*` is nonetheless already settled at alpha=0.6** (feas 0.919,
-    obj 9.7814, solved 0.893): every *less* robust cell is scored and falls short
-    (0.844 / 0.800 / 0.743 / 0.703 / 0.703 at alpha 0.7 / 0.8 / 0.9 / 0.95 / 1.0)
-    and objective monotonicity in the dial is structural, so no cell in the
-    unscored alpha<0.6 tail can beat it. That tail buys frontier points at the
-    saturation end; it cannot move the star row. **The widened grid did fix what
-    the old one could not measure** — this series used to clear `--min-solved`
-    nowhere.
-  - **The widened grids move exactly one other star**: `wrapper@1.0` alpha* 0.4 ->
-    0.6. So the 2026-08-27 test rows still sit at the current `dial*` for
-    `cp@0.5`, `cp@1.0`, `wrapper@0.5` and `margin`, and **not** for `wrapper@1.0`;
-    none of them carries a C-MICL row (the cell had no C-MICL `dial*` then, and
-    the `kind="protocol"` row postdates that run).
-  - **Finish it resumed and capped, NEVER with `--refresh`**: every scored cell
-    replays free (`visit` charges budget only when a cell is not on the
-    checkpoint), so `PROBLEM=gastric MAX_EVALS=4 RUN_TEST=0 sbatch --array=0
-    experiments/submit_dial_sweep.sh` bounds the new C-MICL work to the alpha=0.1
-    `must_visit` plus ~3 fill cells, restores the ablation rows (on by default,
-    walked whole, unaffected by `MAX_EVALS`) and ends with the star written. The
-    test stage then goes as its own `RUN_SWEEP=0 PROBLEM=gastric` submission.
+- **The gastric dial cell is COMPLETE and tested on folds + full** (2026-09-08).
+  The capped resume finished what the two walled 12h jobs left: the star table is
+  written for all seven series, the 4 `cp_alpha_ablation` rows are back, and
+  C-MICL's alpha=0.1 `must_visit` was scored (it fell below `--min-solved` at
+  0.081, so the alpha<0.1 tail is *pruned*, not unreached — the two unreached
+  cells, alpha 0.2 and 0.15, are the `MAX_EVALS=4` budget running out and buy
+  frontier points only). `dial*`: `cp@0.5` tau*=0.03 (feas 0.974, obj 10.784),
+  `cp@1.0` tau*=0.1 (0.938 / 9.841), `wrapper@0.5` alpha*=0.2 (0.941 / 10.880),
+  `wrapper@1.0` alpha*=0.6 (0.903 / 10.901), `margin` m*=0.2 (0.931 / 10.974),
+  `cmicl` alpha*=0.6 (0.919 / 9.781) — all `interior` — against `nominal`
+  0.891 / 11.302. The objective is a **max** (realized OS).
+  - **The test stage's `folds` and `full` phases are on disk; `subsample` was
+    still running as of 2026-09-08 15:00** (3 of 10 realizations in
+    `_dial_test_points`, the expensive C-MICL protocol arm mid-draw). The
+    `_dial_test` summary carries **no subsample row yet** — it is written at the
+    end — so any `feas_worst_case` / `_samestore` claim is still unmeasured.
+  - **Read the solved fraction beside every gastric feasibility.** Tested folds
+    feasibility orders `cp@0.5` 0.987 > `wrapper@1.0` 0.971 > `wrapper@0.5` 0.961
+    > `margin` 0.951 > `cp@1.0` 0.936 > `cmicl` 0.931 > `nominal` 0.925, but the
+    wrapper solves only 64-68% of contexts against CP's 82-87%, margin's 92% and
+    nominal's 95% — it buys part of that rate by declining to prescribe. On the
+    96 held-out arms `wrapper@1.0` is the **only** series under 0.9 (0.887, and
+    it solved 74%) while it topped the fold cohort.
+  - **Gastric `nominal` is already near the target** (0.891 tuned, 0.925 tested
+    folds, 0.957 full) — the opposite of the reactor, where nominal is
+    ODE-infeasible 0/10. The instance has little headroom, so read the gastric
+    curve as a small-margin ordering, not as a rescue.
+  - **C-MICL's protocol alpha=0.1 prescribes for almost nobody**: 12/145 fold
+    contexts and 19/96 held-out arms (one fold gets **zero**). Feasibility on
+    those is 1.000 / 0.895. Its guarantee holds where it solves; the result is
+    that it mostly does not solve. This is the measurement CLAUDE.md previously
+    called "unmeasured".
+  - **The tuning judge barely separates gastric at all**: `audit_judge.py` puts
+    the 0.9 target inside the kappa=0.5 band for **67 of 72 cells** (reactor:
+    15 of 181), `feas_hi` = 1.0 at every tested `dial*`, undecided fraction
+    0.33-0.62, median |z| ~0.5. LOMO disagreement is much milder (flip mean
+    0.013, max 0.042), so the two instruments bracket rather than agree — quote
+    the ordering, not the level.
+  - Re-running this cell on the defaults trips `_guard_curve_rewrite` (the curve
+    holds all seven series plus the ablation); a genuine subset needs
+    `--cell-tag`.
 - **No gastric result outside those dial cells is current** (2026-08-21): the
   production draw is now **incoherent** and DLT is **derived** rather than drawn,
   so the default cell is `_incoh` and the committed `_coh` curves are neither the
@@ -677,7 +706,14 @@ gastric only.
   ODE disagreeing. So the -1.6% Table 1 offset is real and systematic, and our
   `F_C6H6` still should not be quoted as a reproduction of theirs.
 - **Their code is `https://github.com/dovallev/c-micl`**, audited 2026-09-03 at
-  commit `b44fe53`: `regression.py` is the paper's script and
+  commit `b44fe53`: `regression.py` is the script their README designates for
+  the paper's regression case study — its grid matches the paper's protocol (100
+  cost draws at seed 0, four surrogate families, `P` ∈ {1,5,10,25,50}, alpha ∈
+  {0.1, 0.05}) but it **aggregates nothing, ships no outputs, and is
+  non-Mondrian**, so "it produced the paper's numbers" is an inference from
+  structure and **not** a verified reproduction (cmicl.py DIFFERENCES #8). The
+  repo's only committed number, notebook 03's `0.800`, disagrees with the
+  paper's `>=0.90`. Also:
   `notebooks/regression/03` is a *second, different* implementation of the same
   method (a `1e-6` width floor, 300 epochs, free `y_f`) — we follow the script.
   The point-by-point diff against ours — `q` one order statistic apart, `h`
@@ -687,10 +723,13 @@ gastric only.
   as theirs.**
 - **Gastric C-MICL only solves at a loose alpha**, which is why its grid runs the
   **full [0.02, 1]** of a miscoverage level — where it *first solves* is the
-  result. Measured under Ovalle et al.'s raw-`u` semantics (2026-09-04): alpha=0.6
-  solves **89.3%** of contexts and delivers (feas 0.919), and where the protocol
-  alpha=0.1 lands is **unmeasured** — that tail is the part of the grid the walled
-  job never scored. The older reading — infeasible at alpha=0.1 under both
+  result. Measured under Ovalle et al.'s raw-`u` semantics: alpha=0.6 solves
+  **89.3%** of contexts and delivers (feas 0.919), while the protocol alpha=0.1
+  solves **8.1%** (2026-09-08) — below `--min-solved`, which is why the whole
+  alpha<0.1 tail is *pruned* rather than scored. That 8.1% is the finding, not a
+  gap: at the level it asserts, C-MICL declines to prescribe for ~92% of the
+  cohort, and the feasibility it reports (1.000 on folds) is conditional on the
+  12/145 contexts it did solve. The older reading — infeasible at alpha=0.1 under both
   multiplicity settings, half-widths 1.33-1.73 sd(y) against an rhs of 0.6 on five
   constraints at once, 13.8% solved at alpha=0.5 — is the **floored-`u`** regime
   and does not carry over. Budget for it either way: a cell that proves infeasible
@@ -715,5 +754,12 @@ gastric only.
   `fig_dial_frontier_reactor_incoh_f10_mmlp_s42_slide.png` — the **`--compact`
   slide variants** (a deck pointed at the report figure of the same stem squeezes
   the panel to under half the frame), and **PNG**, not PDF. Rebuild and re-check.
+  **The gastric stem is now shared by 08-28 and 09-08**, and it was regenerated
+  on 2026-09-08 off the completed curve, so **08-28's gastric panel silently
+  moved** — its C-MICL series is now a full curve where that deck's text was
+  written against a six-alpha stub. Only 09-08 was re-checked. Either re-check
+  08-28 against the new panel or give it its own `--cell-tag`ged stem; a dated
+  deck is supposed to be frozen, and a shared figure stem is the one thing that
+  can un-freeze it.
 - `chemo_replication_gaps.tex` and `robustcl_chemo_regimen.tex` are standalone
   one-offs.

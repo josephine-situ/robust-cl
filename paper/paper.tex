@@ -1,0 +1,93 @@
+% Paper outline -- section skeleton only, no content yet.
+% Method reference of record is presentations/method.tex; numbers come from the
+% current dated update deck (see CLAUDE.md, "Which results are current").
+\documentclass[11pt]{article}
+
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+
+\title{Robust Constraint Learning by Cutting Planes}
+\author{Josephine Situ}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+% TODO
+\end{abstract}
+
+\section{Introduction}
+\subsection{Motivation: learned constraints inherit label noise}
+\subsection{Contributions}
+\subsection{Outline}
+
+\section{Related Work}
+\subsection{Constraint learning / optimization with embedded models}
+\subsection{Robust optimization and data-driven uncertainty sets}
+\subsection{Conformal and distribution-free calibration}
+\subsection{Cutting-plane methods for robust counterparts}
+
+\section{Problem Formulation}
+\subsection{Nominal embedded-model program}
+\subsection{Label perturbations and the induced model set}
+\subsection{Robust counterpart}
+\subsection{The uncertainty set $\mathcal{D}$}
+\subsubsection{Radius $\rho$ and the scale statistic}
+\subsubsection{Label-domain restrictions}
+\subsubsection{The scenario bank}
+
+\section{Methods}
+\subsection{Nominal}
+\subsection{Scenario wrapper}
+\subsection{Conformal tightening (C-MICL)}
+\subsection{RHS margin}
+\subsection{Cutting planes (proposed)}
+\subsubsection{Separation over the bank}
+\subsubsection{Cut generation and rollback}
+\subsubsection{Termination and complexity}
+\subsubsection{Coverage budget}
+
+\section{Experimental Design}
+\subsection{Instances}
+\subsubsection{DMA-MR reactor}
+\subsubsection{WFP}
+\subsubsection{Gastric cancer chemotherapy}
+\subsection{Model class selection}
+\subsection{MIP encodings and solver settings}
+\subsection{Calibration protocol}
+\subsubsection{Each method's own dial}
+\subsection{Evaluation protocol}
+\subsubsection{Ground-truth judges}
+\subsubsection{Tuning versus test}
+\subsubsection{Robustness over training draws}
+
+\section{Results}
+\subsection{Objective--feasibility frontiers}
+\subsection{Held-out performance at the tuned dial}
+\subsection{Tail behavior over training draws}
+\subsection{Sensitivity to the uncertainty radius}
+\subsection{Ablations}
+\subsubsection{Bank size and separation path}
+\subsubsection{Coverage cap}
+\subsection{Computational cost}
+
+\section{Discussion}
+\subsection{Price of robustness}
+\subsection{Limitations}
+\subsection{Future work}
+
+\section{Conclusion}
+
+\appendix
+\section{Formulation details}
+\section{Additional experimental detail}
+\section{Additional results}
+
+\bibliographystyle{plain}
+% \bibliography{refs}
+
+\end{document}

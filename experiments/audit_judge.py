@@ -98,7 +98,8 @@ def _label_scales(problem: str, config: dict) -> dict:
         # Gastric resolves per constraint from the frozen CV picks, which
         # `resolve_constraint_config` reads off the instance itself, so the
         # defaults handed in here are never reached.
-        inst = gastric_instance(cv_configs=load_gastric_cv_configs())
+        cv_configs, gt_configs = load_gastric_cv_configs()
+        inst = gastric_instance(cv_configs=cv_configs, gt_configs=gt_configs)
         m_type = str(config.get("default_model", {}).get("type", "xgb"))
         m_params = {}
     cfg_map, idx = {}, 0

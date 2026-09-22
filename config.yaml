@@ -339,7 +339,23 @@ methods:
     # the score and the MIP) is GONE as of 2026-09-03: one implementation of this
     # method, and it is theirs.
     width_model_type: mlp
-    width_model_params: {hidden_layer_sizes: [32, 32], alpha: 0.01, max_iter: 2000}
+    # batch_size 32 is THEIRS (Keras batch 32) and it is the single largest
+    # lever measured on the reactor: ground-truth feasibility 0.53 -> 0.81
+    # under their cost draw, and the ONLY setting that leaves zero calibration
+    # rows with u <= 0 (0/200, against 9/200 at sklearn's default batch of
+    # min(200, n) = 200). Mechanism: the MIP solves for the argmin of cost
+    # s.t. h - q*u >= 50, so it walks to the lowest dip in the fitted width
+    # surface, and `u >= 0` then clamps that dip to exactly zero -- no margin.
+    # Across ten measured cells the split is binary: min u(x*) > 0 gives
+    # feasibility 0.81-0.95, min u(x*) = 0 gives 0.37-0.53.
+    #
+    # Their OTHER two training differences are deliberately NOT adopted:
+    # a fixed 2000 epochs (tol=0) measured WORSE here, 0.37, with 19/200
+    # negative calibration rows -- early stopping is holding u positive; and
+    # their /100 input scaling needs their h too (job 22851760: mean_u 1.635
+    # -> 9.539, half-width 17.67, zero solvable instances), because our h is
+    # CV-selected under StandardScaler. See experiments/probe_u_trainer.py.
+    width_model_params: {hidden_layer_sizes: [32, 32], alpha: 0.01, max_iter: 2000, batch_size: 32}
     # "none" (Ovalle et al.): each constraint marginal at 1-alpha.
     # "bonferroni": alpha/C, so the JOINT statement holds at 1-alpha. On gastric
     # that level is usually finer than n_cal can resolve, and the solve then

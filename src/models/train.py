@@ -140,6 +140,11 @@ def train_model(X: np.ndarray,
             alpha=params.get("alpha", 1e-4),
             random_state=random_state,
             max_iter=params.get("max_iter", 10_000),
+            # Forwarded because the C-MICL width model needs it and sklearn
+            # does not take it from anywhere else. "auto" is sklearn's own
+            # default (min(200, n)), so a params dict without the key fits
+            # exactly as it did before; ignored by lbfgs.
+            batch_size=params.get("batch_size", "auto"),
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")

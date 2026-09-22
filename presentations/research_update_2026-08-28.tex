@@ -186,11 +186,11 @@
 \begin{frame}{Next steps}
     \footnotesize
     \begin{enumerate}
-        \item \textbf{Freeze the code.} Dials, grids, feasibility target, reactor
-              $\rho$ columns; ceiling rows to the appendix.
-        \item \textbf{Re-run the gastric dial cell (cluster).} Larger c-micl grid
-              --- a strict superset, so no refresh and the scored cells replay
-              free. Run the test even if the target is not reached in tuning.
+        % \item \textbf{Freeze the code.} Dials, grids, feasibility target, reactor
+        %       $\rho$ columns; ceiling rows to the appendix.
+        % \item \textbf{Re-run the gastric dial cell (cluster).} Larger c-micl grid
+        %       --- a strict superset, so no refresh and the scored cells replay
+        %       free. Run the test even if the target is not reached in tuning.
         \item \textbf{Then screen the epigraph objective} (gated on 2). CP at
               the re-run's dial$^\ast$, epigraph on, subsample, CRN-paired
               against the arm already on disk. Nominal holds the best
@@ -198,25 +198,21 @@
               $10.90$ --- so the prize is $0.23$ against a draw sd of $0.55$.
               dial$^\ast$ was tuned with the epigraph off, so the screen is a
               lower bound; escalate to a full sweep only if it moves.
-        \item \textbf{Realizations $10 \to 50$.} (Reactor) The tail is the headline; at
-              $10$ draws the worst case \emph{is} one draw --- a range, not a
-              bound.
-        \item \textbf{Reactor: run at multiple costs}.
-        \item \textbf{Reactor: report cost at verified feasibility.} The proxy is
-              conservative at the boundary. Measure that gap rather than tighten
-              the $0.9$ target --- now instrumented (\texttt{slack}, LOMO flips,
-              $x^\ast$ per decision; \texttt{audit\_judge.py}); needs a cell
-              re-run to populate.
+        % \item \textbf{Realizations $10 \to 50$.} (Reactor) The tail is the headline; at
+        %       $10$ draws the worst case \emph{is} one draw --- a range, not a
+        %       bound. % Don't think we need to do this
+        % \item \textbf{Reactor: run at multiple costs}.
+        % \item \textbf{Reactor: report cost at verified feasibility.} The proxy is
+        %       conservative at the boundary. Measure that gap rather than tighten
+        %       the $0.9$ target --- now instrumented (\texttt{slack}, LOMO flips,
+        %       $x^\ast$ per decision; \texttt{audit\_judge.py}); needs a cell
+        %       re-run to populate.
         \item \textbf{WFP food basket.} Reported by both OptiCL and C-MICL ---
               omitting the shared benchmark reads as selection. Palatability
               label is continuous ($6002 \times 13$), so it enters the regression
               framework unchanged. \emph{One} learned constraint; nutrients are
               known linear, so gastric stays the multi-constraint instance. Open:
               diet reduction vs.\ full supply chain.
-        \item \textbf{Synthetic $\to$ appendix.} The reactor's ODE is mechanistic
-              truth; synthetic's $f_{\text{true}}$ is authored, on the instance
-              where the uncertainty radius and the generated noise are the same
-              object.
         \item \textbf{Write paper.} Potential stories: CP / RHS margin generalizes
               well to multiple constraints, maintaining feasibility. CP best worst-
               case feasibility (can be solved offline). Formally extend C-MICL

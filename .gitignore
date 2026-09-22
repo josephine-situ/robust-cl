@@ -56,6 +56,10 @@ presentations/*.fdb_latexmk
 presentations/*.synctex.gz
 presentations/*.pdf
 
+# same for the paper draft: the .tex is the source, the rest is latexmk output
+paper/*.synctex.gz
+paper/*.pdf
+
 logs
 *.log
 *.txt

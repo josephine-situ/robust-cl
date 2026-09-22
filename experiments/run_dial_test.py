@@ -866,8 +866,13 @@ def run(config, args):
                 objective=obj, objective_sd=obj_spread,
                 objective_worst=obj_worst, objective_q10=obj_q10,
                 solved_frac=solved,
+                # Filter on dial_star too: C-MICL contributes TWO rows at the
+                # same (method, rho) -- its tuned dial and its pinned protocol
+                # alpha -- so a filter without it counts the first series into
+                # the second's n_points.
                 n_points=int(sum(1 for p in points
                                  if p["method"] == method and p["phase"] == phase
+                                 and p["dial_star"] == dial
                                  and (p["rho"] == rho or
                                       (not np.isfinite(rho) and not np.isfinite(p["rho"]))))),
                 objective_sense=judge.objective_sense,

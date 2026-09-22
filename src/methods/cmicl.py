@@ -90,8 +90,10 @@ measures it.
 
 **Verified against their code** --
 `https://github.com/dovallev/c-micl` (commit `b44fe53`, 2026-07-14),
-`regression.py` -- not inferred from the text. The instance is theirs to the
-digit: identical
+`regression.py` -- not inferred from the text. What is verified is the
+INSTANCE and the RECIPE, read off their source; that their script reproduces
+the paper's reported rates is **not** verified by anyone (DIFFERENCES #8).
+The instance is theirs to the digit: identical
 variable order `(v0, v_He, T, dt, L)`, identical box, all seven domain
 constraints identical once their `/100` input scaling is undone, and our
 vendored ODE reproduces their labels to a **-1.37% mean** offset with a residual
@@ -125,6 +127,40 @@ only the first three move `q` or `h`.
    `MLPRegressor((10, 5, 2), solver="lbfgs", alpha=0.01)` inside
    `Pipeline(StandardScaler, ...)`. Different family, depth, optimizer and
    feature scaling -- so `h` is not their `h` even where both are "an MLP".
+
+   **MEASURED, and it is NOT a material contributor** (2026-09-08, reactor
+   benzene, full-data 800/200 split at seed 42, alpha=0.1, only `h` swapped and
+   `u` refit per arm):
+
+   | `h`                     | fit MAE | cal MAE | mean u | q     | half-width | /sd(y) |
+   |-------------------------|---------|---------|--------|-------|------------|--------|
+   | ours `mlp (10,5,2)`     | 1.393   | 1.977   | 1.349  | 4.692 | 6.329      | 0.56   |
+   | theirs LinearDT depth 5 | 1.785   | 2.080   | 1.999  | 3.507 | 7.011      | 0.62   |
+   | CART depth 5 (not thrs) | 3.214   | 4.482   | 3.287  | 4.559 | 14.99      | 1.32   |
+
+   Their simplest surrogate gives a band **1.108x** ours -- 11%, nowhere near
+   what separates our 0.20-0.27 from their reported `>= 0.90`. Two reasons, and
+   the second is the useful one:
+
+   - **Both `h` are at the label-noise floor.** `reactor.noise_std` is 2.0, the
+     audit measured residual sd 1.94, and the two calibration MAEs are 1.977 and
+     2.080. Neither model can do better, so there is no headroom for the CV pick
+     to matter; being "more tuned" is worth 5% out of sample.
+   - **`q` COMPENSATES, so the half-width is near-invariant to `h`.** `q` is not
+     scale-invariant as a naive reading suggests: our `u` under-sizes the
+     residuals (mean 1.349 against a cal MAE of 1.977) so `q` must be large,
+     while LinearDT's `u` is nearly right (1.999 vs 2.080) so `q` is small, and
+     the product `q * u` barely moves. That is split conformal behaving as
+     designed. The compensation is strong but not total -- CART depth 5, much
+     worse fit, does widen the band 2.37x -- so the invariance holds across
+     *reasonable* `h`, not across all of them.
+
+   So do not attribute the reactor gap to our CV-selected `h`. The negative-`u`
+   count also survives every arm (11 / 7 / 5 of 200), confirming it is `u`'s
+   linear output layer and not `h`. Reproducer:
+   `scratchpad/h_widen_probe.py` (needs `uv run --with linear-tree` and a shim
+   for sklearn's removed `_validate_data`); promote it to `experiments/` if this
+   number goes in the paper.
 3. **`u` is their architecture under a different trainer.** `(32,32)`,
    `alpha=0.01`, `max_iter=2000` reproduces their grid point, but sklearn's
    `MLPRegressor` is not Keras: `alpha` penalises EVERY layer where theirs
@@ -157,8 +193,57 @@ only the first three move `q` or `h`.
 8. **Their notebook is a third implementation**, not a demo of the script:
    `notebooks/regression/03` floors the width at `np.maximum(u, 1e-6)` in the
    SCORE while still embedding `u >= 0`, trains both nets 300 epochs on Keras
-   defaults, and leaves `y_f` free. We follow the script -- it is what produced
-   the paper's numbers.
+   defaults, and leaves `y_f` free. We follow the script.
+
+   **Why the script and not the notebook, and how strong that is.** The README
+   designates `python regression.py` as the reproduction of the regression case
+   study, and its experiment grid is a paper's worth of results: `iterations =
+   100` with the cost drawn INSIDE the loop after one `np.random.seed(0)`,
+   `surrogate_list = ['LinearDT','GradientBoosting','RandomForest','MLP']`
+   reported separately, `P_list = [1,5,10,25,50]` ensemble sizes for the W-MICL
+   comparison, and `alphas = [0.1, 0.05]` -- matching the paper's 100 sampled
+   cost vectors, its four surrogate families, and its main-text/appendix alphas.
+   It records `'true_feasibility': int(float(y_pred) >= 50)` per instance, which
+   IS the quantity the paper reports.
+
+   That is provenance by structure, and it is **not** a verified reproduction.
+   Four things are missing and should be stated whenever the script is called
+   "the paper's":
+   - the script **never aggregates**: it writes per-instance rows to
+     `f"{P}_{surrogate}_optimization_results.csv"` and prints no rate, so the
+     paper's `>= 0.90` is computed by code that is NOT in the repo;
+   - there are **no committed outputs** anywhere in the repo (`data/` is inputs
+     only), so no number from this script can be compared against the paper;
+   - **nobody has closed the loop** -- we have never executed it, and they ship
+     no result to check it against;
+   - it is **global, not Mondrian** (see #9), so it does not implement the
+     method the paper's guarantee is stated over. Either the reported numbers
+     came from a non-Mondrian run, or from code that is not public.
+
+   And the one committed number in the whole repo -- the notebook's `0.800` --
+   **disagrees** with the paper's `>= 0.90`. So the only empirical anchor
+   available in their code does not reproduce their headline.
+
+   That floor is **not a numerical guard in effect, it is a conservatism knob**,
+   and its whole effect is a shift in the scalar `q`: it bites only on
+   calibration rows with `u <= 0`, and the MIP is byte-identical between the two
+   files. Measured on the reactor off one fit and one split (seed 42, `n_cal`
+   200, alpha 0.1, 6 rows with `u <= 0`): `q` goes **5.786 raw -> 8.818 floored,
+   a factor 1.52**, and the mean half-width 0.79 -> 1.20 sd(y). The factor
+   scales with the negative-`u` count, which moves with the fit (3.0% there,
+   11/200 in WIDTH MODEL below, 26% at the settings in `config.yaml`), so it is
+   an effect size and not a constant.
+
+   Their notebook also **reports a different number from the paper**: its
+   committed output is ground-truth feasibility `C-MICL 0.800 +/- 0.155` and
+   `MICL 0.200 +/- 0.155` over `iterations = 20` cost draws at alpha=0.1, where
+   the paper's headline is `>= 0.90`. So `0.800` is neither the paper's figure
+   nor this method as the script implements it, and it must not be read against
+   a number from here. Note what the 1.52x does NOT buy: the tightening is
+   `q * u_eff`, so wherever the optimizer can reach `u(x) = 0` it vanishes for
+   ANY `q`, and on this instance it can (see WIDTH MODEL). A larger `q` only
+   helps if the fitted `u`'s zero set is unreachable, which is a property of
+   THEIR net (Keras, 300 epochs, their `/100` scaling), not of the score.
 9. **Neither implementation is Mondrian.** The paper's guarantee rests on a
    Mondrian (group-conditional) conformal set plus conditional independence of
    coverage and feasibility; `regression.py` calibrates ONE global quantile, and

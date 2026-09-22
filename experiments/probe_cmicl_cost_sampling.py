@@ -165,6 +165,16 @@ def sample_costs(scheme, n, span, rng):
         return np.ones((1, d))
     if scheme == "paper":
         # np.random.uniform(-4, 4, size=5); cost[cost < 0] /= 10
+        #
+        # SAME DISTRIBUTION, DIFFERENT DRAWS. `main` hands in a
+        # `np.random.default_rng` (PCG64); theirs is legacy global
+        # `np.random.seed(0)` + `np.random.uniform` (MT19937), drawn size=5
+        # inside the loop. So our 100 cost vectors are NOT their 100 cost
+        # vectors and the rates are unpaired -- fine for a rate over 100 draws,
+        # not fine for an instance-by-instance comparison. Their exact stream is
+        # one word away: `np.random.RandomState(0).uniform(-4, 4, size=(n, d))`
+        # fills row-major, so it reproduces their 500 values in their order.
+        # Not switched unilaterally because it re-solves the committed CSV.
         c = rng.uniform(-4.0, 4.0, size=(n, d))
         c[c < 0] /= 10.0
         return c * PAPER_INPUT_SCALE
