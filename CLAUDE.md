@@ -366,6 +366,15 @@ message distinguishes the three states (column absent → old star file; column 
 
 `RUN_TEST=0` / `TEST_PHASES=full` narrow the stage in `submit_dial_sweep.sh`.
 
+**The test stage checkpoints per cell** (2026-09-23): each finished (series,
+phase), or (series, draw) in `subsample`, goes to `{problem}_dial_test_ckpt{cell}.csv`
+after its rows, and a restart reloads those and solves only the rest. Gastric's
+stage is ~20h -- past `mit_normal`'s 12h wall, and `pi_dbertsim` takes GPU jobs
+only -- so it runs on `mit_preemptable` with `--requeue`, where a preemption
+costs the in-flight cell (C-MICL: up to ~2h). The file is **deleted on
+completion**, so re-running a finished stage still recomputes from scratch;
+`--refresh` discards one an interrupted run left.
+
 **Neither single-decision instance has a row-level train/test split, and that is
 structural**: `synthetic_nonlinear` and `reactor_micl` set `X_test` empty, so the
 CV folds are the only row structure and the separation is the *judge*, not the

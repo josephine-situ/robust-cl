@@ -131,6 +131,131 @@ OUT_DIR = "results/rho_sweep"
 TAIL_QUANTILE = 0.1
 
 
+# ---------------------------------------------------------------------------
+# Per-cell resume
+# ---------------------------------------------------------------------------
+# The gastric test stage is ~20h (C-MICL prescribing the 96 X_test arms is ~2h
+# a cell), past mit_normal's 12h wall, and mit_preemptable kills without
+# warning (GraceTime=0). So every finished CELL -- one (series, phase), or one
+# (series, realization) in `subsample` -- is recorded in
+# {problem}_dial_test_ckpt{cell}.csv, written AFTER the points and summary rows
+# it vouches for. A restart reloads those cells and re-solves only the rest, so
+# a preemption costs the in-flight cell and nothing else.
+#
+# The key carries dial_star and kind, so a star table that moved between
+# attempts reuses nothing it should not, and subsample_frac guards the draws.
+# The file is DELETED when the stage completes: a finished test stage that is
+# run again recomputes from scratch, as it always has. The checkpoint is for
+# INTERRUPTED runs, not a cache across code changes. `--refresh` discards one
+# an interrupted run left behind.
+
+def _ck(x):
+    """Canonical text for a float in a key: '' for NaN, else 12 significant
+    digits, so a value read back from CSV matches the one in memory."""
+    x = float(x)
+    return "" if not np.isfinite(x) else format(x, ".12g")
+
+
+def _cell_key(phase, method, rho, dial, kind, r=-1):
+    return (str(phase), str(method), _ck(rho), _ck(dial), str(kind), int(r))
+
+
+def _series_lookup(series):
+    """``(method, rho, dial)`` text -> ``(index, series tuple)``.
+
+    Points carry no ``kind``, and rho / dial_star come back from CSV as fresh
+    floats -- NaN is not even equal to itself -- so a reloaded row is matched to
+    its series through this, and then handed the series' own objects so the
+    samestore bookkeeping (tuple keys containing rho) sees one identity.
+    """
+    return {(m, _ck(rho), _ck(d)): (i, (m, rho, dn, d, kind))
+            for i, (m, rho, dn, d, kind) in enumerate(series)}
+
+
+def _ckpt_record(phase, method, rho, dial_name, dial, kind, r, feas, obj,
+                 solved, frac, wall):
+    return dict(phase=phase, method=method, rho=rho, dial_name=dial_name,
+                dial_star=dial, kind=kind, realization=int(r),
+                feasibility=feas, objective=obj, solved_frac=solved,
+                subsample_frac=frac, wall_s=wall)
+
+
+def _load_resume(ckpt_path, points_path, summary_path, series, phases, frac,
+                 points, summary):
+    """Reload what an interrupted run finished.
+
+    Returns ``(done, ckpt_rows)``: ``done`` maps a cell key to its
+    ``(feas, obj, solved)``, and ``points`` / ``summary`` are filled in place.
+    A cell counts only if the checkpoint vouches for it AND its points -- and,
+    for folds / full, its summary row -- are on disk. Anything less is
+    re-solved rather than trusted.
+    """
+    if not os.path.exists(ckpt_path):
+        return {}, []
+    look = _series_lookup(series)
+
+    def _hit(row):
+        h = look.get((row["method"], _ck(row["rho"]), _ck(row["dial_star"])))
+        return None if h is None else h[1]
+
+    claimed, records = {}, {}
+    for row in pd.read_csv(ckpt_path).to_dict("records"):
+        s = _hit(row)
+        if s is None or s[4] != row["kind"] or row["phase"] not in phases:
+            continue                        # a series or phase this run skips
+        if row["phase"] == "subsample" and _ck(row["subsample_frac"]) != _ck(frac):
+            continue                        # a different draw size
+        m, rho, dn, d, kind = s
+        key = _cell_key(row["phase"], m, rho, d, kind, row["realization"])
+        claimed[key] = (float(row["feasibility"]), float(row["objective"]),
+                        float(row["solved_frac"]))
+        records[key] = _ckpt_record(
+            row["phase"], m, rho, dn, d, kind, row["realization"],
+            *claimed[key], frac if row["phase"] == "subsample" else np.nan,
+            row.get("wall_s", np.nan))
+
+    sum_rows = {}
+    if os.path.exists(summary_path):
+        for row in pd.read_csv(summary_path).to_dict("records"):
+            if row.get("phase") not in ("folds", "full"):
+                continue
+            s = _hit(row)
+            if s is None or s[4] != row.get("kind"):
+                continue
+            key = _cell_key(row["phase"], s[0], s[1], s[3], s[4])
+            if key in claimed:
+                row["rho"], row["dial_star"] = s[1], s[3]
+                sum_rows[key] = row
+
+    pts = {}
+    if os.path.exists(points_path):
+        for row in pd.read_csv(points_path).to_dict("records"):
+            s = _hit(row)
+            if s is None:
+                continue
+            sub = row["phase"] == "subsample"
+            r = int(row["realization"]) if sub else -1
+            key = _cell_key(row["phase"], s[0], s[1], s[3], s[4], r)
+            if key not in claimed:
+                continue
+            row["rho"], row["dial_star"] = s[1], s[3]
+            if sub:
+                row["realization"] = r
+                row["subsample_seed"] = int(row["subsample_seed"])
+            pts.setdefault(key, []).append(row)
+
+    done, ckpt_rows = {}, []
+    for key, val in claimed.items():
+        if key not in pts or (key[0] != "subsample" and key not in sum_rows):
+            continue
+        done[key] = val
+        ckpt_rows.append(records[key])
+        points.extend(pts[key])
+        if key in sum_rows:
+            summary.append(sum_rows[key])
+    return done, ckpt_rows
+
+
 def _obj_tail(vals, sense):
     """``(worst, tail_decile)`` of a realized objective, on the BAD side.
 
@@ -471,7 +596,7 @@ def _score(su, judge, result, contextual, instance=None, rows=None):
 
 
 def _subsample_phase(config, args, su, judge, judge_name, series, points, summary,
-                     write):
+                     write, done=None, ckpt_rows=None):
     """m-out-of-n subsampling at ``dial*``, on the held-out cohort. Gastric only.
 
     **Why gastric and not the others**, since the draw itself would generalise:
@@ -535,6 +660,8 @@ def _subsample_phase(config, args, su, judge, judge_name, series, points, summar
     from src.data.generate import gastric_cancer
     from src.methods.uncertainty import uncertainty_set_from_config
 
+    done = {} if done is None else done
+    ckpt_rows = [] if ckpt_rows is None else ckpt_rows
     frac = float(args.subsample_frac)
     n_real = int(args.n_realizations)
     base_seed = int(config.get("uncertainty", {}).get("bootstrap_seed", 42))
@@ -552,6 +679,15 @@ def _subsample_phase(config, args, su, judge, judge_name, series, points, summar
     per_real = collections.OrderedDict()   # series key -> [(feas, obj, solved)]
     for r in range(n_real):
         sub_seed = base_seed + 1000 * (r + 1)
+        if all(_cell_key("subsample", m, rho, d, kind, r) in done
+               for m, rho, _, d, kind in series):
+            # Every series already scored this draw: skip the instance build too.
+            for s in series:
+                per_real.setdefault(s, []).append(
+                    done[_cell_key("subsample", s[0], s[1], s[3], s[4], r)])
+            print(f"\n[realization {r + 1}/{n_real}] RESUMED -- every series "
+                  f"already scored (subsample_seed={sub_seed})", flush=True)
+            continue
         print(f"\n[realization {r + 1}/{n_real}] subsample_seed={sub_seed} "
               f"frac={frac}", flush=True)
         inst = gastric_cancer(fixed_constraint_configs=cv_configs,
@@ -565,6 +701,11 @@ def _subsample_phase(config, args, su, judge, judge_name, series, points, summar
             t0 = time.time()
             label = (f"{method}" + (f"@rho={rho:g}" if np.isfinite(rho) else "")
                      + f" {dial_name}={dial:g}")
+            ck = _cell_key("subsample", method, rho, dial, kind, r)
+            if ck in done:
+                per_real.setdefault(key, []).append(done[ck])
+                print(f"[cell] RESUMED {label}  phase=subsample r={r}", flush=True)
+                continue
             print(f"[cell] BEGIN {label}  phase=subsample r={r}", flush=True)
             res = _solver_for(su, base_uset, method, rho, dial)(inst)
             if isinstance(res, tuple):
@@ -583,6 +724,9 @@ def _subsample_phase(config, args, su, judge, judge_name, series, points, summar
             print(f"[cell] END   {label:<34s} phase=subsample r={r} "
                   f"feas={feas:.3f} obj={obj:+.4f} solved={solved:.3f} "
                   f"({dt:.1f}s)", flush=True)
+            ckpt_rows.append(_ckpt_record("subsample", method, rho, dial_name,
+                                          dial, kind, r, feas, obj, solved,
+                                          frac, dt))
             write()
 
     # ---- samestore: the arms EVERY series solved, recomputed per draw ------
@@ -781,20 +925,51 @@ def run(config, args):
     print(flush=True)
 
     points, summary = [], []
+    points_path = os.path.join(OUT_DIR, f"{problem}_dial_test_points{var}.csv")
+    summary_path = os.path.join(OUT_DIR, f"{problem}_dial_test{var}.csv")
+    ckpt_path = os.path.join(OUT_DIR, f"{problem}_dial_test_ckpt{var}.csv")
+    if getattr(args, "refresh", False) and os.path.exists(ckpt_path):
+        os.remove(ckpt_path)
+        print(f"[dial-test] --refresh: discarded {ckpt_path}", flush=True)
+    done, ckpt_rows = _load_resume(ckpt_path, points_path, summary_path, series,
+                                   phases, float(args.subsample_frac),
+                                   points, summary)
+    if done:
+        print(f"[dial-test] RESUMING from {ckpt_path}: {len(done)} cell(s) "
+              f"already finished are reloaded, not re-solved (--refresh to "
+              f"start over)", flush=True)
+    look = _series_lookup(series)
+    ph_order = {"folds": 0, "full": 1}
+
+    def _order(q, sub_by_realization=True):
+        i = look.get((q["method"], _ck(q["rho"]), _ck(q["dial_star"])),
+                     (len(series),))[0]
+        if q["phase"] == "subsample":
+            return (1, int(q["realization"]) if sub_by_realization else 0, i, 0)
+        return (0, 0, i, ph_order.get(q["phase"], 2))
 
     def _write():
-        """Checkpoint both outputs. Long solves; a killed job keeps what ran."""
-        pd.DataFrame(points).to_csv(
-            os.path.join(OUT_DIR, f"{problem}_dial_test_points{var}.csv"),
-            index=False)
-        pd.DataFrame(summary).to_csv(
-            os.path.join(OUT_DIR, f"{problem}_dial_test{var}.csv"), index=False)
+        """Write both outputs, then the checkpoint that vouches for them.
+
+        Sorted into the order a fresh run produces -- series-major for folds /
+        full; realization-major for subsample points; summary rows by series --
+        and stable, so rows inside a cell keep theirs. A resumed run's files are
+        then indistinguishable from an uninterrupted one's.
+        """
+        points.sort(key=_order)
+        summary.sort(key=lambda q: _order(q, sub_by_realization=False))
+        pd.DataFrame(points).to_csv(points_path, index=False)
+        pd.DataFrame(summary).to_csv(summary_path, index=False)
+        pd.DataFrame(ckpt_rows).to_csv(ckpt_path, index=False)
 
     for method, rho, dial_name, dial, kind in series:
         for phase in solve_phases:
             t0 = time.time()
             label = (f"{method}" + (f"@rho={rho:g}" if np.isfinite(rho) else "")
                      + f" {dial_name}={dial:g}")
+            if _cell_key(phase, method, rho, dial, kind) in done:
+                print(f"[cell] RESUMED {label}  phase={phase}", flush=True)
+                continue
             print(f"[cell] BEGIN {label}  phase={phase}", flush=True)
             if phase == "folds":
                 feas_f, obj_f, solved_f = [], [], []
@@ -882,13 +1057,22 @@ def run(config, args):
             print(f"[cell] END   {label:<34s} phase={phase:<5s} "
                   f"feas={feas:.3f} obj={obj:+.4f} solved={solved:.3f} "
                   f"({dt:.1f}s)", flush=True)
+            ckpt_rows.append(_ckpt_record(phase, method, rho, dial_name, dial,
+                                          kind, -1, feas, obj, solved, np.nan,
+                                          dt))
             # Written after every cell: these are long solves and a killed job
             # should leave what it finished on disk.
             _write()
 
     if "subsample" in phases:
         _subsample_phase(config, args, su, judge, judge_name, series, points,
-                         summary, _write)
+                         summary, _write, done=done, ckpt_rows=ckpt_rows)
+    _write()
+    # Complete: the checkpoint has done its job. Leaving it would make a later
+    # re-run of a FINISHED stage silently reuse these solves across whatever
+    # changed in between.
+    if os.path.exists(ckpt_path):
+        os.remove(ckpt_path)
 
     out = pd.DataFrame(summary)
     print(f"\n[dial-test] each method at its own dial*, judged by {judge_name} "
@@ -954,6 +1138,11 @@ def main():
                         "fitted and its test is a cohort split; the reactor is "
                         "judged by the ODE, so its `folds` are already out of "
                         "sample. Default: folds full [subsample on gastric]")
+    p.add_argument("--refresh", action="store_true",
+                   help="discard the per-cell checkpoint an INTERRUPTED run "
+                        "left ({problem}_dial_test_ckpt<cell>.csv) and start "
+                        "over. Not needed after a run that finished: the "
+                        "checkpoint is deleted on completion.")
     p.add_argument("--n-realizations", type=int, default=10,
                    help="training draws in the `subsample` phase (default 10, "
                         "the Table 6 protocol)")
