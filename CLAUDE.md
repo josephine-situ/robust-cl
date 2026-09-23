@@ -458,9 +458,11 @@ margin, is **structural**, not evidence of stability.
   row — the rho sweeps, `results/gastric/`, `results/synthetic/` — is the old
   floored-`u` score function.
 - **And STALE AGAIN as of 2026-09-22** — `width_model_params` now carries
-  **`batch_size: 32`**, so `u` is fitted differently and `q` moves with it. This
-  supersedes the 2026-09-04 reactor re-run and gastric's six scored alphas:
-  **no committed `cmicl` row is current.** The change is not cosmetic — it is
+  **`batch_size: 32`**, so `u` is fitted differently and `q` moves with it.
+  **Re-run under it**: the reactor dial cell's whole `cmicl` series plus its ODE
+  test (job 23500609, 2026-09-22) and gastric's `cmicl` series (job 23501706,
+  2026-09-23, tuning only — its test stage is job 23579054, pending). Every
+  other `cmicl` row predates it. The change is not cosmetic — it is
   the difference between C-MICL delivering and not. On the reactor's `scaled`
   draw at N=100 (`submit_balanced_check.sh`, job 23497509) ground-truth
   feasibility goes **0.45 → 0.83**, because sklearn's default batch leaves the
@@ -488,8 +490,8 @@ margin, is **structural**, not evidence of stability.
   than the wrapper** (5.816 vs 5.885) and both beat the margin. CP delivers on
   every column 2-6, the wrapper on 4-6 (alpha* 0 / 0.05 / 0.15). No `dial*`:
   `cp@1` (best 0.300, `none_interior`), `wrapper@1`/`@2`/`@3` (0.00 / 0.10 / 0.40
-  at alpha=0, a **structural** end) and `cmicl` (best 0.100 at alpha=0.3,
-  `none_interior`, n_cal=180 floor). The cell holds the **whole span** for both
+  at alpha=0, a **structural** end) and `cmicl` (best 0.600 at alpha=0.05,
+  `none_interior`; 0.100 at alpha=0.3 before batch 32). The cell holds the **whole span** for both
   methods, a superset of the reported columns, so a re-run on the defaults trips
   `_guard_curve_rewrite` — re-run it with `RHO_COLUMNS_REACTOR="1 2 3 4 5 6"`.
   - **The ODE separates the methods on feasibility, not only on cost.** The old
@@ -498,29 +500,39 @@ margin, is **structural**, not evidence of stability.
     (`cp@1` 0.30->0.70, `wrapper@2` 0.10->0.70, `wrapper@3` 0.40->0.90 on folds)
     but it **over-calls** `wrapper@6` (1.00->0.90), and the ODE failures are
     real: `nominal` 0/10, `wrapper@1` 0/10 folds and 0/1 on `full`, `wrapper@2`
-    0/1 on `full` despite 0.70 on folds, `cmicl` 0.10 at its `best_feas`
-    alpha=0.3 and **0.20 at its protocol alpha=0.1**. Every other tuned `dial*`
-    row is ODE-feasible 10/10. So a tuning feasibility below 0.9 can no longer
-    be waved off as the proxy being harsh.
+    0/1 on `full` despite 0.70 on folds, `cmicl` 0.40 at its `best_feas`
+    alpha=0.05 and **0.30 at its protocol alpha=0.1** (0.10 / 0.20 before batch
+    32). Every other tuned `dial*` row is ODE-feasible 10/10, and the batch-32
+    re-run left all of them bit-identical. So a tuning feasibility below 0.9 can
+    no longer be waved off as the proxy being harsh.
+  - **Batch 32 helps C-MICL on the reactor but does not rescue it.** The N=100
+    `scaled` probe's 0.83 is a rate over random cost DIRECTIONS; the dial cell
+    has ONE fixed `balanced` direction and 10 folds, and along it C-MICL's
+    tuning curve now climbs to 0.6 (alpha=0.05) where it was flat at 0.0-0.1,
+    but never reaches 0.9. Both are true: quote the probe as a claim about the
+    width model, and the cell as the claim about this instance.
   - `reactor_dial_*_wraprho456.csv` is a **ones-`c`** `--cell-tag` probe of the
     wrapper at rho {4, 5, 6}. It was the evidence for the old {5, 6}; the
     full-span run replaced it, so it is dead and reads on no current instance.
 - **The gastric dial cell is COMPLETE and tested on folds + full** (2026-09-08).
   The capped resume finished what the two walled 12h jobs left: the star table is
   written for all seven series, the 4 `cp_alpha_ablation` rows are back, and
-  C-MICL's alpha=0.1 `must_visit` was scored (it fell below `--min-solved` at
-  0.081, so the alpha<0.1 tail is *pruned*, not unreached — the two unreached
-  cells, alpha 0.2 and 0.15, are the `MAX_EVALS=4` budget running out and buy
-  frontier points only). `dial*`: `cp@0.5` tau*=0.03 (feas 0.974, obj 10.784),
+  C-MICL's alpha=0.1 `must_visit` was scored (it fell below `--min-solved` —
+  0.081, and 0.056 under batch 32 — so the alpha<0.1 tail is *pruned*, not
+  unreached; the two unreached cells, alpha 0.2 and 0.15, are the `MAX_EVALS`
+  budget running out, 4 and then 10, and buy frontier points only). `dial*`: `cp@0.5` tau*=0.03 (feas 0.974, obj 10.784),
   `cp@1.0` tau*=0.1 (0.938 / 9.841), `wrapper@0.5` alpha*=0.2 (0.941 / 10.880),
   `wrapper@1.0` alpha*=0.6 (0.903 / 10.901), `margin` m*=0.2 (0.931 / 10.974),
-  `cmicl` alpha*=0.6 (0.919 / 9.781) — all `interior` — against `nominal`
-  0.891 / 11.302. The objective is a **max** (realized OS).
-  - **The test stage's `folds` and `full` phases are on disk; `subsample` was
-    still running as of 2026-09-08 15:00** (3 of 10 realizations in
-    `_dial_test_points`, the expensive C-MICL protocol arm mid-draw). The
-    `_dial_test` summary carries **no subsample row yet** — it is written at the
-    end — so any `feas_worst_case` / `_samestore` claim is still unmeasured.
+  `cmicl` alpha*=0.6 (0.929 / 9.776 under batch 32; 0.919 / 9.781 before) —
+  all `interior` — against `nominal` 0.891 / 11.302. The objective is a **max**
+  (realized OS). Batch 32 widens `u`, so C-MICL's TIGHT alphas solve less
+  (alpha=0.4: 0.77 -> 0.57, 0.3: 0.64 -> 0.43) while its `dial*` barely moves.
+  - **The test stage is being re-run** (job 23579054, 2026-09-23,
+    `mit_preemptable`, checkpointed per cell). The committed test rows are from
+    2026-09-08: C-MICL's predate batch 32, and `subsample` died at the 12h wall
+    at 4 of 10 draws with **no summary row**, so `feas_worst_case` /
+    `_samestore` are still unmeasured. Until the job lands, every gastric
+    test-stage number below is the 09-08 one.
   - **Read the solved fraction beside every gastric feasibility.** Tested folds
     feasibility orders `cp@0.5` 0.987 > `wrapper@1.0` 0.971 > `wrapper@0.5` 0.961
     > `margin` 0.951 > `cp@1.0` 0.936 > `cmicl` 0.931 > `nominal` 0.925, but the
@@ -532,7 +544,8 @@ margin, is **structural**, not evidence of stability.
     folds, 0.957 full) — the opposite of the reactor, where nominal is
     ODE-infeasible 0/10. The instance has little headroom, so read the gastric
     curve as a small-margin ordering, not as a rescue.
-  - **C-MICL's protocol alpha=0.1 prescribes for almost nobody**: 12/145 fold
+  - **C-MICL's protocol alpha=0.1 prescribes for almost nobody** (09-08 test
+    rows, before batch 32; the batch-32 tuning curve solves 5.6%): 12/145 fold
     contexts and 19/96 held-out arms (one fold gets **zero**). Feasibility on
     those is 1.000 / 0.895. Its guarantee holds where it solves; the result is
     that it mostly does not solve. This is the measurement CLAUDE.md previously
@@ -736,13 +749,13 @@ gastric only.
   as theirs.**
 - **Gastric C-MICL only solves at a loose alpha**, which is why its grid runs the
   **full [0.02, 1]** of a miscoverage level — where it *first solves* is the
-  result. Measured under Ovalle et al.'s raw-`u` semantics: alpha=0.6 solves
-  **89.3%** of contexts and delivers (feas 0.919), while the protocol alpha=0.1
-  solves **8.1%** (2026-09-08) — below `--min-solved`, which is why the whole
-  alpha<0.1 tail is *pruned* rather than scored. That 8.1% is the finding, not a
-  gap: at the level it asserts, C-MICL declines to prescribe for ~92% of the
-  cohort, and the feasibility it reports (1.000 on folds) is conditional on the
-  12/145 contexts it did solve. The older reading — infeasible at alpha=0.1 under both
+  result. Measured under Ovalle et al.'s raw-`u` semantics with batch 32
+  (2026-09-23): alpha=0.6 solves **83.9%** of contexts and delivers (feas
+  0.929), while the protocol alpha=0.1 solves **5.6%** — below `--min-solved`,
+  which is why the whole alpha<0.1 tail is *pruned* rather than scored (89.3% /
+  8.1% before batch 32). That ~6% is the finding, not a gap: at the level it
+  asserts, C-MICL declines to prescribe for ~94% of the cohort, and the
+  feasibility it reports (1.000 tuned) is conditional on the few it solved. The older reading — infeasible at alpha=0.1 under both
   multiplicity settings, half-widths 1.33-1.73 sd(y) against an rhs of 0.6 on five
   constraints at once, 13.8% solved at alpha=0.5 — is the **floored-`u`** regime
   and does not carry over. Budget for it either way: a cell that proves infeasible
