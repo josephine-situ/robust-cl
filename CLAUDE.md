@@ -82,6 +82,10 @@ answer in `logs/.conda_base`. **Prime it once from a login node**
 again. On failure it prints the node and `MODULEPATH` and **aborts the task**
 rather than running python against the wrong interpreter.
 
+**Every `submit_*.sh` mails `END,FAIL` to jositu@mit.edu** (2026-09-23). ORCD
+needs Duo on every new ssh connection, so polling a job from here is not free:
+the email says when there is something to read, and only then is a login worth it.
+
 ## The two sweeps
 
 Described in `method.tex` ("Calibration: primary axis is each method's own dial" /

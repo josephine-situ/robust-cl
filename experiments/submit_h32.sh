@@ -1,5 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=cmicl-h32
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=jositu@mit.edu
 #SBATCH --partition=mit_normal
 #SBATCH --time=2:00:00
 #SBATCH --mem=16G

@@ -1,5 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=cmicl-cost-probe
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=jositu@mit.edu
 #SBATCH --partition=mit_normal
 #SBATCH --time=12:00:00
 # Matches submit_dial_sweep.sh: 16G is far above the reactor's measured peak

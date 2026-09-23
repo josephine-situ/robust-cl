@@ -1,5 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=dial-sweep
+#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-user=jositu@mit.edu
 #SBATCH --partition=mit_normal
 #SBATCH --time=12:00:00
 # 16G is 5x the measured peak. seff/sacct on job 21224636 (2026-08-26):
