@@ -431,3 +431,20 @@ an empty boundary set). Coverage and feasibility under the ODE.
 - Marginal coverage with noisy labels is 0.88 in every family, slightly under
   0.90; consistent with `q` biased down by negative-width calibration rows
   (cmicl.py, WIDTH MODEL), not checked.
+
+**Follow-up (same day, local, refits reproduce every run's `q` exactly).**
+- **C-MICL's feasible region is tiny**: 0.2% (gbm), 0.3% (rf), 0.4% (CART) and
+  2.8% (MLP) of the domain, against 5 to 12% where the nominal `h >= 50`. It
+  holds 0 to 2 of the 200 calibration rows for the trees and 12 for the MLP
+  (seed 0). So `q` is calibrated almost entirely where no decision can go.
+- **The "boundary" reference is weaker than the table suggests.** The
+  bisection had only 11 to 16 C-MICL-feasible anchors for the trees (91 for the
+  MLP) out of about 4,000 domain points, so its boundary points cluster around
+  a few places. The MLP's boundary-to-`x*` drop (0.94 to 0.51) is the
+  trustworthy one; the tree rows of that column are rough.
+- **Assumption 4.1 cannot be tested in its own probability space here**: of
+  1,000 random reference points, 0 to 5 per run are C-MICL-feasible. For the
+  MLP (about 25 points pooled) coverage given C-MICL-feasible is 0.86 against
+  0.96 given ground-truth feasible: the direction of a violation, too few
+  points to call. What the probe does establish is that the guarantee does not
+  transfer to the optimizer's `x*` (feasibility 0.45 to 0.72 against 0.90).
