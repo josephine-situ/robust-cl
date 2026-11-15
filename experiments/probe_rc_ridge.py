@@ -588,6 +588,134 @@ def stage_frontier(args):
     _save(tag + ".json", out)
 
 
+CONF_ALPHAS = [0.5, 0.3, 0.2, 0.1, 0.05, 0.02]
+CAL_FRAC = 0.2        # Ovalle et al.'s 80/20 split (cmicl.py)
+
+
+def solve_lin(cr, instance, coef, cost, nonneg=None):
+    """min c'x  s.t.  coef(x) >= 50 [and nonneg(x) >= 0], both affine in phi(x)."""
+    m, u, x, dphi, t = base_model(cr, instance)
+    lin = lambda cf: cf[0] + gp.quicksum(float(cf[1][j]) * dphi[j] for j in range(cr.p))
+    m.addConstr(lin(coef) >= PRODUCT_FLOOR)
+    if nonneg is not None:
+        m.addConstr(lin(nonneg) >= 0.0)
+    m.setObjective(gp.quicksum(float(cost[i]) * x[i] for i in range(cr.d)), GRB.MINIMIZE)
+    t0 = time.time()
+    m.optimize()
+    out = {"status": int(m.Status), "time": time.time() - t0, "x": None, "obj": np.nan}
+    if m.SolCount > 0:
+        xs = _x_of(cr, u)
+        out.update(x=xs, obj=float(cost @ xs))
+    return out
+
+
+def stage_conformal(args):
+    """QUICK C-MICL on cubic ridge, beside the split-conformal constant margin.
+
+    Per redraw: h = cubic ridge on a random 80% of the design's rows; score the
+    other 20% with |y - h| / u. Two width models:
+      cmicl_poly  u = cubic ridge on h's ABSOLUTE in-sample residuals, used raw
+                  in the score and constrained u(x) >= 0 in the MIP (Ovalle et
+                  al.'s semantics, as in cmicl.py) -- but u is a POLYNOMIAL,
+                  not their 32x32 network, so h - q u is linear in phi(x).
+      conformal   u = 1: split conformal with a constant width (a constant
+                  margin q set by held-out residuals, no oracle).
+    q = s_(k), k = ceil((n_cal+1)(1-alpha)); k > n_cal is recorded unsolved.
+    Same noise stream and cost vectors as R1 and the frontier stage; the
+    nominal row is h itself (fit on 80%), so its cost baseline is C-MICL's own.
+    """
+    inst, md, sigma = setup()
+    last = args.first + args.n_redraws
+    costs = cost_vectors(args.costs, last, inst)
+    span = inst.variable_ub - inst.variable_lb
+    rows, suffix = design_rows(md, args)
+    tag = f"conformal_{args.model}{suffix}_{args.costs}_{args.first:03d}"
+    path = os.path.join(OUT_DIR, tag + ".json")
+    out = json.load(open(path)) if os.path.exists(path) else []
+    n_per = 1 + 2 * len(CONF_ALPHAS)
+    done = {k for k in {r["redraw"] for r in out}
+            if sum(r["redraw"] == k for r in out) == n_per}
+    out = [r for r in out if r["redraw"] in done]
+    for k in range(args.first, last):
+        if k in done:
+            continue
+        rng = np.random.default_rng([args.seed, k])
+        y = md.y_true + sigma * rng.standard_normal(len(md.y_true))
+        perm = np.random.default_rng([args.seed, k, 2]).permutation(rows)
+        n_cal = int(round(CAL_FRAC * len(rows)))
+        cal, tr = perm[:n_cal], perm[n_cal:]
+        cr = build("cubic", inst, md, sigma, fit_rows=tr)
+        h = cr.fit(y[tr])
+        clean = build("cubic", inst, md, sigma).fit(md.y_true)   # all rows, as R1
+        clean_cr = build("cubic", inst, md, sigma)
+        res_tr = np.abs(y[tr] - cr.predict(md.X_train[tr], h))
+        uc = cr.fit(res_tr)                                       # width model
+        u_cal = cr.predict(md.X_train[cal], uc)
+        r_cal = np.abs(y[cal] - cr.predict(md.X_train[cal], h))
+        c = costs[k]
+        obj_range = float(np.abs(c) @ span)
+        plan = [("nominal", 0.0, None)]
+        for a in CONF_ALPHAS:
+            plan += [("cmicl_poly", a, r_cal / u_cal), ("conformal", a, r_cal)]
+        for kind, a, scores in plan:
+            if scores is None:
+                q = 0.0
+            else:
+                kk = int(np.ceil((n_cal + 1) * (1 - a)))
+                q = float(np.sort(scores)[kk - 1]) if kk <= n_cal else np.inf
+            row = {"redraw": k, "kind": kind, "alpha": a, "q": q, "n_cal": n_cal,
+                   "obj_range": obj_range, "obj": np.nan, "status": -1}
+            if np.isfinite(q):
+                if kind == "cmicl_poly":
+                    coef = (h[0] - q * uc[0], h[1] - q * uc[1])
+                    r = solve_lin(cr, inst, coef, c, nonneg=uc)
+                else:
+                    r = solve_lin(cr, inst, (h[0] - q, h[1]), c)
+                row.update(status=r["status"], obj=r["obj"], time_s=r["time"])
+                if r["x"] is not None:
+                    xs = r["x"]
+                    row.update(f_clean=float(clean_cr.predict(xs, clean)[0]),
+                               f_ode=ode_flow(inst, xs),
+                               u_at_x=float(cr.predict(xs, uc)[0]) if kind == "cmicl_poly" else 1.0,
+                               x=xs.tolist())
+            out.append(row)
+        print(f"redraw {k} done", flush=True)
+        _save(tag + ".json", out)
+    _save(tag + ".json", out)
+
+
+def stage_conformal_collect(args):
+    import glob
+    import pandas as pd
+    _, suffix = design_rows(setup()[1], args)
+    files = sorted(glob.glob(os.path.join(
+        OUT_DIR, f"conformal_{args.model}{suffix}_{args.costs}_*.json")))
+    df = pd.DataFrame([r for f in files for r in json.load(open(f))])
+    # cost against the FRONTIER's nominal (h on all of the design's rows, same
+    # cost vector), so these rows read on the RC/margin frontier's axis; the
+    # 80%-row h of this stage is kept as kind="nominal" for its own feasibility
+    ff = glob.glob(os.path.join(OUT_DIR, f"frontier_{args.model}{suffix}_{args.costs}_eps0.1_*.json"))
+    fr = [r for f in ff for r in json.load(open(f)) if r["kind"] == "nominal"]
+    nom = (pd.DataFrame(fr).set_index("redraw")["obj"] if fr else
+           df[df.kind == "nominal"].set_index("redraw")["obj"])
+    print("cost baseline:", "frontier nominal (all rows)" if fr else "this stage's 80% nominal")
+    df["cost_pct"] = 100 * (df.obj - df.redraw.map(nom)) / df.obj_range
+    sv = df.f_ode.notna()
+    df["feas_ode"] = np.where(sv, df.f_ode >= PRODUCT_FLOOR, np.nan)
+    df["feas_clean"] = np.where(sv, df.f_clean >= PRODUCT_FLOOR - 1e-6, np.nan)
+    g = df.groupby(["kind", "alpha"], sort=False)
+    tab = pd.DataFrame({"n": g.redraw.nunique(), "q": g.q.median(),
+                        "solved": g.f_ode.apply(lambda s: s.notna().mean()),
+                        "feas_clean": g.feas_clean.mean(), "feas_ode": g.feas_ode.mean(),
+                        "cost_pct": g.cost_pct.mean(), "u_at_x": g.u_at_x.mean(),
+                        "time_s": g.time_s.mean()}).reset_index()
+    tag = f"conformal_{args.model}{suffix}_{args.costs}"
+    print(f"\n{tag}: {df.redraw.nunique()} redraws, n_cal {int(df.n_cal.iloc[0])}")
+    with pd.option_context("display.width", 200):
+        print(tab.round(3).to_string(index=False))
+    tab.to_csv(os.path.join(OUT_DIR, tag + ".csv"), index=False)
+
+
 def stage_frontier_collect(args):
     """Merge frontier chunks; one row per (kind, setting), and the cheapest
     setting of each kind reaching the target against the ODE."""
@@ -688,7 +816,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True,
                     choices=["solve", "radius", "redraw", "prep", "collect",
-                             "frontier", "frontier_collect"])
+                             "frontier", "frontier_collect", "conformal",
+                             "conformal_collect"])
     ap.add_argument("--first", type=int, default=0, help="first redraw index")
     ap.add_argument("--model",
                     choices=["cubic", "net_frozen", "net_standard", "net_honest"],
@@ -708,4 +837,5 @@ if __name__ == "__main__":
     args = ap.parse_args()
     {"solve": stage_solve, "radius": stage_radius, "redraw": stage_redraw,
      "prep": stage_prep, "collect": stage_collect, "frontier": stage_frontier,
-     "frontier_collect": stage_frontier_collect}[args.stage](args)
+     "frontier_collect": stage_frontier_collect, "conformal": stage_conformal,
+     "conformal_collect": stage_conformal_collect}[args.stage](args)
