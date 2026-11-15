@@ -340,10 +340,11 @@ Detail and the proposal: `paper/paper_plan.md`, "Results of job 29141177".
 - Validity at the optimizer's chosen point because the bound is simultaneous
   is the projection argument of post-selection inference (Berk et al. 2013)
   and inference on winners (Andrews, Kitagawa and McCloskey 2024).
-- The closest single paper is Fiedler, Scherer and Trimpe (AAAI 2021). Their
-  uniform bound for kernel ridge has a noise term equal to a radius times our
-  `‖s(x)‖`, but it targets the true function, so it needs a function-norm
-  bound.
+- The closest single paper is Fiedler, Scherer and Trimpe (AAAI 2021), from
+  learning-based robust control, not constraint learning. Their uniform bound
+  for kernel ridge has a noise term equal to a radius times our `‖s(x)‖`, but
+  it targets the true function, so it needs a function-norm bound. No
+  constraint-learning paper has the margin.
 
 **What survives.**
 - The clean-label target: no norm bound, and a weaker claim, stated openly.
@@ -360,5 +361,73 @@ may fail, as the outline said.
 **Evidence.** `paper/paper_a_literature.md`; outline Section 1.2; 28 new
 entries in `paper/paper_a.bib`, also in Zotero.
 
-**Open.** The full texts of Liu et al. (2005) and Liu (2010) are not read
-yet.
+**Read from the full texts since.** Liu et al. (2005) works over a box only,
+solves each draw exactly with a finite QP, and handles an estimated σ by
+simulating `σ̂/σ` jointly. That last part is a route for T2.
+
+**Open.** Liu (2010) and Hüllen et al. (2020) have no full text.
+
+## 2026-11-14: How the RC paper handles infeasibility on chemotherapy
+
+**Methodology change** (design only; nothing run). Details in `paper/paper_plan.md`,
+"Infeasibility on chemotherapy".
+- **CP's feasibility rollback is not carried over.** It gave up robustness
+  wherever robustness was unaffordable, with no stated level.
+- **Its replacement is a certified level for any decision.**
+  `r̂(x) = minⱼ (bⱼ − f̂ⱼ(x)) / ‖Σⱼ^½ sⱼ(x)‖` satisfies
+  `P(violation and r̂ ≥ r) ≤ P(W > r)` however `x` was chosen (T6, from
+  Theorem 1's proof). Where the RC at the target is infeasible, prescribe the
+  decision with the largest `r̂` and report its level; otherwise abstain.
+- **σ per arm from the binomial sampling error** is the main choice. The RC's
+  margin is a confidence band, which shrinks with n; C-MICL's is a prediction
+  interval, which does not. So the RC may be far less infeasible than
+  C-MICL's 6% prescribed, but only if σ is the label noise and not the
+  residual sd.
+- **H3 and Table 2 move from "fraction prescribed" to "fraction certified at
+  each level, for every method"**, with the judge's verdict beside it. The
+  certified level does not depend on the weak chemo judge.
+
+**Next (after the meeting).** Probe P1: ridge on the gastric training arms,
+max-t per test cohort, under the binomial σ and the residual sd. It is the
+go/no-go for H3 before I6, I7 and I9 are built.
+
+## 2026-11-14: C-MICL's Assumption 4.1 by surrogate family (reactor)
+
+Probe `experiments/probe_cmicl_family_coverage.py`, job 29144969. Ovalle et
+al.'s 100 cost vectors, their fixed rf / gbm / 32x32-MLP settings plus a
+depth-5 CART, `u` the production width net, alpha = 0.1, noise redrawn 5 times
+on the seed-42 designs (rf and gbm have 4: their seed-4 tasks crashed because no
+point in the bisection pool was C-MICL-feasible, and the probe does not handle
+an empty boundary set). Coverage and feasibility under the ODE.
+
+| Family | Coverage: random / boundary / x* | C-MICL feasible at x* | Nominal feasible | Error h − F: boundary → x* |
+|---|---|---|---|---|
+| MLP | 0.96 / 0.94 / 0.51 | 0.60 (sd 0.22) | 0.21 | +0.2 → +1.4 |
+| Gradient boosting | 0.92 / 0.77 / 0.57 | 0.72 (0.05) | 0.46 | −0.8 → +1.1 |
+| Random forest | 0.92 / 0.53 / 0.40 | 0.59 (0.16) | 0.41 | −0.7 → +1.6 |
+| CART depth 5 | 0.90 / 0.29 / 0.40 | 0.45 (0.09) | 0.19 | +5.6 → +4.5 |
+
+**Findings.**
+- **No family reaches 0.9 on their own costs.** C-MICL is at 0.45 to 0.72.
+- **Trees are not uniformly worse.** The single tree is the worst; the
+  ensembles are level with the MLP (rf) or better (gbm). Differences between
+  rf, gbm and the MLP are within the spread over redraws.
+- **The failure is a different mechanism by family.** MLP: the boundary is
+  covered (0.94) and selection alone breaks it, with `u` at `x*` about half its
+  value at random boundary points (the width-dip mechanism, still present at
+  batch 32). Ensembles: the error at random boundary points is pessimistic,
+  and at `x*` it turns optimistic, so selection flips its sign. CART: the
+  boundary itself is already optimistic, before any selection.
+- **The corner mechanism is real, and large for the nominal decision.** The
+  nominal tree `x*` is the cheapest point of its cell in every run, and most of
+  its optimistic error is position within the cell: 3.9 (gbm), 5.1 (rf), 11.4
+  (CART) flow units, against 1.8 to 2.4 from the choice of cell. C-MICL's
+  smooth width pulls `x*` off the corner (14 to 16% of its cell is cheaper),
+  which cuts that term to 0.8 to 1.0.
+- **For Paper A:** the RC's tree margin is constant on a cell and its guarantee
+  is against the clean-label tree, so it cannot see the within-cell error.
+  Forests and boosting on the reactor are likely to fail the ODE as the network
+  did. LinearDT remains untested.
+- Marginal coverage with noisy labels is 0.88 in every family, slightly under
+  0.90; consistent with `q` biased down by negative-width calibration rows
+  (cmicl.py, WIDTH MODEL), not checked.
