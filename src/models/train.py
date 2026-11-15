@@ -83,9 +83,14 @@ def train_model(X: np.ndarray,
             loss=params.get("loss", "squared_epsilon_insensitive"),
         )
     elif model_type == "cart":
+        # `min_samples_split` (here, rf and gbm) and gbm's `max_features` are
+        # read so Ovalle et al.'s fixed settings can be reproduced
+        # (src/methods/cmicl.py, DIFFERENCES #2). Each defaults to sklearn's own
+        # default, so a params dict without the key fits exactly as before.
         estimator = DecisionTreeRegressor(
             max_depth=params.get("max_depth", 5),
             min_samples_leaf=params.get("min_samples_leaf", 1),
+            min_samples_split=params.get("min_samples_split", 2),
             max_features=params.get("max_features", None),
             random_state=random_state,
         )
@@ -97,6 +102,7 @@ def train_model(X: np.ndarray,
             n_estimators=params.get("n_estimators", 50),
             max_depth=params.get("max_depth", 5),
             max_features=max_features,
+            min_samples_split=params.get("min_samples_split", 2),
             random_state=random_state,
         )
     elif model_type == "gbm":
@@ -105,6 +111,8 @@ def train_model(X: np.ndarray,
             learning_rate=params.get("learning_rate", 0.1),
             max_depth=params.get("max_depth", 3),
             subsample=params.get("subsample", 1.0),   # in the CV grid; see svm note
+            min_samples_split=params.get("min_samples_split", 2),
+            max_features=params.get("max_features", None),
             random_state=random_state,
         )
     elif model_type == "xgb":
