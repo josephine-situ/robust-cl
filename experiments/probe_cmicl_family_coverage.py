@@ -380,6 +380,76 @@ def _save(path, obj):
     os.replace(tmp, path)
 
 
+def stage_a41(args):
+    """Assumption 4.1 in its OWN probability space: a random test point.
+
+    Their Theorem 4.1 is over the calibration draw and an exchangeable test
+    point (App. B.2), and Assumption 4.1 is that, at such a point, C-MICL
+    feasibility (CF) and coverage are conditionally independent given ground-
+    truth feasibility (GT). Tested directly: random points UNIFORM inside the
+    CF region (rejection from the design box, which is the training design's
+    distribution), against random domain points. Reports
+      P(GT | CF)            the theorem's conclusion at a random CF point
+      P(cov | CF, GT)  vs  P(cov | GT)     the assumption, GT-feasible half
+      P(cov | CF, ~GT) vs  P(cov | ~GT)    and the infeasible half
+    The comparison points are shared across runs (the truth does not depend on
+    the fit); each run refits h, u, q exactly as stage_run did.
+    """
+    cfg, inst = load()
+    cm = cfg["methods"]["cmicl"]
+    sigma = float(cfg["reactor"].get("noise_std", 2.0))
+    md = inst.constraints[0].models_data[0]
+    mt, mp = FAMILIES[args.family]
+    rng0 = np.random.default_rng(2024)
+    D = box_sample(inst, 4 * args.n_cmp, rng0)
+    D = D[in_domain(inst, D)][: args.n_cmp]
+    FD = ode(D)
+    okD = np.isfinite(FD)
+    D, FD = D[okD], FD[okD]
+    out = {"family": args.family, "n_cmp": int(len(D)), "runs": []}
+    for f in sorted(glob.glob(os.path.join(OUT_DIR, f"{args.family}_s*_a{args.alpha:g}.json"))):
+        seed = json.load(open(f))["seed"]
+        y = md.y_true + sigma * np.random.default_rng([seed, 11]).standard_normal(len(md.y_true))
+        h, u, q, _ = calibrate_conformal_model(
+            md.X_train, y, mt, mp, alpha=args.alpha,
+            cal_frac=float(cm.get("cal_frac", 0.2)), seed=seed,
+            width_model_type=cm.get("width_model_type"),
+            width_model_params=cm.get("width_model_params"), label=args.family)
+        rng = np.random.default_rng([seed, 41])
+        got, drawn = [], 0
+        while sum(len(g) for g in got) < args.n_cf and drawn < 20_000_000:
+            P = box_sample(inst, 500_000, rng)
+            drawn += len(P)
+            P = P[in_domain(inst, P)]
+            cf, _, _ = cmicl_feasible(h, u, q, P)
+            got.append(P[cf])
+        C = np.concatenate(got)[: args.n_cf]
+        FC = ode(C)
+        okC = np.isfinite(FC)
+        C, FC = C[okC], FC[okC]
+        hC, uC = h.predict(C), u.predict(C)
+        hD, uD = h.predict(D), u.predict(D)
+        covC, covD = covered(FC, hC, uC, q), covered(FD, hD, uD, q)
+        gtC, gtD = FC >= FLOOR, FD >= FLOOR
+        cfD, _, _ = cmicl_feasible(h, u, q, D)
+        rate = lambda v: (float(np.mean(v)), int(len(v))) if len(v) else (None, 0)
+        out["runs"].append({
+            "seed": seed, "q": float(q), "box_drawn": int(drawn),
+            "cf_share_of_box": float(sum(len(g) for g in got) / drawn),
+            "gt_given_cf": rate(gtC),
+            "cov_given_cf": rate(covC),
+            "cov_given_cf_gt": rate(covC[gtC]), "cov_given_gt": rate(covD[gtD]),
+            "cov_given_cf_notgt": rate(covC[~gtC]), "cov_given_notgt": rate(covD[~gtD]),
+            "cf_given_gt_domain": rate(cfD[gtD]),
+            "err_cf": float(np.mean(hC - FC)), "u_cf": float(np.mean(uC)),
+        })
+        r = out["runs"][-1]
+        print(f"{args.family} s{seed}: P(GT|CF)={r['gt_given_cf']}  P(cov|CF,GT)={r['cov_given_cf_gt']} "
+              f"vs P(cov|GT)={r['cov_given_gt']}  P(cov|CF,~GT)={r['cov_given_cf_notgt']} "
+              f"vs P(cov|~GT)={r['cov_given_notgt']}", flush=True)
+    _save(os.path.join(OUT_DIR, f"a41_{args.family}_a{args.alpha:g}.json"), out)
+
+
 def stage_collect(args):
     def m(v):
         v = [a for a in v if a is not None and np.isfinite(a)]
@@ -425,7 +495,11 @@ def stage_collect(args):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--stage", required=True, choices=["prep", "run", "collect"])
+    ap.add_argument("--stage", required=True, choices=["prep", "run", "a41", "collect"])
+    ap.add_argument("--n-cf", type=int, default=300,
+                    help="a41: random points inside C-MICL's feasible region, per run")
+    ap.add_argument("--n-cmp", type=int, default=2000,
+                    help="a41: random domain points for the unconditional rates")
     ap.add_argument("--family", choices=sorted(FAMILIES), default="rf")
     ap.add_argument("--seed", type=int, default=0, help="noise redraw and calibration split")
     ap.add_argument("--alpha", type=float, default=0.1)
@@ -434,4 +508,5 @@ if __name__ == "__main__":
     ap.add_argument("--n-boundary", type=int, default=200)
     ap.add_argument("--k-cell", type=int, default=20)
     args = ap.parse_args()
-    {"prep": stage_prep, "run": stage_run, "collect": stage_collect}[args.stage](args)
+    {"prep": stage_prep, "run": stage_run, "a41": stage_a41,
+     "collect": stage_collect}[args.stage](args)

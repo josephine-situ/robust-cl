@@ -40,6 +40,13 @@ if [ "${STAGE:-run}" = "prep" ]; then
 fi
 
 FAMILIES=(rf gbm mlp cart)
+# Assumption 4.1 at random points, one task per family (after the run stage):
+#   sbatch --partition=mit_quicktest --time=0:15:00 --no-requeue --array=0-3 \
+#          --export=ALL,STAGE=a41 experiments/submit_cmicl_family.sh
+if [ "${STAGE:-run}" = "a41" ]; then
+    exec python experiments/probe_cmicl_family_coverage.py --stage a41 \
+        --family "${FAMILIES[${SLURM_ARRAY_TASK_ID:-0}]}"
+fi
 T="${SLURM_ARRAY_TASK_ID:-0}"
 FAMILY="${FAMILIES[$(( T / 5 ))]}"
 SEED=$(( T % 5 ))
