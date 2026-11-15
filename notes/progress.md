@@ -448,3 +448,28 @@ an empty boundary set). Coverage and feasibility under the ODE.
   0.96 given ground-truth feasible: the direction of a violation, too few
   points to call. What the probe does establish is that the guarantee does not
   transfer to the optimizer's `x*` (feasibility 0.45 to 0.72 against 0.90).
+
+**Assumption 4.1 tested directly** (job 29148520, stage `a41`). 300 random
+points uniform inside C-MICL's feasible region per run (rejection from the
+design box), against 2,000 random domain points. Means over 4 to 5 redraws.
+
+| Family | Truth feasible: random feasible point / `x*` | Coverage given truly feasible: in C-MICL region / anywhere |
+|---|---|---|
+| MLP | 0.99 / 0.60 | 0.93 / 0.97 |
+| Gradient boosting | 0.96 / 0.72 | 0.66 / 0.94 |
+| Random forest | 0.93 / 0.59 | 0.49 / 0.93 |
+| CART depth 5 | 0.45 / 0.45 | 0.66 / 0.96 |
+
+- **The theorem's conclusion holds at random points for the MLP and the
+  ensembles** (0.93 to 0.99), and fails for the single tree (0.45). For those
+  three the shortfall at `x*` is the optimizer's selection.
+- **Assumption 4.1 fails for every tree family**: coverage among truly feasible
+  points is 0.49 to 0.66 inside C-MICL's region against 0.93 to 0.96 overall.
+  It nearly holds for the MLP (0.93 against 0.97). The ensembles still meet the
+  conclusion because their miscoverage there is on the safe side: the
+  assumption is sufficient, not necessary.
+- Not used: the infeasible half of the assumption. With coverage defined for
+  the true value, covered and C-MICL-feasible imply truly feasible, so that
+  half is 0 by construction (0 in every run). Whether their coverage event is
+  for the true value or the noisy label decides whether that is a flaw in the
+  assumption or in this measurement; check against their App. B first.
