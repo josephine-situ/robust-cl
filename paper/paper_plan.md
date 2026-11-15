@@ -124,9 +124,23 @@ the cubic.
    here, and on the cubic its extra margin buys ODE feasibility (0.80 to
    0.95) by absorbing the bias's spread, not by correcting for selection.
    Figure 3's argument for the simulated radius needs either a setting where
-   pointwise falls short (smaller ε, smaller n, higher dimension) or a
-   different framing. Jobs 29142767 and 29142768 (cubic at ε = 0.05 and 0.2,
-   `mit_quicktest`) are the first check.
+   pointwise falls short (smaller n, higher dimension) or a different
+   framing. Cubic at ε = 0.05 and 0.2 (jobs 29142767, 29142768, 100 redraws
+   each) confirms it across ε:
+
+   | ε | Target | Pointwise: clean / ODE | Simulated: clean / ODE | Closed-form: clean / ODE | Cost, simulated |
+   |---|---|---|---|---|---|
+   | 0.05 | 0.95 | 0.95 / 0.81 | 1.00 / 0.97 | 1.00 / 1.00 | 4.5% |
+   | 0.1 | 0.90 | 0.90 / 0.80 | 1.00 / 0.95 | 1.00 / 1.00 | 4.2% |
+   | 0.2 | 0.80 | 0.77 / 0.76 | 1.00 / 0.93 | 1.00 / 1.00 | 4.0% |
+
+   The pointwise radius sits on its target against the clean-label model at
+   every ε (0.77 against 0.80 is within one standard error). The simulated
+   radius never violates the clean-label model and moves little with ε (6.9
+   to 8.0 in R, 4.0 to 4.5% in cost), so it overshoots most at large ε.
+   Against the ODE it holds 0.93 to 0.97, the pointwise radius 0.76 to 0.81.
+   So on this instance the simulated radius pays for the bias's spread, not
+   for selection.
 5. **The certified radius is needed and cheap enough.** Enumeration
    understates `W` by about 0.17σ on the network. At 4 to 43 seconds per
    draw, a certified radius from 200 draws is under three hours on one task,

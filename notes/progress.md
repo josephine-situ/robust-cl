@@ -321,8 +321,11 @@ Reactor, Ovalle et al.'s 100 cost vectors, noise redrawn per run, ε = 0.1,
 - **No selection effect at ε = 0.1**: the pointwise radius already reaches
   0.90 to 0.92 against the clean-label model. The simulated radius is
   conservative for its own target; on the cubic its extra margin is what
-  lifts ODE feasibility from 0.80 to 0.95. Cubic at ε = 0.05 and 0.2 is
-  running (jobs 29142767, 29142768).
+  lifts ODE feasibility from 0.80 to 0.95. Cubic at ε = 0.05 and 0.2 (jobs
+  29142767, 29142768) says the same: pointwise 0.95 and 0.77 against the
+  clean-label model (targets 0.95, 0.80), simulated 1.00 at every ε and 0.93
+  to 0.97 against the ODE. So the simulated radius pays for bias spread on
+  this instance, not for selection. Figure 3's framing is open.
 - **The enumerated radius understates the certified one** by 0.10 to 0.24σ on
   the network, so E1 needs the solver-certified radius (4 to 19 s per draw).
 
