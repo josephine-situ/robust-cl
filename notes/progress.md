@@ -256,3 +256,40 @@ Outline: `paper/paper_outline_v3.md` (supersedes v2). Plan rewritten in
   lead with.
 
 Next: the `rc` method for ridge, the redraw harness, then the head-to-head.
+
+### Same day, late: the lead model is the network; first go/no-go probe
+
+Outline v3 and `paper/paper_plan.md` revised. Nothing on the paper's design
+has finished running.
+
+**Methodology changes.**
+- **Lead model on the reactor: Ovalle et al.'s (32, 32) network with the RC on
+  its last layer**, not cubic ridge. Cubic ridge on the balanced cost: nominal
+  ODE-feasible in 96 of 100 redraws, because the cubic's bias at the optimum
+  (about 1.8 flow units) is on the safe side. No failure to fix.
+- **Reactor design: Ovalle et al.'s 100 cost vectors, noise redrawn for each.**
+  The fixed-cost design is dropped.
+- **Every baseline embeds the same model.** C-MICL also gets one row as
+  published, so the baseline is not handicapped.
+- **Where the network's hidden layers come from is open.** Freezing them on a
+  second noise draw meets the theorem but needs data a practitioner lacks. A
+  sample split (half the rows each) meets it with one dataset; in a local check
+  the last layer reaches R² 0.944 on its half, against 0.958 for the full
+  network.
+- **Why the earlier methods are out:** random-bank cutting planes carry no
+  guarantee and needed the oracle to set rho and tau; the RHS margin and the
+  wrapper have no setting tied to a violation level. The margin and the
+  wrapper stay as baselines. Table in `paper_plan.md`.
+
+**Data.** The reactor (1,000 designs, σ = 2, ODE judge) is enough for E1. On
+Ovalle et al.'s costs, the 2026-09-23 probe already shows nominal at 0.00 and
+C-MICL at alpha = 0.1 at 0.81, so the premise likely holds and C-MICL is the
+close competitor.
+
+**Running.** Job 29141177 (`mit_preemptable`, 32 tasks): 100 redraws each for
+cubic ridge, the frozen network, the standard network and the sample-split
+network, at the nominal, pointwise, simulated and closed-form radii, plus a
+check of the enumerated radius against the solver for the network.
+
+**Also found.** The gastric test stage (job 23579054) hit its 2-day wall on
+2026-09-26; its partial output and checkpoint are on the cluster, unread.

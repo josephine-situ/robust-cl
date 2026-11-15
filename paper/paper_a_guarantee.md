@@ -102,7 +102,8 @@ counts as $m = 2$.
 
 | Case | Radius $R/\sigma$ | Example |
 |---|---|---|
-| Pointwise (fixed $x$, not valid for $x^*$) | $\sqrt{2\ln(1/\epsilon)}$ | 2.45 at $\epsilon = 0.05$ |
+| Pointwise, Gaussian (fixed $x$, not valid for $x^*$; the value the outline and experiments use) | $z_{1-\epsilon}$ | 1.28 at $\epsilon = 0.1$, 1.64 at $0.05$ |
+| Pointwise, sub-Gaussian tail bound (same caveat) | $\sqrt{2\ln(1/\epsilon)}$ | 2.45 at $\epsilon = 0.05$ |
 | Subspace, Gaussian | $\sqrt{\chi^2_{d,1-\epsilon}}$ | 4.28 at $d = 10$ |
 | Subspace, $m = 5$ constraints | $\sqrt{\chi^2_{d,1-\epsilon/m}}$ | 4.82 at $d = 10$ |
 | Finite | $\sqrt{2\ln(K/\epsilon)}$ | 3.90 at $K = 100$ |

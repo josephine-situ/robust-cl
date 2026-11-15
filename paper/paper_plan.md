@@ -11,13 +11,15 @@ The question for tonight: is the paper's direction worthwhile? That needs two
 answers. Does the nominal decision fail on the model the literature uses, and
 does the RC fix it?
 
-**Runs.** On the cluster: `experiments/submit_rc_probe.sh`, job 29138280, a
-21-task array on `mit_normal` (3h wall, 8 cores each), running
-`experiments/probe_rc_ridge.py`. Tasks 0 to 9 are R2, 10 to 19 are R3 (ten
-redraws each), task 20 is R1. Each task saves after every redraw and resumes
-from its own file. All 21 tasks were still pending when checked later on
-2026-11-14, with no output yet. SLURM emails when the array ends. To read the results, on
-the cluster: `python experiments/probe_rc_ridge.py --stage collect --costs paper`.
+**Runs.** On the cluster: `experiments/submit_rc_probe.sh`, job 29141177, a
+32-task array on `mit_preemptable` with `--requeue` (8h wall, 8 cores each),
+running `experiments/probe_rc_ridge.py`. Tasks 0 to 9 are R2, 10 to 19 R3,
+20 to 29 R4 (ten redraws each), task 30 is R1, task 31 the radius check. Each
+redraw task saves after every redraw and resumes from its own file, so a
+preemption costs one redraw. (The first submission, job 29138280 on
+`mit_normal`, was cancelled: the scheduler put its start about 21 hours out.)
+SLURM emails when the array ends. To read the results, on the cluster:
+`python experiments/probe_rc_ridge.py --stage collect --costs paper`.
 
 Reactor, ε = 0.1, Ovalle et al.'s cost vectors (their exact random stream), one
 cost vector and one fresh noise draw per redraw. Each redraw is solved at four
@@ -26,9 +28,11 @@ clean-label model and the ODE.
 
 | Run | Model | Redraws | What it answers | Log |
 |---|---|---|---|---|
-| R1 | Cubic ridge | 100 | Was the 0.96 nominal feasibility under the balanced cost a property of the model or of that one cost direction? | `rc_probe_29138280_20.out` |
-| R2 | Network (32, 32), hidden layers frozen on an independent noise draw, last layer refit by ridge | 100 | The case where the theorem holds exactly for a network. Does the last-layer margin deliver against the ODE? | `rc_probe_29138280_{0..9}.out` |
-| R3 | Same network, hidden layers retrained on each redraw's own labels (how it would be fitted in practice) | 100 | How far is standard fitting from the theorem: violation rate against the clean-label model with the same hidden layers, and against the ODE | `rc_probe_29138280_{10..19}.out` |
+| R1 | Cubic ridge | 100 | Was the 0.96 nominal feasibility under the balanced cost a property of the model or of that one cost direction? | `rc_probe_29141177_30.out` |
+| R2 | Network (32, 32), hidden layers frozen on an independent noise draw, last layer refit by ridge | 100 | The case where the theorem holds exactly for a network. Does the last-layer margin deliver against the ODE? Idealized: a practitioner has no second noise draw. | `rc_probe_29141177_{0..9}.out` |
+| R3 | Same network, hidden layers retrained on each redraw's own labels (how it would be fitted in practice) | 100 | How far is standard fitting from the theorem: violation rate against the clean-label model with the same hidden layers, and against the ODE | `rc_probe_29141177_{10..19}.out` |
+| R4 | Same network, sample-split on each redraw: hidden layers on a random half of the rows, last layer on the other half | 100 | The theorem's condition met with one dataset, which is what a practitioner can do. Costs half the rows in the last layer (R² 0.944 on its half in a local check, against 0.958 for the full network). This is the candidate design for E1. | `rc_probe_29141177_{20..29}.out` |
+| — | Radius check: solver-certified `W` against enumeration for the R2 network, 10 noise draws | — | Whether the enumerated radius plus 0.1σ covers the solver's `W` on the network (on the cubic it did not in six of ten draws) | `rc_probe_29141177_31.out`, `radius_net_frozen.json` |
 
 Logs are in `logs/` and JSON outputs in `results/paper_a/prelim/`, both on the
 cluster. One network solve takes 15 to 100 seconds, so a ten-redraw task is
@@ -42,7 +46,9 @@ not solver-certified. The frozen network is trained once and saved
 | Outcome | Meaning for the paper |
 |---|---|
 | R2 and R3: nominal fails against the ODE, RC at the simulated radius reaches about 0.9 | The direction holds with the network as lead model. |
-| R2 delivers, R3 does not | The method needs honest fitting of the hidden layers in practice, not only for the theorem. Still a paper, with that as a stated requirement. |
+| R2 delivers, R3 does not | The method needs honest fitting of the hidden layers in practice, not only for the theorem. Still a paper, with that as a stated requirement, and R4 decides whether the requirement is affordable. |
+| R4 delivers at a cost close to R2's | E1 uses the sample split. The "uses every training row" claim goes; the comparison with C-MICL's 80% becomes half the rows against 80%, stated as such. |
+| R2 delivers, R4 does not | Half the rows is too few for the last layer. Try a smaller structure split (for example 30/70) before giving up the network. |
 | Neither delivers against the ODE, both deliver against the clean-label model | The last-layer margin is too small against the network's own error. The network cannot be the lead model. Fall back to models where `s(x)` captures all of the fit (ridge on fixed features, forests), and the paper has to say why. |
 | R1: nominal fails under their costs and the RC fixes it | Cubic ridge can serve as a lead or second model after all. |
 
@@ -51,6 +57,11 @@ hidden layers the nominal decision has ODE flow 49.4 and the simulated radius
 gives 51.2; with standard fitting nominal has 44.4 and the simulated radius
 46.6, with a margin of only 1.1. So the concern about the last-layer RC is
 real, and R3 is the run that settles it.
+
+Every summary table now reports, beside each violation rate, the mean shortfall
+below the floor among the violating runs and the worst one, against both the
+clean-label model and the ODE. A rate of 0.85 reads differently when the
+misses are 0.2 flow units than when they are 5.
 
 **Writing.** Start `paper/paper.tex`. Sections that are settled are written as
 prose: the problem, the sensitivity vector and the counterpart, Theorem 1 and
@@ -240,6 +251,31 @@ the gap to a 0.9 target is two to three standard errors at 100 runs.
 - **Classification is a paragraph in the discussion.**
 - **No formal hypothesis tests.** Means with standard errors.
 
+## Open design points from the 2026-11-14 review
+
+1. **Where the hidden layers come from.** E1 as written trains them on a
+   second noise draw of the same inputs, which a practitioner does not have.
+   That makes "uses every training row" and the rows-used column against
+   C-MICL unfair to C-MICL. R4 tests the one-dataset alternative (sample
+   split). Until R4 is read, the abstract's "uses every training row" and the
+   80%-against-all row in the comparison table are provisional.
+2. **Is 100 redraws enough?** C-MICL as prescribed was at 0.81 on their costs
+   (2026-09-23 probe). At 100 runs the standard error near 0.85 is 0.036, so
+   a 0.9 against 0.81 difference is about two standard errors. Decide after R2
+   to R4: if the RC lands within 0.05 of C-MICL, raise E1 to 300 redraws for
+   the as-prescribed rows (Table 1) and keep 100 for the sweep (Figure 2).
+3. **C-MICL as published.** Running C-MICL on our shared network (frozen
+   hidden layers, ridge last layer, sklearn) is not their setting. Add one row
+   with C-MICL fitted end to end as they fit it (their network trained in
+   full, their width model at batch 32), so the baseline cannot be called
+   handicapped. The shared-model rows stay the comparison of margins.
+4. **Pointwise radius.** The Gaussian value `σ z(1−ε)` (1.28σ at ε = 0.1) is
+   the one used everywhere. `paper_a_guarantee.md`'s table had the
+   sub-Gaussian `√(2 ln(1/ε))`; it is now marked as such.
+5. **Novelty against simultaneous bands and post-selection inference** is
+   still unchecked (Section 1.2 of the outline). It is the largest open risk
+   that no experiment addresses.
+
 ## Honest fitting
 
 Not required by the method. It is a condition of the theorem for models whose
@@ -257,9 +293,12 @@ margin understates the error.
 
 How the paper handles it:
 
-- **Reactor (E1):** the hidden layers are trained once on an independent noise
-  draw and frozen; each redraw refits only the last layer. The condition holds
-  exactly, and every row of the redraw is used.
+- **Reactor (E1):** to be decided by R2 against R4. Either the hidden layers
+  are trained once on an independent noise draw and frozen (R2: the condition
+  holds exactly and every row is used, but it needs a second dataset), or each
+  redraw is sample-split (R4: one dataset, half the rows in the last layer).
+  R4 is the version a practitioner can run, so it is the default if it
+  delivers.
 - **Chemotherapy (E2):** the RC is applied to the fitted models with their
   structure frozen, with standard fitting. The paper says the guarantee is then
   empirical. A1 measures on the reactor what standard fitting costs in
@@ -279,7 +318,8 @@ What changes for the RC:
   where the existing selection picked XGBoost, ridge for the two where it
   picked elastic net. Every baseline uses the same models. The accuracy given
   up against the existing picks is reported, and the paper states that the
-  choice used the labels.
+  choice used the labels. This departs from step 0 of the recipe (fix the
+  model before looking at the labels); the outline says so in Section 6.3.
 - **σ is estimated**, per outcome. Two estimates are available: out-of-fold
   residuals, and the binomial `p(1−p)/n_arm` (toxicities only, and it uses the
   noisy `p`). Pick one for the main result. Open.

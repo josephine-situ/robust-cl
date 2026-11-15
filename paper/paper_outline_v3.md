@@ -53,7 +53,8 @@ Draft, with placeholders for the numbers:
 > constraint. We propose a robust counterpart whose margin `R‖s(x)‖` grows with
 > the sensitivity of the prediction at `x` to the training labels. It applies to
 > ridge regression, trees and forests, and last-layer networks, uses every
-> training row, and is solved as a mixed-integer second-order cone problem or by
+> training row [provisional: false for a network fitted by sample split, see
+> R4 in `paper_plan.md`], and is solved as a mixed-integer second-order cone problem or by
 > finitely many cuts. We prove that, at any feasible decision, however it was
 > chosen, the probability of violating the constraint of the model fitted on
 > noise-free labels is at most ε, and give a radius computed by simulation from
@@ -148,7 +149,10 @@ Written so that a reader can implement the method from this section alone.
   constant margin and the robust counterpart, with the true boundary.
 - **Choosing R: the recipe.**
   0. Fix the model before looking at the labels: class, architecture and
-     hyperparameters. Ovalle et al. fix their networks the same way.
+     hyperparameters. Ovalle et al. fix their networks the same way. For a
+     network, train the hidden layers on one part of the rows and refit the
+     last layer on the rest, so `s(x)` does not depend on the noise it is
+     meant to bound. **[to run: R4 in `paper_plan.md` decides the split]**
   1. Estimate σ from out-of-fold residuals (an upper confidence bound).
   2. Simulate the radius for the target ε (Section 3).
   3. Solve. No ground truth and no held-out calibration rows are used.
@@ -223,8 +227,9 @@ Kept to about four pages. Proofs in the appendix.
 - **C-MICL** (Ovalle et al.): their published settings.
 - **One model for everyone.** On each problem every method embeds the same
   model class, so a difference in the results is a difference in the margin.
-  On the reactor that is Ovalle et al.'s network, which is also C-MICL's
-  published setting.
+  On the reactor that is Ovalle et al.'s architecture, trained as Section 6.1
+  describes, which is not how they train it. So C-MICL also gets one row
+  fitted end to end as published, so that the baseline is not handicapped.
 - **Conservatism parameter.** Each method has one parameter that trades cost for
   safety: the radius `R` (ours), the margin `m`, the wrapper's violation limit
   α, C-MICL's miscoverage α. Two comparisons, both defined here:
@@ -246,15 +251,19 @@ Three problems. Each subsection opens with its question.
 - Reactor of Carrasco and Lima, as set up by Ovalle et al.: one learned
   constraint, ODE oracle, σ = 2. Chosen because the truth is integrated, not
   fitted, so the training noise can be redrawn and every decision judged exactly.
-- Model: Ovalle et al.'s network, fixed in advance. Hidden layers are trained
-  once on an independent noise draw and frozen; the last layer is refit on each
-  redraw.
+- Model: Ovalle et al.'s network, fixed in advance. On each redraw the hidden
+  layers are trained on part of the rows and the last layer is refit on the
+  rest (sample split), which a practitioner with one dataset can do. A second
+  row freezes the hidden layers from an independent noise draw: the idealized
+  case, every row in the last layer. **[R2 against R4 decides which leads]**
 - Design: Ovalle et al.'s 100 cost vectors, with the training noise redrawn for
   each. The radius does not depend on the cost, so one radius serves all 100.
 - **Table 1.** Per method at target 0.9: ground-truth feasibility, cost,
-  fraction solved, solve time, training rows used. Means with standard errors.
-  Feasibility is over solved runs, with the fraction solved beside it. The RC
-  row uses the estimated σ; the known σ = 2 is a second row.
+  fraction solved, solve time, training rows used, and the mean shortfall of
+  the violating runs. Means with standard errors. Feasibility is over solved
+  runs, with the fraction solved beside it. The RC row uses the estimated σ;
+  the known σ = 2 is a second row. Number of redraws: 100, raised to 300 for
+  the as-prescribed rows if the RC and C-MICL land within 0.05 of each other.
 - **Figure 2.** Cost against ground-truth feasibility as each method's
   conservatism parameter varies. The claim is that the RC curve lies below the
   others.
@@ -283,7 +292,8 @@ constraints bind and σ has to be estimated?* **[to run]**
 - Model per outcome fixed before any robust run: a forest where the existing
   selection picked a tree model, ridge where it picked a linear one. The same
   models for every baseline. This is the paper's test of the tree-ensemble
-  formulation.
+  formulation. That choice used the labels (the existing selection is on R²),
+  which departs from step 0 of the recipe; say so.
 - **Table 2.** Fraction of cohorts prescribed for (the main measure here,
   since the judge separates methods weakly on feasibility), fraction of
   prescriptions meeting every toxicity limit, and predicted survival, with the
