@@ -293,3 +293,69 @@ check of the enumerated radius against the solver for the network.
 
 **Also found.** The gastric test stage (job 23579054) hit its 2-day wall on
 2026-09-26; its partial output and checkpoint are on the cluster, unread.
+
+### Same day, night: go/no-go probe results (job 29141177)
+
+Reactor, Ovalle et al.'s 100 cost vectors, noise redrawn per run, ε = 0.1,
+σ = 2 known. Feasibility against the clean-label model / the ODE.
+
+| Model | Nominal (ODE) | RC at simulated radius | RC at closed-form radius |
+|---|---|---|---|
+| Cubic ridge | 0.66 | 1.00 / 0.95 (+4.2% of objective range) | 1.00 / 1.00 (+8.6%) |
+| Network, hidden layers frozen | 0.18 | 1.00 / 0.52 | 1.00 / 0.79 |
+| Network, sample-split | 0.25 | 1.00 / 0.42 | 1.00 / 0.61 |
+| Network, standard fitting | 0.23 | 0.76 / 0.33 | 0.98 / 0.45 |
+
+**Findings.**
+- **The method works on cubic ridge**: under Ovalle et al.'s costs its nominal
+  decision fails (0.66; the 0.96 earlier was the balanced cost), and the RC
+  delivers 0.95 against the ODE with misses of 0.14 flow units on average.
+- **On the network it does not, and the cause is bias, not noise.** At the
+  nominal optimum the network's clean-label model overstates the ODE in 80 to
+  90% of runs (by 1.6 to 2.8 flow units on average); the cubic's error there
+  has mean zero. The optimizer selects on the network's misfit, which a
+  label-noise margin cannot see. Proposal for DB: cubic ridge leads, and the
+  network becomes the example of where the margin is not enough.
+- **Standard fitting breaks the guarantee**: 0.76 against the clean-label
+  model at a 0.90 target, which supports the honest-fitting condition.
+- **No selection effect at ε = 0.1**: the pointwise radius already reaches
+  0.90 to 0.92 against the clean-label model. The simulated radius is
+  conservative for its own target; on the cubic its extra margin is what
+  lifts ODE feasibility from 0.80 to 0.95. Cubic at ε = 0.05 and 0.2 is
+  running (jobs 29142767, 29142768).
+- **The enumerated radius understates the certified one** by 0.10 to 0.24σ on
+  the network, so E1 needs the solver-certified radius (4 to 19 s per draw).
+
+Detail and the proposal: `paper/paper_plan.md`, "Results of job 29141177".
+
+## 2026-11-14: Paper A literature check narrows the novelty claim
+
+**Finding.** Two of the three things the outline called new are prior work.
+- Bands restricted to a region of the covariates, with the critical constant
+  simulated by optimizing over that region on each draw, are Liu et al.
+  (JCGS 2005) for linear models over a box.
+- Validity at the optimizer's chosen point because the bound is simultaneous
+  is the projection argument of post-selection inference (Berk et al. 2013)
+  and inference on winners (Andrews, Kitagawa and McCloskey 2024).
+- The closest single paper is Fiedler, Scherer and Trimpe (AAAI 2021). Their
+  uniform bound for kernel ridge has a noise term equal to a radius times our
+  `‖s(x)‖`, but it targets the true function, so it needs a function-norm
+  bound.
+
+**What survives.**
+- The clean-label target: no norm bound, and a weaker claim, stated openly.
+- The decision set as a mixed-integer region, with each simulated supremum a
+  global MIP solved to a bound.
+- One form for ridge, last-layer networks and forests.
+- The band imposed as a constraint.
+
+The robust constraint-learning papers (Alcántara and Ruiz, Cremer et al.,
+Oztekin et al.) do not overlap. Xavier et al. is learning-to-optimize and is
+dropped. C-MICL's at-optimum guarantee rests on an assumption its authors say
+may fail, as the outline said.
+
+**Evidence.** `paper/paper_a_literature.md`; outline Section 1.2; 28 new
+entries in `paper/paper_a.bib`, also in Zotero.
+
+**Open.** The full texts of Liu et al. (2005) and Liu (2010) are not read
+yet.

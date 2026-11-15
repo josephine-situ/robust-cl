@@ -2,8 +2,9 @@
 
 Revised 2026-11-14 (late, after the first solver test and a narrowing of
 scope). Outline: `paper_outline_v3.md`. Proofs: `paper_a_guarantee.md` (its
-Sections 5 and 6 are superseded by this file). Nothing below has been run on
-the paper's lead model. The only results are under "Results so far".
+Sections 5 and 6 are superseded by this file). Results: the go/no-go probe
+(job 29141177, under "Tonight") and the earlier local checks under "Results
+so far". No baseline has been run on the paper's design.
 
 ## Tonight (2026-11-14), before the meeting with DB
 
@@ -62,6 +63,86 @@ Every summary table now reports, beside each violation rate, the mean shortfall
 below the floor among the violating runs and the worst one, against both the
 clean-label model and the ODE. A rate of 0.85 reads differently when the
 misses are 0.2 flow units than when they are 5.
+
+### Results of job 29141177 (2026-11-14)
+
+All 32 tasks completed, every run solved to optimality. Reactor, Ovalle et
+al.'s 100 cost vectors with the noise redrawn for each, ε = 0.1, σ = 2 known.
+Feasibility over 100 redraws; standard error at most 0.05. "Cost" is the
+increase over nominal as a percentage of the objective's range (`|c|·span`).
+Outputs: `results/paper_a/prelim/redraw_*_paper_eps0.1_*.json`.
+
+| Model | Nominal, ODE | Pointwise: clean / ODE | Simulated: clean / ODE | Closed-form: clean / ODE | Cost, simulated / closed-form |
+|---|---|---|---|---|---|
+| R1 cubic ridge | 0.66 | 0.90 / 0.80 | **1.00 / 0.95** | 1.00 / 1.00 | 4.2% / 8.6% |
+| R2 network, frozen | 0.18 | 0.91 / 0.22 | 1.00 / 0.52 | 1.00 / 0.79 | 2.2% / 3.3% |
+| R4 network, sample-split | 0.25 | 0.92 / 0.28 | 1.00 / 0.42 | 1.00 / 0.61 | 3.1% / 5.2% |
+| R3 network, standard fitting | 0.23 | 0.42 / 0.29 | 0.76 / 0.33 | 0.98 / 0.45 | 1.9% / 3.6% |
+
+Why the network fails: bias at the nominal optimum, where the fitted model
+equals the floor. (Clean-label model − 50) is the label-noise effect the
+margin is built for; (ODE − clean-label model) is the model's bias, which no
+label-noise margin sees.
+
+| Model | Noise effect, mean | Bias, mean (sd) | Bias negative in |
+|---|---|---|---|
+| Cubic ridge | +0.74 | −0.05 (1.30) | 43% of runs |
+| Network, frozen | +0.98 | −1.56 (1.67) | 90% |
+| Network, sample-split | +0.88 | −2.78 (3.22) | 79% |
+| Network, standard | +0.26 | −2.23 (2.72) | 80% |
+
+Radius check (R2 network, 10 draws): the solver's `W` is 0.10 to 0.24σ above
+enumeration (mean 0.17σ), so enumeration plus 0.1σ is too small on every
+draw. Each certified `W` took 4 to 19 seconds on the network, against 43 on
+the cubic.
+
+**What it says.**
+
+1. **The direction holds, with cubic ridge.** Under Ovalle et al.'s costs the
+   nominal cubic decision is ODE-feasible in only 0.66 of runs (it was 0.96
+   on the balanced cost, which was a property of that one cost direction).
+   The RC at the simulated radius reaches 0.95, and the misses are small (mean
+   0.14 flow units, worst 0.32), at 4.2% of the objective range. This is the
+   reading-table row "R1: nominal fails under their costs and the RC fixes
+   it".
+2. **The network cannot be the lead model.** Every honest network variant
+   meets the theorem against the clean-label model (1.00 at the simulated
+   radius) and misses badly against the ODE (0.42 to 0.52). This is the
+   reading-table row "neither delivers against the ODE, both deliver against
+   the clean-label model". The cause is measured, not inferred: at the
+   optimum the network's bias is negative in 80 to 90% of runs, so the
+   optimizer is exploiting the network's misfit, which a label-noise margin
+   cannot see. The cubic's bias has mean zero and no selection. The sample
+   split makes it worse (a hidden layer fitted on 500 rows misfits more).
+3. **Standard fitting breaks the guarantee itself**: 0.76 against the
+   clean-label model at the simulated radius, target 0.90. This is the
+   evidence for the honest-fitting condition, and it can replace A1 (forest)
+   with the network as the example.
+4. **The selection effect does not show at ε = 0.1.** The pointwise radius
+   already meets the target against the clean-label model on every honest fit
+   (0.90 to 0.92). So the simulated radius is conservative for its own target
+   here, and on the cubic its extra margin buys ODE feasibility (0.80 to
+   0.95) by absorbing the bias's spread, not by correcting for selection.
+   Figure 3's argument for the simulated radius needs either a setting where
+   pointwise falls short (smaller ε, smaller n, higher dimension) or a
+   different framing. Jobs 29142767 and 29142768 (cubic at ε = 0.05 and 0.2,
+   `mit_quicktest`) are the first check.
+5. **The certified radius is needed and cheap enough.** Enumeration
+   understates `W` by about 0.17σ on the network. At 4 to 43 seconds per
+   draw, a certified radius from 200 draws is under three hours on one task,
+   and it splits across an array.
+
+**Proposed for DB (not yet adopted):**
+
+- Lead model on the reactor: cubic ridge (the theorem holds with no caveat,
+  the nominal fails, the RC delivers). The network moves to a short section
+  or appendix as the case where the label-noise margin is not enough because
+  the optimizer exploits bias, which is also a finding about C-MICL's
+  advantage (its width model can learn misfit).
+- E1's baselines on cubic ridge. The C-MICL-as-published row on the network
+  stays, as the comparison a reader will ask for.
+- The bias margin `B(x)` may need to be more than a remark: the network
+  result is direct evidence of the optimizer selecting on bias.
 
 **Writing.** Start `paper/paper.tex`. Sections that are settled are written as
 prose: the problem, the sensitivity vector and the counterpart, Theorem 1 and
@@ -231,7 +312,9 @@ the gap to a 0.9 target is two to three standard errors at 100 runs.
 - **The paper stands alone.** C-MICL is one of three baselines, not the frame.
 - **The lead model on the reactor is Ovalle et al.'s network**, with the RC on
   the last layer. It is the model the reference paper uses and the one whose
-  nominal decision fails.
+  nominal decision fails. **Under review after job 29141177**: the network's
+  RC reaches only 0.42 to 0.52 against the ODE, and cubic ridge reaches 0.95.
+  See the results under "Tonight" for the proposal to switch.
 - **Models are fixed before the pipeline runs**, as Ovalle et al. do: class,
   architecture and hyperparameters per problem.
 - **Cost vectors follow Ovalle et al.** (100 draws, their distribution), with
@@ -272,9 +355,22 @@ the gap to a 0.9 target is two to three standard errors at 100 runs.
 4. **Pointwise radius.** The Gaussian value `σ z(1−ε)` (1.28σ at ε = 0.1) is
    the one used everywhere. `paper_a_guarantee.md`'s table had the
    sub-Gaussian `√(2 ln(1/ε))`; it is now marked as such.
-5. **Novelty against simultaneous bands and post-selection inference** is
-   still unchecked (Section 1.2 of the outline). It is the largest open risk
-   that no experiment addresses.
+5. **Novelty against simultaneous bands and post-selection inference:
+   checked 2026-11-14** (`paper_a_literature.md`; outline Section 1.2). Two of
+   the three claimed novelties were not new. Bands restricted to a region with
+   a constant simulated by optimizing over it are Liu et al. (2005) for linear
+   models over a box. Validity at the selected point is the PoSI / inference-
+   on-winners projection argument. The uniform "mean + β·sd" constraint is
+   safe Bayesian optimization; Fiedler et al. (2021) has our noise term for
+   kernel ridge. What survives: the clean-label target (no function-norm
+   bound in the radius), the mixed-integer region with each supremum a global
+   MIP, one form for ridge, last-layer networks and forests, and the band
+   embedded as a constraint. The contribution is now argued from those. Two
+   things follow for the method. The simulated radius must use the solver's
+   bound on each `W`, as I4 already plans. And a referee will ask why not
+   Fiedler et al.'s radius. Its noise part bounds the whole noise vector
+   (about σ√n), which is already looser than our closed-form σ√χ²(d) with
+   d ≪ n, so one sentence answers it.
 
 ## Honest fitting
 
