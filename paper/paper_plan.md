@@ -189,7 +189,7 @@ points, each with one experiment.
 |---|---|---|---|
 | H1 | **It delivers.** At its simulated radius for ε = 0.1, the robust counterpart (RC) reaches 0.9 ground-truth feasibility with no tuning, where the nominal decision does not. | E1 | nominal already near 0.9, or the RC under it |
 | H2 | **It is cheaper.** At the same ground-truth feasibility, the RC has the best objective among the constant margin, the wrapper and C-MICL. | E1 | another method is cheaper at 0.9 |
-| H3 | **It still prescribes.** With six learned constraints on real data, the RC prescribes for most cohorts. | E2 | RC is infeasible for most cohorts |
+| H3 | **It certifies more of what it prescribes.** With five learned toxicity constraints on real data, the RC certifies a regimen at the target level for more cohorts than any baseline, gives every other cohort the regimen with the best certified level, and says which cohorts no regimen can be certified for. (Was: "prescribes for most cohorts"; changed 2026-11-14, see "Infeasibility on chemotherapy".) | E2 | a baseline's decisions certify at least as well as the RC's at the same level |
 
 The last column is for us. The paper reports means with standard errors and
 makes no formal tests. Feasibility is over solved runs, with the fraction
@@ -220,7 +220,7 @@ of 2026-09-07) and the gastric cell (2026-09-08).
 
 | Earlier approach | What it did | Why it is not the method | In the paper |
 |---|---|---|---|
-| Cutting planes over a random bank | Drew 200 relabelings from an ellipsoid of radius rho, retrained the model on each, cut the worst one at `x*`, stopped at tolerance tau | No guarantee: the bank is a finite sample of the set, so stopping shows `x*` is feasible for the drawn models only. Two parameters (rho, tau) with no rule tying either to a violation level; both were set against the ground truth, and the rho that works had to be re-measured per instance (rho = 1 never passed 0.30, rho = 2 delivered). The result also depends on the bank's seed. For a model affine in its labels the worst relabeling has a closed form, `R s(x)/‖s(x)‖`, so sampling is unnecessary. | Out. One sentence in Section 4: random-draw cuts carry no guarantee. Stays in the thesis. |
+| Cutting planes over a random bank | Drew 200 relabelings from an ellipsoid of radius rho, retrained the model on each, cut the worst one at `x*`, stopped at tolerance tau. With several constraints, a cut that left a protected cohort infeasible was rolled back and rejected. | No guarantee: the bank is a finite sample of the set, so stopping shows `x*` is feasible for the drawn models only. Two parameters (rho, tau) with no rule tying either to a violation level; both were set against the ground truth, and the rho that works had to be re-measured per instance (rho = 1 never passed 0.30, rho = 2 delivered). The result also depends on the bank's seed. For a model affine in its labels the worst relabeling has a closed form, `R s(x)/‖s(x)‖`, so sampling is unnecessary. The rollback kept the master feasible by giving up robustness wherever it was unaffordable, so what was delivered had no stated level. | Out. One sentence in Section 4: random-draw cuts carry no guarantee. Stays in the thesis. The rollback's role (prescribing when full robustness is infeasible) passes to the certified fallback; see "Infeasibility on chemotherapy". |
 | Right-hand-side margin | Tightened the constraint by a constant `m` | The margin is the same at every `x`, and nothing says how large to make it: `m* = 4.0` was found only with the oracle. At 0.9 feasibility it was the most expensive of the three tuned methods (6.043, against 5.816 for cutting planes and 5.885 for the wrapper). On gastric a large `m` makes the problem infeasible instead of conservative (`m = 0.75` solved 20% of contexts). | Baseline. |
 | Wrapper | Embedded 20 bootstrapped models and required a fraction to hold | The fraction is not tied to a violation level. At its strictest setting it reached 0.00 and 0.10 on the two rho columns where cutting planes operated, and it embeds 20 models. On gastric it solved 64 to 68% of contexts. | Baseline. |
 | Robust regression | Trained a label-robust model and embedded it nominally | It acts on the learner, not the embedding. | Out. Paper B. |
@@ -252,7 +252,7 @@ Three problems, four displays in the main text.
 | # | Experiment | Problem | Design | Output | Paper |
 |---|---|---|---|---|---|
 | E1 | **Feasibility, cost and the radius** | reactor | Ovalle et al.'s network, RC on the last layer. Their 100 cost vectors, noise redrawn for each. RC at the pointwise, simulated and closed-form radii for ε ∈ {0.05, 0.1, 0.2}, and on a radius grid. Constant margin, wrapper and C-MICL on the same network, at their prescribed settings and over their ranges. Nominal. | Table 1, Figure 2, Figure 3 | 6.1, 6.2 |
-| E2 | **Six constraints, real data** | chemotherapy | Maragno et al.'s protocol. RC with the simulated joint radius; margin, wrapper, C-MICL, nominal, all on the same fixed models | Table 2 | 6.3 |
+| E2 | **Six learned models, real data** | chemotherapy | Maragno et al.'s protocol. RC with the simulated joint radius over the test cohorts' treatment slices, and the certified fallback where it is infeasible; margin, wrapper, C-MICL, nominal, all on the same fixed models, each decision given its certified level | Table 2 (fraction of cohorts certified at each level, per method) | 6.3 |
 | E3 | **Second case study** | WFP | as E1, one ε | Table 3 | 6.4 |
 
 Appendix, one table each, all on the reactor:
@@ -444,29 +444,113 @@ What changes for the RC:
   up against the existing picks is reported, and the paper states that the
   choice used the labels. This departs from step 0 of the recipe (fix the
   model before looking at the labels); the outline says so in Section 6.3.
-- **σ is estimated**, per outcome. Two estimates are available: out-of-fold
-  residuals, and the binomial `p(1−p)/n_arm` (toxicities only, and it uses the
-  noisy `p`). Pick one for the main result. Open.
+- **σ per arm, binomial, for the main result** (decided 2026-11-14):
+  `σᵢ = √(pᵢ(1−pᵢ)/n_armᵢ)`, with the weighted norm. It is the label noise the
+  theorem is about: the sampling error of an arm's toxicity rate. It uses the
+  noisy `p`, so T2 has to cover the plug-in. The out-of-fold residual sd is a
+  second row only. It mixes misfit into σ, which the theorem does not ask for,
+  and it is likely to make the RC infeasible the way C-MICL is.
 - **Objective.** Survival is a learned objective. The default is no margin on
   it, as for the other methods.
-- **What it can show.** Practical behaviour: fraction prescribed (the main
-  measure), toxicity limits met, survival. The judge is itself fitted, so this
-  experiment does not test the theorem. E1 does.
+- **What it can show.** The certified level of each method's prescriptions
+  (the main measure), the fraction prescribed, toxicity limits met under the
+  judge, and survival. The judge is itself fitted, so this experiment does not
+  test the theorem. E1 does.
 
-Known difficulty: the instance has little headroom. Nominal already scores
-0.89 to 0.96, and C-MICL at alpha = 0.1 prescribes for about 6% of cohorts.
-Five simultaneous margins may leave the RC infeasible for many cohorts. The
-simulated joint radius is the mitigation.
+## Infeasibility on chemotherapy (decided 2026-11-14)
+
+The instance has little headroom: nominal already scores 0.89 to 0.96, and
+C-MICL at alpha = 0.1 prescribes for about 6% of cohorts. Five simultaneous
+margins may leave the RC infeasible for many cohorts too. This section is how
+the paper handles that. Nothing in it has been run.
+
+**CP's rollback is not carried over.** With several constraints, the
+random-bank cutting planes kept the master feasible by rolling back any cut
+that left a protected cohort infeasible (`presentations/method.tex`, "Cutting
+Planes: coverage"). That gives up robustness wherever robustness is
+unaffordable, so what was delivered has no stated level. It stays in the
+thesis.
+
+**The RC may be much less infeasible than C-MICL.**
+- C-MICL's width is a prediction interval for a new outcome. It covers noise
+  plus misfit and does not shrink with n.
+- The RC's margin `R σ‖s(x)‖` is a confidence band on the fitted model.
+  `‖s(x)‖` is about √(leverage) for ridge and 1/√(n_leaf) for a tree, so it
+  shrinks with n.
+- Which of the two the chemo RC resembles is decided by the choice of σ (see
+  "σ per arm" above). With the binomial σ the margin should be well below
+  C-MICL's. This is a guess, not a measurement; probe P1 below measures it.
+- The tension, which the reactor result (job 29141177) makes concrete: a
+  label-noise margin does not see misfit. Under the binomial σ the RC may
+  prescribe often and still miss against the judge where the models misfit.
+  So Table 2 reports both the certified level and the judge's verdict.
+
+**Three layers, in order.**
+
+1. **Shrink the radius, keeping the guarantee.**
+   - The joint simulated radius instead of Bonferroni (T1).
+   - Take W's supremum over the decision slices actually prescribed for, not
+     the whole box. A cohort's context is fixed, so its decision space is the
+     treatment slice. Over the union of the 96 test cohorts' slices, the
+     radius holds for all cohorts at once and costs about one MIP per draw
+     (a selection variable picks the cohort). Per cohort it is smaller still,
+     but costs 96 times the solves. Use the union for the main result.
+   - The per-arm weighted norm (above).
+   - An unequal split of ε across the five constraints if one dominates.
+     This is still a guarantee (weighted Bonferroni, or the joint radius with
+     per-constraint scaling).
+2. **The certified fallback.** For any decision `x` define the certified
+   radius `r̂(x) = minⱼ (bⱼ − f̂ⱼ(x)) / ‖Σⱼ^½ sⱼ(x)‖`, in each constraint's
+   standardized units. `Σⱼ` is the diagonal of the per-arm noise variances
+   for outcome j; with a single σⱼ the denominator is `σⱼ‖sⱼ(x)‖`. Theorem 1's proof gives violation ⇒ `W > r̂(x*)`, so
+   `P(violation and r̂(x*) ≥ r) ≤ P(W > r)` for every r, however `x*` was
+   chosen, including by maximizing `r̂` (T6). When no regimen meets the target
+   radius for a cohort:
+   - solve `max t` s.t. `f̂ⱼ(x) + t·‖Σⱼ^½ sⱼ(x)‖ ≤ bⱼ` for all j, by
+     bisection on t over feasibility problems (each is the RC at radius t);
+   - prescribe the result and report `ε̂ = P(W > r̂)`, read off the simulated
+     draws of W that the radius already needs.
+
+   Robustness degrades gracefully, as CP's rollback did, but every
+   prescription carries its own level. The statement is joint, not
+   conditional on reaching `r̂`, and the paper must word it that way.
+3. **Abstention as an outcome.** A cohort with no certifiable regimen at any
+   useful level is reported as such: the data cannot support a safe regimen
+   there. C-MICL's 94% non-prescription is read the same way.
+
+**Table 2 changes.** `r̂(x)` can be computed for any method's decision, so
+every method is put on one scale. Columns:
+- the fraction of cohorts certified at ε ∈ {0.05, 0.1, 0.2};
+- the fraction prescribed at all;
+- toxicity limits met under the judge;
+- predicted survival;
+- the worst subsample beside each mean.
+
+This also sidesteps the judge's weak separation: the certified level does not
+depend on the judge. The judge's verdict stays beside it as the check against
+misfit.
+
+**Probe P1, first thing after the meeting (local, minutes; not yet run).**
+- Fit ridge on the training arms for the five toxicities.
+- For each of the 96 test cohorts, solve the max-t problem.
+- Report the fraction whose `r̂` reaches the joint radius at ε = 0.1, under
+  the binomial σ and under the out-of-fold residual sd. For the radius, use
+  enumeration, which is good enough for a go/no-go.
+
+This decides H3 before I6 and I7 are built. If even the binomial σ certifies
+few cohorts, E2 is reframed as a demonstration of the fallback and of
+abstention, and H3 is weakened to the comparison of certified levels.
 
 ## Theory tasks
 
 | # | Task | Status | Needed for |
 |---|---|---|---|
-| T1 | Simulated radius: the ⌈(N+1)(1−ε)⌉-th smallest of N simulated `W` gives level ε by exchangeability, with each `W` replaced by the solver's upper bound; joint version for several constraints | to prove, short | E1, E2 |
-| T2 | Estimated σ: upper confidence bound and its effect on ε; unequal known `σᵢ` | to prove | the recipe in Section 2; E2 |
-| T3 | Directed cuts terminate in at most K iterations | to prove, short | Section 4; E2 |
+| T1 | Simulated radius: the ⌈(N+1)(1−ε)⌉-th smallest of N simulated `W` gives level ε by exchangeability, with each `W` replaced by the solver's upper bound; joint version for several constraints | drafted 2026-11-15 (Prop. simulated radius; the joint version is held in paper_a_guarantee_held.tex until P1); not checked by JS | E1, E2 |
+| T2 | Estimated σ: upper confidence bound and its effect on ε; unequal known `σᵢ`; the binomial plug-in `σᵢ` from noisy `pᵢ`. Alternative route: simulate `σ̂/σ` jointly with the noise, as Liu et al. (2005) do for their critical constant | to prove | the recipe in Section 2; E2 |
+| T3 | Directed cuts terminate in at most K iterations | drafted 2026-11-15 (paper Sec. 4, proof in appendix); not checked by JS | Section 4; E2 |
 | T4 | Sub-Gaussian version of the subspace radius | to prove | appendix |
 | T5 | Lipschitz bias margin | to prove | appendix, optional |
+| T6 | Certified level of any decision: `P(violation and r̂(x*) ≥ r) ≤ P(W > r)` for all r, `x*` chosen in any way; the joint version over several constraints | drafted 2026-11-15, held until P1 in paper_a_guarantee_held.tex; not checked by JS | Section 3; E2 fallback and Table 2 |
 
 Theorem 1 and the finite, subspace and Bonferroni corollaries are proved.
 Dropped from this paper: classification, the ridge bias bound, counting K for
@@ -484,6 +568,8 @@ forests.
 | I6 | Forest with leaf vectors; RC by directed cuts; honest variant | to build | E2, A1 |
 | I7 | RC in the chemotherapy runner; per-outcome σ; fixed models | to build | E2 |
 | I8 | WFP instance | to build | E3 |
+| I9 | Certified radius `r̂(x)` for any decision; the max-t fallback by bisection; `ε̂` from the stored W draws | to build | E2, Table 2 |
+| I10 | Probe P1: ridge on the gastric training arms, max-t per test cohort, two choices of σ | to build; local, minutes; **not before the meeting** | H3 go/no-go |
 
 Everything beyond a probe goes through `sbatch`. E1 is many short solves and
 fits `mit_quicktest` or `mit_normal` arrays split by method and cost vector.
@@ -506,7 +592,8 @@ The simulated radius at 200 draws is a cluster job.
 2. **I2 to I4, then the RC half of E1** (the three radii, no baselines). This
    is the go or no-go for H1 and gives Figure 3.
 3. **I5, then the rest of E1.** T1 alongside. Draft Sections 2, 3, 6.1, 6.2.
-4. **T2, T3. I6, I7, then E2.** Draft Sections 4 and 6.3.
+4. **I10 (probe P1) first: does the RC certify chemo cohorts?** Then T2, T3,
+   T6. I6, I7, I9, then E2. Draft Sections 4 and 6.3.
 5. **Appendix tables A1 to A3.**
 6. **I8 and E3.**
 
@@ -530,7 +617,12 @@ Step 1 and a small version of step 2 are tonight's runs (top of this file).
   noise but not model misfit, which C-MICL's width model can pick up.
 - **The simulated radius is expensive to certify.** 43 seconds per draw on
   cubic ridge.
-- **Six constraints make the RC infeasible on chemotherapy.**
+- **Five margins make the RC infeasible on chemotherapy.** Mitigated by the
+  binomial σ, the radius over the prescribed slices and the certified
+  fallback ("Infeasibility on chemotherapy"); P1 measures how much is left.
+- **Under the binomial σ the RC prescribes but misses against the judge**
+  where the models misfit, as the network did against the ODE. Report the
+  judge's verdict beside the certified level.
 - **The chemotherapy judge cannot separate methods.** The audit put the 0.9
   target inside the judge's uncertainty band for most cells. Report orderings
   and the fraction prescribed there, and keep feasibility levels to the reactor.

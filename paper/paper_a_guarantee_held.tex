@@ -1,0 +1,165 @@
+% Paper A: theory HELD until probe P1 decides the chemotherapy design.
+% NOT \input by paper.tex. Drafted 2026-11-15; NOT checked by JS.
+%
+% Everything here serves the chemotherapy experiment (several constraints, one
+% radius over the 96 test cohorts, the max-t fallback and Table 2's common
+% scale), whose design P1 may change. To use: move the pieces wanted into
+% paper_a_guarantee.tex (statements) and paper_a_proofs.tex (proofs), and the
+% Section 4 text at the bottom into paper.tex. Labels and refs assume the
+% main-text labels (thm:selection, prop:simulated, cor:multi, ...).
+
+% ---------------------------------------------------------------------------
+% Was Remark rem:simulated (iii).
+(iii) $\mathcal{X}$ in the definition of $w$ may be any set that is fixed
+independently of $\varepsilon$ and contains every decision the procedure can
+return. When part of the decision is a fixed context, such as a cohort's
+characteristics, and decisions are returned for contexts
+$c_1,\dots,c_T$, $\mathcal{X}$ can be the union of their slices. One radius
+then holds for all $T$ decisions at once: the probability that any of them
+violates its clean-label constraint is at most $\epsilon$.
+
+% ---------------------------------------------------------------------------
+\paragraph{A joint radius for several constraints.}
+Consider $m$ learned constraints $f_j(x;\theta_j(y_j)) \le b_j$, each
+satisfying Assumption~\ref{ass:affine} with its own $s_j$ and $c_j$, with noise
+$\varepsilon_j = \Sigma_j^{1/2}\xi_j$ satisfying Assumption~\ref{ass:noise},
+and let $W_j = w_j(\xi_j)$ be the variable $W$ of
+Theorem~\ref{thm:selection} for constraint $j$.
+
+\begin{corollary}[Joint radius]\label{cor:joint}
+Suppose the joint distribution of $(\xi_1,\dots,\xi_m)$ is known. Fix weights
+$\omega_j > 0$ and set $R_j = \omega_j\hat R$, where $\hat R$ is computed as in
+Proposition~\ref{prop:simulated} from upper bounds on $N$ simulated copies of
+$W_\omega = \max_j W_j/\omega_j$. Then any $x^\star$ satisfying
+$f_j(x^\star;\hat\theta_j) + R_j\|s_j(x^\star)\|_{\Sigma_j} \le b_j$ for all
+$j$, possibly chosen as a function of the data, violates at least one
+clean-label constraint with probability at most $\epsilon$.
+\end{corollary}
+
+\begin{proof}
+If $x^\star$ violates constraint $j$, the argument of
+Theorem~\ref{thm:selection} gives $W_j > R_j$, so $W_\omega > \hat R$. The
+proof of Proposition~\ref{prop:simulated} applies verbatim to $W_\omega$, of
+which the simulated values are independent copies.
+\end{proof}
+
+The joint radius is never worse than an even Bonferroni split with simulated
+per-constraint radii, in the following sense. Let $q_j$ be the
+$(1-\epsilon/m)$-quantile of $W_j$ and take $\omega_j = q_j$. Then
+$\mathbb{P}(W_\omega > 1) \le \sum_j \mathbb{P}(W_j > q_j) \le \epsilon$, so
+the $(1-\epsilon)$-quantile of $W_\omega$ is at most one and each
+$R_j = \omega_j\hat R$ is, up to simulation error, at most $q_j$. It gains
+most when the $W_j$ are strongly dependent, as when the constraints are
+fitted on the same inputs. It needs the joint law of the noise across
+constraints; Corollary~\ref{cor:multi} does not. On chemotherapy the five
+toxicities are measured on the same patients, so that law is not known.
+
+% ---------------------------------------------------------------------------
+\paragraph{The certified level of any decision.}
+For a decision $x$ and weights $\omega_j > 0$ (with $\omega_j = 1$ for a
+single constraint), the certified radius is
+\[
+  \hat r(x) = \min_{j = 1,\dots,m}
+    \frac{b_j - f_j(x;\hat\theta_j)}{\omega_j\,\|s_j(x)\|_{\Sigma_j}} ,
+\]
+where a term with $\|s_j(x)\|_{\Sigma_j} = 0$ is read as $+\infty$ if
+$f_j(x;\hat\theta_j) \le b_j$ and as $-\infty$ otherwise. (When
+$\|s_j(x)\|_{\Sigma_j} = 0$ the clean-label and fitted predictions at $x$
+coincide almost surely, so the verdict on constraint $j$ is known.) A
+decision $x$ satisfies the robust counterpart of every constraint at radii
+$R_j = \omega_j t$ exactly when $\hat r(x) \ge t$. Let
+$G(r) = \mathbb{P}(W_\omega > r)$, with $G(-\infty) = 1$ and
+$G(+\infty) = 0$, and write $A$ for the event that $x^\star$ violates at least
+one clean-label constraint.
+
+\begin{proposition}[Certified level]\label{prop:certified}
+Let $x^\star \in \mathcal{X}$ be chosen in any way from the data, including by
+maximizing $\hat r$. Then
+\begin{enumerate}[label=(\roman*)]
+  \item $\mathbb{P}\bigl(A \text{ and } \hat r(x^\star) \ge r\bigr) \le G(r)$
+    for every $r \in \mathbb{R}$;
+  \item the level $\hat\epsilon = G(\hat r(x^\star))$ satisfies
+    $\mathbb{P}(A \text{ and } \hat\epsilon \le \alpha) \le \alpha$ for every
+    $\alpha \in [0,1]$.
+\end{enumerate}
+\end{proposition}
+
+\begin{proof}
+On $A$, let $j$ be a violated constraint. If $\|s_j(x^\star)\|_{\Sigma_j} = 0$
+the $j$-th term of $\hat r(x^\star)$ is $-\infty$, so
+$\hat r(x^\star) = -\infty$. Otherwise, as in Theorem~\ref{thm:selection},
+\[
+  W_j \ge \frac{-s_j(x^\star)^\top\varepsilon_j}{\|s_j(x^\star)\|_{\Sigma_j}}
+  > \frac{b_j - f_j(x^\star;\hat\theta_j)}{\|s_j(x^\star)\|_{\Sigma_j}}
+  \ge \omega_j \hat r(x^\star) .
+\]
+In both cases $W_\omega > \hat r(x^\star)$ on
+$A$, which gives (i). For (ii), $G$ is nonincreasing and right-continuous, so
+$\{r : G(r) \le \alpha\}$ is an interval $[r_\alpha, +\infty]$ with
+$G(r_\alpha) \le \alpha$ when $r_\alpha$ is finite. On the event in (ii),
+$G(\hat r(x^\star)) \le \alpha$ gives $\hat r(x^\star) \ge r_\alpha$, so (i)
+at $r = r_\alpha$ bounds its probability by $\alpha$. The cases
+$r_\alpha = \pm\infty$ are immediate. If $r_\alpha = +\infty$ the event
+requires $\hat r(x^\star) = +\infty$, under which no constraint can be
+violated. If $r_\alpha = -\infty$, then $\hat\epsilon = 1$ on
+$\{\hat r(x^\star) = -\infty\}$, and on the rest of $A$,
+$W_\omega > \hat r(x^\star) > -\infty$, an event of probability at most
+$\lim_{r \to -\infty} G(r) \le \alpha$.
+\end{proof}
+
+$G$ is not known in closed form, but the simulated copies used for the radius
+give a level with the same guarantee.
+
+\begin{corollary}[Simulated level]\label{cor:sim-level}
+Let $\overline W_1,\dots,\overline W_N$ be upper bounds on independent
+simulated copies of $W_\omega$, as in Proposition~\ref{prop:simulated}. Then
+\[
+  \hat\epsilon_N = \frac{1 + \#\{i : \overline W_i \ge \hat r(x^\star)\}}{N+1}
+\]
+satisfies $\mathbb{P}(A \text{ and } \hat\epsilon_N \le \alpha) \le \alpha$
+for every $\alpha \in [0,1]$, over the noise and the simulation jointly.
+\end{corollary}
+
+\begin{proof}
+Let $W_1,\dots,W_N$ be the copies and
+$p = (1 + \#\{i : W_i \ge W_\omega\})/(N+1)$. On $A$,
+$W_\omega > \hat r(x^\star)$ by the proof of
+Proposition~\ref{prop:certified}, so
+$\{i : W_i \ge W_\omega\} \subseteq \{i : \overline W_i \ge \hat r(x^\star)\}$
+and $p \le \hat\epsilon_N$. It remains to show
+$\mathbb{P}(p \le \alpha) \le \alpha$. Let $K = \lfloor \alpha(N+1) \rfloor$.
+The event $p \le \alpha$ says that at most $K - 1$ of the copies are at least
+$W_\omega$. Order $W_\omega, W_1,\dots,W_N$ decreasingly, breaking ties
+arbitrarily; the variable in position $t$ has at least $t - 1$ others at least
+as large, so at most $K$ of the $N+1$ variables have at most $K-1$ others at
+least as large. By exchangeability,
+$\mathbb{P}(p \le \alpha) \le K/(N+1) \le \alpha$.
+\end{proof}
+
+Neither statement is conditional on the level reported. They do not say that
+a decision reported at level $\alpha$ violates with probability at most
+$\alpha$ given that it was so reported; they bound the probability that a
+violating decision is reported at level $\alpha$ or better. Since $x^\star$
+may be chosen to maximize $\hat r$, the decision with the highest certified
+level carries a valid level even when the robust counterpart at the target
+radius is infeasible.
+
+% ---------------------------------------------------------------------------
+% Section 4 text, held with the above (was the second half of
+% "Certifying a decision, and the fallback").
+
+The certified radius $\hat r(x)$ needs one evaluation of each fitted model and
+of each $\|s_j(x)\|_{\Sigma_j}$ at $x$. It therefore applies to the decision
+of any method, and Proposition~\ref{prop:certified} and
+Corollary~\ref{cor:sim-level} put every method's decision on one scale.
+
+When the robust counterpart at the target radius is infeasible, the decision
+with the highest certified level solves $\max_{x \in \mathcal{X}} \hat r(x)$.
+The set $\{x \in \mathcal{X} : \hat r(x) \ge t\}$ is the feasible set of the
+robust counterpart at radii $R_j = \omega_j t$ and shrinks as $t$ grows, so
+the maximum is found by bisection on $t$, each step a feasibility problem of
+the same class as the robust counterpart. At the largest $t$ found, the
+robust problem at that radius returns the cheapest decision with that level,
+which is reported with its level $\hat\epsilon_N$
+(Corollary~\ref{cor:sim-level}); the level is valid although the decision was
+chosen to maximize $\hat r$.

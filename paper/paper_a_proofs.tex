@@ -1,0 +1,71 @@
+% Paper A: proofs for Section 3 and Section 4.
+% Included by paper.tex in the appendix (\input{paper_a_proofs}).
+% Theorem 1's proof stays in the main text: the later proofs and the cut
+% argument of Section 4 all cite "the argument of Theorem 1".
+% Check status follows the \status tag on each statement in the main text.
+
+\subsection{Proofs for Section~\ref{sec:guarantee}}
+
+\begin{proof}[Proof of Corollary~\ref{cor:finite}]
+Let $s_1,\dots,s_{K'}$, $K' \le K$, be the distinct values with
+$\|s_k\|_\Sigma \neq 0$, and $u_k = \Sigma^{1/2}s_k / \|s_k\|_\Sigma$, so that
+$W = \max_k \, -u_k^\top\xi$. Each term is sub-Gaussian with variance proxy
+$\|u_k\|_2^2 = 1$ \citep[Proposition~15.2]{bertsimas2022robust}, so
+$\mathbb{P}(-u_k^\top\xi > R) \le \exp(-R^2/2)$
+\citep[Proposition~15.1]{bertsimas2022robust}. A union bound gives
+$\mathbb{P}(W > R) \le K\exp(-R^2/2) = \epsilon$.
+\end{proof}
+
+\begin{proof}[Proof of Corollary~\ref{cor:subspace}]
+Let $\Pi$ be the orthogonal projection onto $\Sigma^{1/2}S$, a subspace of
+dimension $d' \le d$. Since $\Sigma^{1/2}s(x) \in \Sigma^{1/2}S$,
+$-s(x)^\top\varepsilon = -(\Sigma^{1/2}s(x))^\top \Pi\xi
+\le \|s(x)\|_\Sigma\,\|\Pi\xi\|_2$, so $W \le \|\Pi\xi\|_2$. Moreover
+$\|\Pi\xi\|_2^2 \sim \chi^2_{d'}$, which is stochastically no larger than
+$\chi^2_d$, hence
+$\mathbb{P}(W > R) \le \mathbb{P}(\|\Pi\xi\|_2^2 > \chi^2_{d,1-\epsilon})
+\le \epsilon$.
+\end{proof}
+
+\begin{proof}[Proof of Corollary~\ref{cor:multi}]
+By the argument of Theorem~\ref{thm:selection}, the event that $x^\star$
+violates some constraint is contained in $\bigcup_{j=1}^m \{W_j > R_j\}$.
+Each event has probability at most $\epsilon/m$; apply a union bound.
+\end{proof}
+
+\begin{proof}[Proof of Proposition~\ref{prop:simulated}]
+The condition on $N$ gives $k \le N$. Let $W_i = w(\xi^{(i)})$ and let
+$W_{(k)}$ be the $k$-th smallest of $W_1,\dots,W_N$. The argument of
+Theorem~\ref{thm:selection} holds pointwise for every value of the radius, so
+$f(x^\star;\theta^\star) > b$ implies $W > \hat R$. Since
+$\overline W_i \ge W_i$ for every $i$, $\hat R \ge W_{(k)}$, and it suffices to
+show $\mathbb{P}(W > W_{(k)}) \le \epsilon$.
+
+The variables $V_0 = W$ and $V_i = W_i$, $i = 1,\dots,N$, are independent and
+identically distributed, hence exchangeable, and $W > W_{(k)}$ holds exactly
+when $V_0$ is strictly larger than at least $k$ of the other $N$. Order
+$V_0,\dots,V_N$ increasingly, breaking ties arbitrarily. The variable in
+position $j$ is strictly larger than at most $j-1$ of the others, so at most
+$N+1-k$ of the $N+1$ variables are strictly larger than at least $k$ of the
+others. By exchangeability each variable has the same probability of being
+one of them, so
+$\mathbb{P}(W > W_{(k)}) \le (N+1-k)/(N+1) \le \epsilon$, the last step
+because $k \ge (N+1)(1-\epsilon)$.
+\end{proof}
+
+\subsection{Proof for Section~\ref{sec:solving}}
+
+\begin{proof}[Proof of Proposition~\ref{prop:cuts}]
+By the Cauchy--Schwarz inequality in the inner product
+$\langle u, v\rangle = u^\top\Sigma v$, the left side of \eqref{eq:cut} is at
+most $f(x;\hat\theta) + R\|s(x)\|_\Sigma$, so every cut is implied by the
+robust counterpart and every master problem is a relaxation of the robust
+problem. If $\|s^k\|_\Sigma = 0$, the counterpart at $x^k$ is the nominal
+constraint, which the master problem enforces, so cuts are added only at
+iterates with $\|s^k\|_\Sigma \neq 0$. Such an iterate has a value of $s$ not
+seen at any earlier iterate: had $s^k = s^j$ for some $j < k$, cut $j$ would
+read $f(x^k;\hat\theta) + R\|s^k\|_\Sigma \le b$ at $x^k$, which is the robust
+counterpart. So each cut is added at a new value of $s$, and there are at
+most $K$. The point returned satisfies the robust counterpart and is optimal
+for a relaxation of the robust problem, hence optimal for it.
+\end{proof}

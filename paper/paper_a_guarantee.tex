@@ -1,7 +1,25 @@
 % Paper A: selection-robust violation guarantee.
-% Paste into the theory section. Requires amsmath, amssymb, amsthm and the
-% environments: assumption, definition, theorem, corollary, remark.
-% Citation keys are those of paper_a.bib.
+% Included by paper.tex (\input{paper_a_guarantee}) in Section 3. Uses the
+% assumption, definition, theorem, corollary and remark environments and the
+% \status macro defined there. Citation keys are those of paper_a.bib.
+%
+% Proofs other than Theorem 1's are in paper_a_proofs.tex (the appendix).
+% Results held until probe P1 decides the chemotherapy design (joint radius,
+% certified level, simulated level) are in paper_a_guarantee_held.tex, which
+% is not \input.
+%
+% \status tags. JS checked by hand the version committed in 40acea5: Theorem 1,
+% Corollaries 1-3 and the closing remark, for Sigma = sigma^2 I. The general
+% Sigma, the remark on the choice of norm and everything from "The simulated
+% radius" on came later and are not checked.
+
+\begin{outline}
+Tags: JS checked by hand the $\Sigma = \sigma^2 I$ version of
+Theorem~\ref{thm:selection}, Corollaries~\ref{cor:finite}--\ref{cor:multi}
+and the closing remark (commit \texttt{40acea5}). The general $\Sigma$, the
+remark on the choice of norm and everything after the closing remark were
+added later and are not checked.
+\end{outline}
 
 \paragraph{Setting.}
 We observe training data $(x_i, y_i)_{i=1}^n$ with $y = y^\star + \varepsilon$,
@@ -10,9 +28,15 @@ constraint is $f(x;\theta(y)) \le b$ for $x \in \mathcal{X}$, where $\theta(y)$
 denotes the model fitted on labels $y$.
 
 \begin{assumption}[Label noise]\label{ass:noise}
-The noise terms $\varepsilon_1,\dots,\varepsilon_n$ are independent, zero-mean
-and sub-Gaussian with variance proxy $\sigma^2$.
+\status{checked by JS for $\Sigma = \sigma^2 I$; general $\Sigma$ not checked}
+The noise is $\varepsilon = \Sigma^{1/2}\xi$, where $\Sigma \succeq 0$ is known
+and $\xi_1,\dots,\xi_n$ are independent, zero-mean and sub-Gaussian with
+variance proxy $1$. We write $\|v\|_\Sigma = \|\Sigma^{1/2}v\|_2$.
 \end{assumption}
+
+With $\Sigma = \sigma^2 I$ the noise terms are independent with variance proxy
+$\sigma^2$ and $\|v\|_\Sigma = \sigma\|v\|_2$. A diagonal $\Sigma$ allows
+unequal noise levels, and a full one correlated noise.
 
 \begin{assumption}[Affine predictor]\label{ass:affine}
 For all $x \in \mathcal{X}$, $f(x;\theta(y)) = s(x)^\top y + c(x)$, where
@@ -20,28 +44,35 @@ $s(x) \in \mathbb{R}^n$ and $c(x)$ do not depend on $\varepsilon$.
 \end{assumption}
 
 \begin{definition}[Clean-label model]\label{def:clean}
-Let $\hat\theta = \theta(y)$ and $\theta^\star = \theta(y^\star)$. Under
-Assumption~\ref{ass:affine},
+Let $\hat\theta = \theta(y)$ and $\theta^\star = \theta(y^\star)$. The
+clean-label model is $f(\cdot\,;\theta^\star)$.
+\end{definition}
+
+Since $s(x)$ and $c(x)$ do not depend on $\varepsilon$,
+Assumption~\ref{ass:affine} applies to $y^\star = y - \varepsilon$ as well as to
+$y$, and subtracting the two gives, for all $x \in \mathcal{X}$,
 \begin{equation}\label{eq:identity}
   f(x;\theta^\star) = f(x;\hat\theta) - s(x)^\top \varepsilon .
 \end{equation}
-\end{definition}
 
 For a radius $R > 0$ fixed independently of $\varepsilon$, the robust
 counterpart of the learned constraint is
 \begin{equation}\label{eq:rc}
-  f(x;\hat\theta) + R\,\|s(x)\|_2 \le b .
+  f(x;\hat\theta) + R\,\|s(x)\|_\Sigma \le b .
 \end{equation}
+The radius $R$ is in units of the noise's scale: with $\Sigma = \sigma^2 I$ the
+margin is $R\sigma\|s(x)\|_2$.
 
 \begin{theorem}\label{thm:selection}
+\status{checked by JS for $\Sigma = \sigma^2 I$; general $\Sigma$ not checked}
 Suppose Assumptions~\ref{ass:noise} and~\ref{ass:affine} hold, and let $x^\star$
 be any solution satisfying \eqref{eq:rc}, possibly chosen as a function of the
 data. Then
 \[
   \mathbb{P}\bigl(f(x^\star;\theta^\star) > b\bigr) \le \mathbb{P}(W > R),
   \qquad
-  W = \sup_{x \in \mathcal{X},\, s(x) \neq 0}
-      \frac{-s(x)^\top \varepsilon}{\|s(x)\|_2} .
+  W = \sup_{x \in \mathcal{X},\, \|s(x)\|_\Sigma \neq 0}
+      \frac{-s(x)^\top \varepsilon}{\|s(x)\|_\Sigma} .
 \]
 \end{theorem}
 
@@ -52,65 +83,69 @@ Suppose $f(x^\star;\theta^\star) > b$. By \eqref{eq:identity} and
   -s(x^\star)^\top \varepsilon
   = f(x^\star;\theta^\star) - f(x^\star;\hat\theta)
   > b - f(x^\star;\hat\theta)
-  \ge R\,\|s(x^\star)\|_2 .
+  \ge R\,\|s(x^\star)\|_\Sigma .
 \]
-Hence $s(x^\star) \neq 0$ and $W > R$.
+The left side equals $-(\Sigma^{1/2}s(x^\star))^\top\xi$ and is nonzero, so
+$\|s(x^\star)\|_\Sigma \neq 0$ and $W > R$.
 \end{proof}
 
+\begin{remark}[Choice of norm]\label{rem:norm}
+\status{not checked: added after JS's check}
+The proof uses only the inequality
+$-s(x^\star)^\top\varepsilon > R\,\|s(x^\star)\|_\Sigma$, so
+Theorem~\ref{thm:selection} holds verbatim for any norm $N$ on $\mathbb{R}^n$
+in place of $\|\cdot\|_\Sigma$, both in \eqref{eq:rc} and in $W$. The norm
+enters only through the distribution of $W$. Under $\|\cdot\|_\Sigma$ the
+standardized error at $x$ is
+$-s(x)^\top\varepsilon/\|s(x)\|_\Sigma = -u(x)^\top\xi$ with $u(x)$ a unit
+vector, so it has the same tail at every $x$; Corollaries~\ref{cor:finite}
+and~\ref{cor:subspace} use exactly this. Under another norm the standardized
+error at $x$ is that one multiplied by
+$\rho(x) = \|s(x)\|_\Sigma / N(s(x))$. Bounding the corresponding $W_N$
+through $W$, as $W_N \le \bar\rho\max(W,0)$ with
+$\bar\rho = \sup_{x\in\mathcal{X}} \rho(x)$, turns a radius $R$ from these
+corollaries into $\bar\rho R$, and the margin
+$\bar\rho R\,N(s(x)) \ge R\,\|s(x)\|_\Sigma$ is at least as large at every
+$x$. For example, noise bounded as $|\varepsilon_i| \le c$ gives the box
+counterpart $f(x;\hat\theta) + c\,\|s(x)\|_1 \le b$, which holds with
+probability one; but $\|s(x)\|_1$ can be up to $\sqrt{n}$ times
+$\|s(x)\|_2$.
+\end{remark}
+
 \begin{corollary}[Tree ensembles]\label{cor:finite}
+\status{checked by JS for $\Sigma = \sigma^2 I$; general $\Sigma$ not checked}
 If $s(x)$ takes at most $K$ distinct values on $\mathcal{X}$, then
-$R = \sigma\sqrt{2\ln(K/\epsilon)}$ guarantees
+$R = \sqrt{2\ln(K/\epsilon)}$ guarantees
 $\mathbb{P}\bigl(f(x^\star;\theta^\star) > b\bigr) \le \epsilon$.
 \end{corollary}
 
-\begin{proof}
-Let $s_1,\dots,s_K$ be the distinct nonzero values, so that
-$W = \max_k \, -s_k^\top\varepsilon / \|s_k\|_2$. Each term is sub-Gaussian
-with variance proxy $\sigma^2$ \citep[Proposition~15.2]{bertsimas2022robust},
-so $\mathbb{P}(-s_k^\top\varepsilon > R\|s_k\|_2) \le \exp(-R^2/2\sigma^2)$
-\citep[Proposition~15.1]{bertsimas2022robust}. A union bound gives
-$\mathbb{P}(W > R) \le K\exp(-R^2/2\sigma^2) = \epsilon$.
-\end{proof}
-
 \begin{corollary}[Linear models]\label{cor:subspace}
+\status{checked by JS for $\Sigma = \sigma^2 I$; general $\Sigma$ not checked}
 Suppose $s(x)$ lies in a subspace $S \subseteq \mathbb{R}^n$ of dimension $d$
-for all $x \in \mathcal{X}$, and $\varepsilon \sim N(0,\sigma^2 I)$. Then
-$R = \sigma\sqrt{\chi^2_{d,1-\epsilon}}$ guarantees
-$\mathbb{P}\bigl(f(x^\star;\theta^\star) > b\bigr) \le \epsilon$, where
-$\chi^2_{d,1-\epsilon}$ is the $(1-\epsilon)$-quantile of the chi-square
+for all $x \in \mathcal{X}$, and $\xi \sim N(0, I)$, that is,
+$\varepsilon \sim N(0,\Sigma)$. Then $R = \sqrt{\chi^2_{d,1-\epsilon}}$
+guarantees $\mathbb{P}\bigl(f(x^\star;\theta^\star) > b\bigr) \le \epsilon$,
+where $\chi^2_{d,1-\epsilon}$ is the $(1-\epsilon)$-quantile of the chi-square
 distribution with $d$ degrees of freedom.
 \end{corollary}
 
-\begin{proof}
-Let $\Pi$ be the orthogonal projection onto $S$. Since $s(x) \in S$,
-$-s(x)^\top\varepsilon = -s(x)^\top \Pi\varepsilon
-\le \|s(x)\|_2\,\|\Pi\varepsilon\|_2$, so $W \le \|\Pi\varepsilon\|_2$.
-Moreover $\|\Pi\varepsilon\|_2^2/\sigma^2 \sim \chi^2_d$, hence
-$\mathbb{P}(W > R) \le \mathbb{P}(\|\Pi\varepsilon\|_2^2/\sigma^2 >
-\chi^2_{d,1-\epsilon}) = \epsilon$.
-\end{proof}
-
 \begin{corollary}[Multiple learned constraints]\label{cor:multi}
+\status{checked by JS for $\Sigma = \sigma^2 I$; general $\Sigma$ not checked}
 Consider $m$ learned constraints, each satisfying
 Assumptions~\ref{ass:noise} and~\ref{ass:affine} with its own $s_j$,
-$\sigma_j$ and radius $R_j$. If each $R_j$ is chosen as in
+$\Sigma_j$ and radius $R_j$. If each $R_j$ is chosen as in
 Corollary~\ref{cor:finite} or~\ref{cor:subspace} at level $\epsilon/m$, then
 the probability that $x^\star$ violates at least one clean-label constraint is
 at most $\epsilon$. No assumption is required on the dependence of the noise
 across constraints.
 \end{corollary}
 
-\begin{proof}
-By the argument of Theorem~\ref{thm:selection}, the event that $x^\star$
-violates some constraint is contained in $\bigcup_{j=1}^m \{W_j > R_j\}$.
-Each event has probability at most $\epsilon/m$; apply a union bound.
-\end{proof}
-
 \begin{remark}
+\status{checked by JS for $\Sigma = \sigma^2 I$}
 (i) For ridge regression, $s(x) = Z(Z^\top Z + \lambda I)^{-1}\phi(x)$, so $S$
 is the column space of the training matrix $Z$ and $d = \mathrm{rank}(Z)$.
 (ii) A lower-bound constraint $f(x;\theta) \ge b$ is handled symmetrically,
-with robust counterpart $f(x;\hat\theta) - R\|s(x)\|_2 \ge b$ and the same
+with robust counterpart $f(x;\hat\theta) - R\|s(x)\|_\Sigma \ge b$ and the same
 radii.
 (iii) The guarantee concerns the propagation of label noise only; the
 approximation error $h^\star - f(\cdot\,;\theta^\star)$ is not covered.
@@ -118,3 +153,56 @@ approximation error $h^\star - f(\cdot\,;\theta^\star)$ is not covered.
 hidden layers), Assumption~\ref{ass:affine} requires the structure to be
 chosen independently of $\varepsilon$, for instance by sample splitting.
 \end{remark}
+
+\paragraph{The simulated radius.}
+Corollaries~\ref{cor:finite} and~\ref{cor:subspace} bound $W$ without using
+$\mathcal{X}$: they protect against every direction among the vectors
+$\Sigma^{1/2}s(x)$, whether or not a decision in $\mathcal{X}$ reaches it. When
+the distribution of $\xi$ is known, the radius can instead be read off
+simulated copies of $W$, and an order statistic of the copies is valid with no
+sampling-error term. Write $W = w(\xi)$, where
+\[
+  w(z) = \sup_{x \in \mathcal{X},\, \|s(x)\|_\Sigma \neq 0}
+    \frac{-(\Sigma^{1/2}s(x))^\top z}{\|s(x)\|_\Sigma},
+  \qquad z \in \mathbb{R}^n ,
+\]
+assumed measurable. Under Assumption~\ref{ass:affine}, $s(\cdot)$ does not
+depend on $\varepsilon$, so $w$ is a fixed function, known once the model's
+structure is. Evaluating $w(z)$ is a maximization over $\mathcal{X}$, a
+mixed-integer program when $\mathcal{X}$ is mixed-integer.
+
+\begin{proposition}[Simulated radius]\label{prop:simulated}
+\status{not checked: drafted 2026-11-15}
+Suppose Assumptions~\ref{ass:noise} and~\ref{ass:affine} hold and the
+distribution of $\xi$ is known. Draw $\xi^{(1)},\dots,\xi^{(N)}$ from it,
+independently of each other and of $\varepsilon$, and let
+$\overline W_1,\dots,\overline W_N$ be any numbers with
+$\overline W_i \ge w(\xi^{(i)})$. For $\epsilon \in (0,1)$ and
+$N \ge 1/\epsilon - 1$, let $k = \lceil (N+1)(1-\epsilon) \rceil$ and let
+$\hat R$ be the $k$-th smallest of $\overline W_1,\dots,\overline W_N$. Then
+any $x^\star$ satisfying \eqref{eq:rc} at $R = \hat R$, possibly chosen as a
+function of the data and of the simulation, satisfies
+$\mathbb{P}\bigl(f(x^\star;\theta^\star) > b\bigr) \le \epsilon$, where the
+probability is over the noise and the simulation jointly.
+\end{proposition}
+
+\begin{remark}[Computing the radius]\label{rem:simulated}
+\status{not checked: drafted 2026-11-15}
+(i) Each $\overline W_i$ must be an upper bound on $w(\xi^{(i)})$. The value
+of a feasible point of the maximization, or the largest standardized error
+over a sample of decisions, is a lower bound, and an order statistic of lower
+bounds can fall below the $(1-\epsilon)$-quantile of $W$, which makes the
+radius too small. A solver's dual bound is an upper bound at any time limit,
+so stopping a maximization early makes the radius larger, never invalid.
+(ii) The proposition needs the distribution of $\xi$, not only a variance
+proxy: the argument requires the simulated copies to have the law of the
+true $W$. The experiments use $\xi \sim N(0, I)$. An estimated $\Sigma$ is
+not covered yet. \tbd{T2}
+\end{remark}
+
+Corollary~\ref{cor:multi} holds with unequal levels $\epsilon_j$ summing to
+$\epsilon$, and with any radius valid at level $\epsilon_j$ for constraint $j$
+alone, including the simulated radius of
+Proposition~\ref{prop:simulated}: its proof uses only
+$\mathbb{P}(W_j > R_j) \le \epsilon_j$. \status{not checked: drafted
+2026-11-15}
