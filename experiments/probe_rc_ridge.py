@@ -221,12 +221,16 @@ def _x_of(cr, u):
     return cr.lb + 0.5 * (cr.ub - cr.lb) * (uu + 1.0)
 
 
-def solve_rc(cr, instance, coef, R, cost):
-    """min c'x  s.t.  f(x) - R ||s(x)|| >= 50.  R = 0 is nominal."""
+def solve_rc(cr, instance, coef, R, cost, shift=0.0):
+    """min c'x  s.t.  f(x) - R ||s(x)|| >= 50 + shift.  R = 0 is nominal.
+
+    ``shift`` > 0 with R = 0 is the CONSTANT margin baseline (the same
+    tightening at every x); the frontier stage walks it beside the RC.
+    """
     b0, beta = coef
     m, u, x, dphi, t = base_model(cr, instance)
     f = b0 + gp.quicksum(float(beta[j]) * dphi[j] for j in range(cr.p))
-    m.addConstr(f - R * t >= PRODUCT_FLOOR)
+    m.addConstr(f - R * t >= PRODUCT_FLOOR + shift)
     m.setObjective(gp.quicksum(float(cost[i]) * x[i] for i in range(cr.d)),
                    GRB.MINIMIZE)
     t0 = time.time()
@@ -487,6 +491,117 @@ def stage_redraw(args):
     summarize(rows, tag)
 
 
+# Frontier grids. The RC's radius is in SIGMA units (R = sigma * g), the
+# constant margin in FLOW units (F_C6H6 >= 50 + m). Both start at the nominal
+# decision (one shared row, kind="nominal"). The pointwise and simulated radii
+# are added to the RC grid so the protocol points sit on the curve.
+FRONTIER_RC = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
+FRONTIER_MARGIN = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5,
+                   2.75, 3.0, 3.5, 4.0, 5.0, 6.0]
+
+
+def stage_frontier(args):
+    """H2 probe: the RC over a radius grid against a constant margin over an m
+    grid, on the SAME redraws as stage_redraw (same noise stream, same cost
+    vector per redraw), so the curves are paired with each other and with R1.
+    Fixed feature maps only: the radius is enumerated once, as in R1.
+
+    The margin is given its whole grid and is read at whichever m first
+    delivers -- i.e. tuned against the ODE, which no practitioner can do. That
+    favours the baseline; the RC is read at its own (untuned) simulated radius.
+    """
+    if args.model not in ("cubic", "net_frozen"):
+        raise SystemExit("frontier: fixed feature maps only (cubic, net_frozen)")
+    inst, md, sigma = setup()
+    last = args.first + args.n_redraws
+    costs = cost_vectors(args.costs, last, inst)
+    span = inst.variable_ub - inst.variable_lb
+    Xs = domain_sample(inst.variable_lb, inst.variable_ub, inst, args.n_sample, seed=0)
+    cr = build(args.model, inst, md, sigma, frozen_labels(md, sigma))
+    sim = enum_radius(cr, Xs, [args.eps], args.n_sim, seed=1)[args.eps]
+    point = float(stats.norm.ppf(1 - args.eps))
+    print(f"{args.model}: dim(s)={cr.dim}, simulated radius {sim:.2f} sigma, "
+          f"pointwise {point:.2f} sigma", flush=True)
+    grid = [("nominal", "none", 0.0, 0.0, 0.0)]
+    grid += [("rc", f"{g:g}", g, sigma * g, 0.0) for g in FRONTIER_RC]
+    grid += [("rc", "pointwise", point, sigma * point, 0.0),
+             ("rc", "simulated", sim, sigma * sim, 0.0)]
+    grid += [("margin", f"{m:g}", m, 0.0, m) for m in FRONTIER_MARGIN]
+
+    tag = f"frontier_{args.model}_{args.costs}_eps{args.eps}_{args.first:03d}"
+    path = os.path.join(OUT_DIR, tag + ".json")
+    rows = json.load(open(path)) if os.path.exists(path) else []
+    done = {k for k in {r["redraw"] for r in rows}
+            if sum(r["redraw"] == k for r in rows) == len(grid)}
+    rows = [r for r in rows if r["redraw"] in done]
+    for k in range(args.first, last):
+        if k in done:
+            continue
+        rng = np.random.default_rng([args.seed, k])     # == stage_redraw's
+        y = md.y_true + sigma * rng.standard_normal(len(md.y_true))
+        coef, clean = cr.fit(y), cr.fit(md.y_true)
+        c = costs[k]
+        obj_range = float(np.abs(c) @ span)
+        for kind, label, dial, R, shift in grid:
+            r = solve_rc(cr, inst, coef, R, c, shift=shift)
+            row = {"redraw": k, "kind": kind, "label": label, "dial": dial,
+                   "R": R, "shift": shift, "status": r["status"],
+                   "time_s": r["time"], "obj": r["obj"], "obj_range": obj_range}
+            if r["x"] is not None:
+                xs = r["x"]
+                row.update(f_clean=float(cr.predict(xs, clean)[0]),
+                           f_ode=ode_flow(inst, xs),
+                           margin=float(R * cr.snorm(xs)[0] + shift),
+                           x=xs.tolist())
+            rows.append(row)
+        print(f"redraw {k} done", flush=True)
+        _save(tag + ".json", rows)
+    _save(tag + ".json", rows)
+
+
+def stage_frontier_collect(args):
+    """Merge frontier chunks; one row per (kind, setting), and the cheapest
+    setting of each kind reaching the target against the ODE."""
+    import glob
+    import pandas as pd
+    files = sorted(glob.glob(os.path.join(
+        OUT_DIR, f"frontier_{args.model}_{args.costs}_eps{args.eps}_*.json")))
+    rows = [r for f in files for r in json.load(open(f))]
+    df = pd.DataFrame(rows)
+    nom = df[df.kind == "nominal"].set_index("redraw")["obj"]
+    df["cost_pct"] = 100 * (df.obj - df.redraw.map(nom)) / df.obj_range
+    solved = df.f_ode.notna()
+    df["feas_ode"] = np.where(solved, df.f_ode >= PRODUCT_FLOOR, np.nan)
+    df["feas_clean"] = np.where(solved, df.f_clean >= PRODUCT_FLOOR - 1e-6, np.nan)
+    df["short_ode"] = np.where(solved & (df.f_ode < PRODUCT_FLOOR),
+                               PRODUCT_FLOOR - df.f_ode, np.nan)
+    g = df.groupby(["kind", "label"], sort=False)
+    tab = pd.DataFrame({
+        "dial": g.dial.first(), "R": g.R.mean(), "n": g.redraw.nunique(),
+        "solved": g.f_ode.apply(lambda s: s.notna().mean()),
+        "feas_clean": g.feas_clean.mean(), "feas_ode": g.feas_ode.mean(),
+        "se_ode": g.feas_ode.apply(lambda s: np.sqrt(s.mean() * (1 - s.mean()) / s.notna().sum())),
+        "short_ode": g.short_ode.mean(), "worst_ode": g.short_ode.max(),
+        "cost_pct": g.cost_pct.mean(), "margin_at_x": g.margin.mean(),
+        "time_s": g.time_s.mean()}).reset_index()
+    tab = tab.sort_values(["kind", "dial"], kind="stable")
+    tag = f"frontier_{args.model}_{args.costs}_eps{args.eps}"
+    print(f"\n{tag}: {df.redraw.nunique()} redraws from {len(files)} files")
+    with pd.option_context("display.width", 200, "display.max_rows", 100):
+        print(tab.round(3).to_string(index=False))
+    target = 1 - args.eps
+    print(f"\ncheapest setting with ODE feasibility >= {target}:")
+    for kind in ("rc", "margin"):
+        ok = tab[(tab.kind == kind) & (tab.feas_ode >= target) & (tab.solved >= 0.99)]
+        if ok.empty:
+            print(f"  {kind:7s} none on the grid")
+        else:
+            b = ok.loc[ok.cost_pct.idxmin()]
+            print(f"  {kind:7s} {b.label:>9s}  feas_ode {b.feas_ode:.2f}  "
+                  f"cost {b.cost_pct:.2f}%  mean margin at x* {b.margin_at_x:.2f}")
+    tab.to_csv(os.path.join(OUT_DIR, tag + ".csv"), index=False)
+
+
 def stage_collect(args):
     """Merge the chunk files of each model and print one table per model."""
     import glob
@@ -542,7 +657,8 @@ def _save(name, obj):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True,
-                    choices=["solve", "radius", "redraw", "prep", "collect"])
+                    choices=["solve", "radius", "redraw", "prep", "collect",
+                             "frontier", "frontier_collect"])
     ap.add_argument("--first", type=int, default=0, help="first redraw index")
     ap.add_argument("--model",
                     choices=["cubic", "net_frozen", "net_standard", "net_honest"],
@@ -557,4 +673,5 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     {"solve": stage_solve, "radius": stage_radius, "redraw": stage_redraw,
-     "prep": stage_prep, "collect": stage_collect}[args.stage](args)
+     "prep": stage_prep, "collect": stage_collect, "frontier": stage_frontier,
+     "frontier_collect": stage_frontier_collect}[args.stage](args)
