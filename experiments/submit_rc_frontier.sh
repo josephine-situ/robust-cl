@@ -41,6 +41,14 @@ export PYTHONWARNINGS=ignore
 
 T="${SLURM_ARRAY_TASK_ID:-0}"
 EPS="${EPS:-0.1}"
-python experiments/probe_rc_ridge.py --stage frontier --model cubic \
-    --costs paper --eps "$EPS" --first $(( T * 25 )) --n-redraws 25 \
+STAGE="${STAGE:-frontier}"     # or "conformal": quick C-MICL + split conformal
+NPER="${NPER:-25}"             # redraws per task; with NPER=50 pass --array=0-1
+# The full-design frontier (job 29223094) ran as 5 x 20 on a SHORTER grid; a
+# re-run here would treat its redraws as unfinished and rewrite them.
+if [ "$STAGE" = frontier ] && [ "${DESIGN:-full}" = full ]; then
+    echo "refusing: the full-design frontier is committed (job 29223094)" >&2
+    exit 1
+fi
+python experiments/probe_rc_ridge.py --stage "$STAGE" --model cubic \
+    --costs paper --eps "$EPS" --first $(( T * NPER )) --n-redraws "$NPER" \
     --design "${DESIGN:-full}" --n-train "${N_TRAIN:-200}" --thin-keep "${THIN_KEEP:-0.2}"
