@@ -143,6 +143,20 @@ the cubic.
   stays, as the comparison a reader will ask for.
 - The bias margin `B(x)` may need to be more than a remark: the network
   result is direct evidence of the optimizer selecting on bias.
+- **Use Ovalle et al.'s own four surrogate families for `h`** (`regression.py`,
+  each at one fixed setting): LinearDT (linear model tree, depth 5), random
+  forest (15 trees, depth 5), gradient boosting (15 trees, depth 5, learning
+  rate 0.2) and the 32-32 MLP. Their `u` is a 32-32 network for every `h`,
+  which is not why we chose the network (the RC has no `u`). All three tree
+  families are affine in the labels with their splits fixed, so the RC
+  applies, with the splits fitted on separate rows. LinearDT is the candidate
+  lead: an ordinary regression per leaf (a cone per leaf, selected by the leaf
+  binaries), and at the noise floor on this instance (calibration MAE 2.08
+  with σ = 2, `cmicl.py` DIFFERENCES #2), so its bias should be small, as the
+  cubic's is. A depth-5 CART was well above the floor (MAE 4.48), so the
+  forest and boosting may fail as the network did. Next probe: the RC on each
+  family, same design as job 29141177. Needs `linear-tree` as a dependency
+  and the leaf-vector code (I6).
 
 **Writing.** Start `paper/paper.tex`. Sections that are settled are written as
 prose: the problem, the sensitivity vector and the counterpart, Theorem 1 and
