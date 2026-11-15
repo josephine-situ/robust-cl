@@ -501,3 +501,35 @@ over nominal as % of the objective range; SE on feasibility ≤ 0.03.
   uneven coverage (or smaller n) is where the shape should pay.
 
 Outputs: `results/paper_a/prelim/frontier_cubic_paper_eps0.1*.{json,csv}`.
+
+### Same day: the frontier on thinner designs (jobs 29224939, 29224940)
+
+Same probe and redraws, two training designs chosen on x alone (Theorem 1
+holds): **n = 200** random rows (42 above flow 45), and **thin**: 790 rows,
+all with flow ≤ 45 plus 20% of the rest (44 above 45). Full design: 1,000
+rows, about 250 above 45. ODE feasibility, cost as % of the objective range.
+
+| Design | Nominal | RC simulated radius (untuned) | RC, cheapest ≥ 0.9 | Margin, cheapest ≥ 0.9 (ODE-tuned) | Margin m = z·σ = 2.56 (untuned) |
+|---|---|---|---|---|---|
+| full, 1,000 | 0.66 | 0.95, 4.24% | 3σ: 0.92, 3.54% | 1.75: 0.90, 3.41% | about 0.96, 4.9% |
+| n = 200 | 0.23 | 0.98, 12.9% | 3σ: 0.94, **11.2%** | 7: 0.93, **14.9%** | about 0.60 |
+| thin | 0.65 | 0.95, 7.67% | 3σ: 0.90, **6.08%** | 2.5: 0.90, **5.25%** | about 0.90 |
+
+- **The untuned RC lands at 0.95 to 0.98 in every design.** No constant m
+  does: the m that delivers ranges from 1.75 to 7, and the σ-based rule gives
+  0.96, 0.60 and 0.90. This is H2's defensible form: the RC adapts its margin
+  to the design without the oracle.
+- **At matched feasibility the RC is cheaper only at n = 200** (11.2% against
+  14.9% at 0.93 to 0.94, and 12.9% at 0.98 against 21.5% for the margin at
+  0.97). On the thin design the tuned margin is cheaper (5.25% against 6.08%
+  at 0.90; 6.35% at 0.96 against 7.67% at 0.95). On the full design they tie.
+  So "cheaper" is design-dependent, and thinning only near the boundary is
+  not where it pays.
+- **The selection effect appears on both thin designs**: the pointwise radius
+  reaches 0.84 (n = 200) and 0.82 (thin) against the clean-label model, below
+  the 0.90 target; the simulated radius reaches 1.00. On the full design it
+  was 0.90. This gives Figure 3 its argument.
+- **Bias dominates at n = 200**: at R = 1.5σ, 0.90 against the clean-label
+  model but 0.62 against the ODE, with misses up to 13 flow units.
+
+Outputs: `results/paper_a/prelim/frontier_cubic_{n200,thin0.2}_paper_eps0.1*`.
