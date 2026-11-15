@@ -495,9 +495,34 @@ def stage_redraw(args):
 # constant margin in FLOW units (F_C6H6 >= 50 + m). Both start at the nominal
 # decision (one shared row, kind="nominal"). The pointwise and simulated radii
 # are added to the RC grid so the protocol points sit on the curve.
-FRONTIER_RC = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0]
+FRONTIER_RC = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 6.0, 7.0, 8.0]
 FRONTIER_MARGIN = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5,
-                   2.75, 3.0, 3.5, 4.0, 5.0, 6.0]
+                   2.75, 3.0, 3.5, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]
+
+
+DESIGN_SEED = 2026    # fixes WHICH rows a design keeps; the noise is redrawn
+THIN_ABOVE = 45.0     # flow above which "thin" keeps only a fraction of rows
+
+
+def design_rows(md, args):
+    """Training rows for the frontier stage, and the tag suffix naming them.
+
+    full   every row (R1's design; no suffix, so its files are R1-paired)
+    sub    a uniform random subset of --n-train rows
+    thin   every row with clean flow <= THIN_ABOVE, and a --thin-keep fraction
+           of the rest: historical runs rarely near the high-yield region where
+           the optimizer lands. Selection is on F(x), a function of x alone, so
+           s(x) stays independent of the noise and Theorem 1 holds unchanged.
+    """
+    n = len(md.y_true)
+    rng = np.random.default_rng(DESIGN_SEED)
+    if args.design == "full":
+        return np.arange(n), ""
+    if args.design == "sub":
+        return np.sort(rng.choice(n, args.n_train, replace=False)), f"_n{args.n_train}"
+    high = md.y_true > THIN_ABOVE
+    keep = ~high | (rng.random(n) < args.thin_keep)
+    return np.flatnonzero(keep), f"_thin{args.thin_keep:g}"
 
 
 def stage_frontier(args):
@@ -517,29 +542,33 @@ def stage_frontier(args):
     costs = cost_vectors(args.costs, last, inst)
     span = inst.variable_ub - inst.variable_lb
     Xs = domain_sample(inst.variable_lb, inst.variable_ub, inst, args.n_sample, seed=0)
-    cr = build(args.model, inst, md, sigma, frozen_labels(md, sigma))
+    rows, suffix = design_rows(md, args)
+    cr = build(args.model, inst, md, sigma, frozen_labels(md, sigma), fit_rows=rows)
     sim = enum_radius(cr, Xs, [args.eps], args.n_sim, seed=1)[args.eps]
     point = float(stats.norm.ppf(1 - args.eps))
-    print(f"{args.model}: dim(s)={cr.dim}, simulated radius {sim:.2f} sigma, "
-          f"pointwise {point:.2f} sigma", flush=True)
+    print(f"{args.model}{suffix}: n={len(rows)} ({int((md.y_true[rows] > THIN_ABOVE).sum())} "
+          f"with flow > {THIN_ABOVE:g}), dim(s)={cr.dim}, simulated radius {sim:.2f} "
+          f"sigma, pointwise {point:.2f} sigma", flush=True)
     grid = [("nominal", "none", 0.0, 0.0, 0.0)]
     grid += [("rc", f"{g:g}", g, sigma * g, 0.0) for g in FRONTIER_RC]
     grid += [("rc", "pointwise", point, sigma * point, 0.0),
              ("rc", "simulated", sim, sigma * sim, 0.0)]
     grid += [("margin", f"{m:g}", m, 0.0, m) for m in FRONTIER_MARGIN]
 
-    tag = f"frontier_{args.model}_{args.costs}_eps{args.eps}_{args.first:03d}"
+    tag = f"frontier_{args.model}{suffix}_{args.costs}_eps{args.eps}_{args.first:03d}"
     path = os.path.join(OUT_DIR, tag + ".json")
-    rows = json.load(open(path)) if os.path.exists(path) else []
-    done = {k for k in {r["redraw"] for r in rows}
-            if sum(r["redraw"] == k for r in rows) == len(grid)}
-    rows = [r for r in rows if r["redraw"] in done]
+    out = json.load(open(path)) if os.path.exists(path) else []
+    done = {k for k in {r["redraw"] for r in out}
+            if sum(r["redraw"] == k for r in out) == len(grid)}
+    out = [r for r in out if r["redraw"] in done]
     for k in range(args.first, last):
         if k in done:
             continue
-        rng = np.random.default_rng([args.seed, k])     # == stage_redraw's
+        # == stage_redraw's stream over ALL rows, then restricted: a row kept by
+        # a design carries the same noise as in R1, so designs are paired
+        rng = np.random.default_rng([args.seed, k])
         y = md.y_true + sigma * rng.standard_normal(len(md.y_true))
-        coef, clean = cr.fit(y), cr.fit(md.y_true)
+        coef, clean = cr.fit(y[rows]), cr.fit(md.y_true[rows])
         c = costs[k]
         obj_range = float(np.abs(c) @ span)
         for kind, label, dial, R, shift in grid:
@@ -553,10 +582,10 @@ def stage_frontier(args):
                            f_ode=ode_flow(inst, xs),
                            margin=float(R * cr.snorm(xs)[0] + shift),
                            x=xs.tolist())
-            rows.append(row)
+            out.append(row)
         print(f"redraw {k} done", flush=True)
-        _save(tag + ".json", rows)
-    _save(tag + ".json", rows)
+        _save(tag + ".json", out)
+    _save(tag + ".json", out)
 
 
 def stage_frontier_collect(args):
@@ -564,8 +593,9 @@ def stage_frontier_collect(args):
     setting of each kind reaching the target against the ODE."""
     import glob
     import pandas as pd
+    _, suffix = design_rows(setup()[1], args)
     files = sorted(glob.glob(os.path.join(
-        OUT_DIR, f"frontier_{args.model}_{args.costs}_eps{args.eps}_*.json")))
+        OUT_DIR, f"frontier_{args.model}{suffix}_{args.costs}_eps{args.eps}_*.json")))
     rows = [r for f in files for r in json.load(open(f))]
     df = pd.DataFrame(rows)
     nom = df[df.kind == "nominal"].set_index("redraw")["obj"]
@@ -585,7 +615,7 @@ def stage_frontier_collect(args):
         "cost_pct": g.cost_pct.mean(), "margin_at_x": g.margin.mean(),
         "time_s": g.time_s.mean()}).reset_index()
     tab = tab.sort_values(["kind", "dial"], kind="stable")
-    tag = f"frontier_{args.model}_{args.costs}_eps{args.eps}"
+    tag = f"frontier_{args.model}{suffix}_{args.costs}_eps{args.eps}"
     print(f"\n{tag}: {df.redraw.nunique()} redraws from {len(files)} files")
     with pd.option_context("display.width", 200, "display.max_rows", 100):
         print(tab.round(3).to_string(index=False))
@@ -671,6 +701,10 @@ if __name__ == "__main__":
     ap.add_argument("--n-draws", type=int, default=10)
     ap.add_argument("--n-redraws", type=int, default=100)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--design", choices=["full", "sub", "thin"], default="full",
+                    help="frontier: which training rows (see design_rows)")
+    ap.add_argument("--n-train", type=int, default=200, help="--design sub")
+    ap.add_argument("--thin-keep", type=float, default=0.2, help="--design thin")
     args = ap.parse_args()
     {"solve": stage_solve, "radius": stage_radius, "redraw": stage_redraw,
      "prep": stage_prep, "collect": stage_collect, "frontier": stage_frontier,
