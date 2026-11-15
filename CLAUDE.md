@@ -26,7 +26,11 @@ which results are current, and the traps that reading the code would not reveal 
 the code itself is well commented, so don't restate it here.
 
 Dated `research_update_YYYY-MM-DD.tex` decks carry the numbers; a new deck
-supersedes the last rather than editing it. Current is **2026-09-08** (5 frames:
+supersedes the last rather than editing it. **From 2026-09-28 on, weekly decks
+live in `../research-updates/YYYY-MM-DD/`** and cover every project; robust-cl
+feeds them through `notes/progress.md` (add a dated entry when a result lands).
+The dated decks still in `presentations/` are copied there with frozen figures.
+Current is **2026-09-08** (5 frames:
 what changed since 08-28, the reactor's balanced-`c` ODE test stage, gastric's
 completed sweep with its folds+full test rows, gastric's tuning frontier, next
 steps); **2026-08-28** is the
@@ -789,3 +793,7 @@ gastric only.
   can un-freeze it.
 - `chemo_replication_gaps.tex` and `robustcl_chemo_regimen.tex` are standalone
   one-offs.
+- **New weekly decks go in `../research-updates/`, not here** (built with the
+  `/weekly-update` skill). They copy figures into their own `figs/`, which
+  retires the shared-stem problem above for future decks. `method.tex` and
+  standalone one-offs stay in `presentations/`.

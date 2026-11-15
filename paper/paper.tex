@@ -1,93 +1,299 @@
-% Paper outline -- section skeleton only, no content yet.
-% Method reference of record is presentations/method.tex; numbers come from the
-% current dated update deck (see CLAUDE.md, "Which results are current").
+% Paper A draft. Structure follows paper_outline_v3.md; experiments and
+% sequencing are in paper_plan.md.
+%
+% Sections that are settled are written as prose. Everything else sits in an
+% \begin{outline} ... \end{outline} block, which prints in a grey frame headed
+% "Outline (not yet written)". Numbers that have not been measured on the
+% paper's design are written \tbd{..}.
 \documentclass[11pt]{article}
 
 \usepackage{amsmath,amssymb,amsthm}
 \usepackage{booktabs}
 \usepackage{graphicx}
 \usepackage[margin=1in]{geometry}
+\usepackage[authoryear,round]{natbib}
+\usepackage{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage{enumitem}
 \usepackage{hyperref}
 
-\title{Robust Constraint Learning by Cutting Planes}
-\author{Josephine Situ}
-\date{\today}
+\newtheorem{theorem}{Theorem}
+\newtheorem{corollary}{Corollary}
+\newtheorem{proposition}{Proposition}
+\theoremstyle{definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{definition}{Definition}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\newtcolorbox{outline}{breakable, colback=black!4, colframe=black!35,
+  title={Outline (not yet written)}, fonttitle=\small\bfseries,
+  left=4pt, right=4pt, top=3pt, bottom=3pt}
+\newcommand{\tbd}[1]{\textcolor{red!70!black}{[#1]}}
+\setlist{itemsep=2pt, topsep=3pt}
+
+\title{Constraint Learning under Label Noise:\\
+A Robust Counterpart that Stays Feasible at the Optimum}
+\author{Josephine Situ \and Dimitris Bertsimas}
+\date{Draft of \today}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-% TODO
+In constraint learning, a constraint with no known form is replaced by a model
+fitted on data and embedded in a mixed-integer optimization problem. When the
+training labels are noisy, the optimizer selects the point where the model errs
+in its favour, so the prescribed decision often violates the true constraint.
+We propose a robust counterpart whose margin $R\|s(x)\|_2$ grows with the
+sensitivity of the prediction at $x$ to the training labels. It applies to
+ridge regression, trees and forests, and last-layer networks, uses every
+training row, and is solved as a mixed-integer second-order cone problem or by
+finitely many cuts. We prove that, at any feasible decision, however it was
+chosen, the probability of violating the constraint of the model fitted on
+noise-free labels is at most $\epsilon$, and give a radius computed by
+simulation from the fitted model and the noise level. On a membrane reactor
+design problem with a mechanistic ground truth, the nominal decision is
+feasible in \tbd{N}\% of runs and the robust counterpart in \tbd{X}\% at a
+target of 90\%, at \tbd{Z}\% lower cost than a constant margin, the bootstrap
+wrapper and conformal constraint learning at the same feasibility. On
+chemotherapy regimen design with real trial data and six learned constraints,
+it prescribes for \tbd{A}\% of cohorts and \tbd{B}\% of its prescriptions
+satisfy every toxicity limit.
 \end{abstract}
 
+% ---------------------------------------------------------------------------
 \section{Introduction}
-\subsection{Motivation: learned constraints inherit label noise}
-\subsection{Contributions}
-\subsection{Outline}
 
-\section{Related Work}
-\subsection{Constraint learning / optimization with embedded models}
-\subsection{Robust optimization and data-driven uncertainty sets}
-\subsection{Conformal and distribution-free calibration}
-\subsection{Cutting-plane methods for robust counterparts}
+\begin{outline}
+\begin{itemize}
+  \item Open with the failure, in numbers: on the reactor with the network of
+    \citet{ovalle2025cmicl}, the nominal decision is infeasible under the ODE
+    in \tbd{most} runs.
+  \item Why it happens: the optimizer searches for the point where the model
+    is most optimistic. A bound that holds at a fixed $x$ does not hold at
+    $x^\star$.
+  \item Why existing safeguards fall short. A constant margin pays the same
+    everywhere and has no rule for its size. The wrapper
+    \citep{maragno2025mixed} has no link between its fraction and a violation
+    level. C-MICL \citep{ovalle2025cmicl} varies its margin with $x$ through a
+    second, learned model, whose own errors the optimizer can exploit; it also
+    holds out calibration rows and doubles the embedded model.
+  \item What we do: a margin that varies with the decision and is computed,
+    not learned.
+  \item What a practitioner gets: a radius set from the target violation
+    level, with no ground truth, no calibration split and no tuning run.
+  \item Contributions (four): the counterpart; exact solution methods; the
+    guarantee at $x^\star$ with a simulated radius; experiments \tbd{to run}.
+  \item Literature, one page: constraint learning
+    \citep{fajemisin2024optimization, maragno2025mixed}; conformal
+    \citep{ovalle2025cmicl}; robust optimization \citep{bertsimas2022robust};
+    other robust constraint learning; simultaneous confidence bands (Scheff\'e,
+    sup-$t$), post-selection inference and the optimizer's curse.
+\end{itemize}
+\end{outline}
 
-\section{Problem Formulation}
-\subsection{Nominal embedded-model program}
-\subsection{Label perturbations and the induced model set}
-\subsection{Robust counterpart}
-\subsection{The uncertainty set $\mathcal{D}$}
-\subsubsection{Radius $\rho$ and the scale statistic}
-\subsubsection{Label-domain restrictions}
-\subsubsection{The scenario bank}
+% ---------------------------------------------------------------------------
+\section{Problem and method}\label{sec:method}
 
-\section{Methods}
-\subsection{Nominal}
-\subsection{Scenario wrapper}
-\subsection{Conformal tightening (C-MICL)}
-\subsection{RHS margin}
-\subsection{Cutting planes (proposed)}
-\subsubsection{Separation over the bank}
-\subsubsection{Cut generation and rollback}
-\subsubsection{Termination and complexity}
-\subsubsection{Coverage budget}
+\subsection{Constraint learning}
+A decision $x \in \mathcal{X} \subseteq \mathbb{R}^p$ minimizes a known cost
+subject to known constraints, which define $\mathcal{X}$, and one constraint
+$h^\star(x) \le b$ whose function $h^\star$ is not known. Constraint learning
+\citep{fajemisin2024optimization, maragno2025mixed} replaces $h^\star$ by a
+model $f(\cdot\,;\theta)$ fitted on data $(x_i, y_i)_{i=1}^n$ and embeds the
+fitted model in the optimization problem:
+\begin{equation}\label{eq:nominal}
+  \min_{x \in \mathcal{X}} \; c^\top x
+  \quad\text{s.t.}\quad f(x;\hat\theta) \le b .
+\end{equation}
+We call \eqref{eq:nominal} the nominal problem. The set $\mathcal{X}$ includes
+any trust region that keeps $x$ near the training inputs.
 
-\section{Experimental Design}
-\subsection{Instances}
-\subsubsection{DMA-MR reactor}
-\subsubsection{WFP}
-\subsubsection{Gastric cancer chemotherapy}
-\subsection{Model class selection}
-\subsection{MIP encodings and solver settings}
-\subsection{Calibration protocol}
-\subsubsection{Each method's own dial}
-\subsection{Evaluation protocol}
-\subsubsection{Ground-truth judges}
-\subsubsection{Tuning versus test}
-\subsubsection{Robustness over training draws}
+\subsection{Label noise}
+The training inputs $x_i$ are observed exactly. The labels are observed with
+noise: $y = y^\star + \varepsilon$, where $y^\star_i = h^\star(x_i)$. We write
+$\theta(y)$ for the model fitted on labels $y$, $\hat\theta = \theta(y)$ for
+the model we have, and $\theta^\star = \theta(y^\star)$ for the model the same
+procedure would return on noise-free labels. We call $f(\cdot\,;\theta^\star)$
+the clean-label model.
 
-\section{Results}
-\subsection{Objective--feasibility frontiers}
-\subsection{Held-out performance at the tuned dial}
-\subsection{Tail behavior over training draws}
-\subsection{Sensitivity to the uncertainty radius}
-\subsection{Ablations}
-\subsubsection{Bank size and separation path}
-\subsubsection{Coverage cap}
-\subsection{Computational cost}
+\begin{outline}
+One sentence per case study on where the noise comes from: measurement noise
+in the reactor, sampling error of a trial arm's toxicity rate, survey noise in
+palatability.
+\end{outline}
 
+\subsection{The sensitivity vector}
+Many regression models are affine in their training labels once their
+structure is fixed: there is a vector $s(x) \in \mathbb{R}^n$ and a scalar
+$c(x)$, neither depending on $y$, with
+\begin{equation}\label{eq:affine}
+  f(x;\theta(y)) = s(x)^\top y + c(x) .
+\end{equation}
+The entry $s_i(x)$ is the weight that training label $i$ carries in the
+prediction at $x$. We call $s(x)$ the sensitivity vector.
+
+\begin{itemize}
+  \item \emph{Ridge regression} on features $\phi(x)$, with training matrix
+    $Z$ and penalty $\lambda$: $s(x) = Z(Z^\top Z + \lambda I)^{-1}\phi(x)$.
+    Its squared norm is, up to the penalty, the leverage of $x$.
+  \item \emph{Last-layer network}: the hidden layers are frozen and the output
+    layer is fitted by ridge regression, so $\phi(x)$ is the last hidden
+    layer's activation and $s(x)$ is as above.
+  \item \emph{Regression tree} with fixed splits: $s_i(x) = 1/n_\ell$ if row
+    $i$ falls in the leaf $\ell$ that contains $x$ and $0$ otherwise, where
+    $n_\ell$ is the number of training rows in that leaf. So
+    $\|s(x)\|_2 = 1/\sqrt{n_\ell}$.
+  \item \emph{Forest} with fixed splits: the average of its trees' vectors.
+\end{itemize}
+
+\subsection{The robust counterpart}
+Suppose the noise vector lies in the ball $\{\delta : \|\delta\|_2 \le R\}$.
+The clean labels are then $y - \delta$ for some $\delta$ in the ball, and by
+\eqref{eq:affine} the clean-label prediction is $f(x;\hat\theta) -
+s(x)^\top\delta$. Requiring the constraint for every such $\delta$ gives
+\begin{equation}\label{eq:rc-method}
+  f(x;\hat\theta) + R\,\|s(x)\|_2 \le b ,
+\end{equation}
+since $\max_{\|\delta\|_2 \le R} \, -s(x)^\top\delta = R\|s(x)\|_2$. This is
+the exact robust counterpart; nothing is approximated. The robust problem is
+\eqref{eq:nominal} with \eqref{eq:rc-method} in place of the learned
+constraint.
+
+The margin $R\|s(x)\|_2$ depends on the decision. For a tree it is
+$R/\sqrt{n_\ell}$, a multiple of the standard error of the leaf mean. For ridge
+regression it is a multiple of the square root of the leverage. In both cases
+it is large where few training labels determine the prediction, which is where
+the optimizer is extrapolating, and small where many do. It is computed from
+the fitted model and the training inputs; no second model is trained.
+
+\begin{outline}
+\begin{itemize}
+  \item Weighted norm when the noise levels $\sigma_i$ are known and unequal
+    (trial arms of different sizes).
+  \item Figure 1: the reactor's feasible region under the nominal model, a
+    constant margin and the robust counterpart, with the true boundary.
+  \item Choosing $R$, the recipe: (0) fix the model before looking at the
+    labels; (1) estimate $\sigma$ from out-of-fold residuals; (2) simulate the
+    radius for the target $\epsilon$ (Section~\ref{sec:guarantee}); (3) solve.
+    No ground truth and no calibration rows are used.
+\end{itemize}
+\end{outline}
+
+% ---------------------------------------------------------------------------
+\section{Guarantee at the optimum}\label{sec:guarantee}
+
+A confidence bound on $f(x;\theta^\star)$ at a fixed $x$ does not hold at the
+optimizer's $x^\star$, because $x^\star$ is chosen using the same noisy labels.
+This section bounds the violation probability at any feasible point, however
+it was chosen.
+
+\input{paper_a_guarantee}
+
+\begin{outline}
+\begin{itemize}
+  \item \textbf{Simulated radius} (the radius the experiments use). Draw $N$
+    noise vectors, compute $W$ for each by maximizing over $\mathcal{X}$, and
+    take the $\lceil (N+1)(1-\epsilon) \rceil$-th smallest. The true $W$ and
+    the $N$ draws are exchangeable, so the violation probability is at most
+    $\epsilon$. Each maximization is solved with the solver's upper bound.
+    Smaller than the closed-form radii because the feasible decisions reach
+    only part of the model's parameter space. \tbd{to prove: short}
+  \item One table of radii: pointwise (not valid at $x^\star$), closed-form,
+    simulated. \tbd{first numbers on the reactor: 1.28$\sigma$, 8.4$\sigma$,
+    about 3.6$\sigma$ at $\epsilon = 0.1$ for cubic ridge; not the final
+    model}
+  \item Several constraints: the simulated joint radius. \tbd{to prove}
+  \item Estimated $\sigma$: guarantee with an upper confidence bound.
+    \tbd{to prove}
+  \item Learned structure: what honest fitting means for trees and for the
+    hidden layers of a network; the method runs on any frozen structure.
+  \item Remark on the true function: extending the guarantee from
+    $f(\cdot\,;\theta^\star)$ to $h^\star$ needs an assumption on $h^\star$;
+    Section~\ref{sec:experiments} measures the gap.
+\end{itemize}
+\end{outline}
+
+% ---------------------------------------------------------------------------
+\section{Solving the robust counterpart}\label{sec:solving}
+
+\begin{outline}
+\begin{itemize}
+  \item Linear models and last-layer networks: one second-order cone of the
+    dimension of the feature vector; hidden layers by the standard ReLU
+    embedding. \tbd{first test: cubic ridge on the reactor solves in about one
+    second; a (32, 32) network in 15 to 100 seconds with untightened big-M
+    bounds}
+  \item Trees and forests: $\|s(x)\|_2$ through the leaf binaries; directed
+    cuts; at most $K$ iterations. \tbd{to prove: short}
+  \item Certifying any decision: one evaluation of \eqref{eq:rc-method} at a
+    given $x$ checks whether the guarantee applies, whichever method produced
+    $x$.
+\end{itemize}
+\end{outline}
+
+% ---------------------------------------------------------------------------
+\section{Baselines}\label{sec:baselines}
+
+\begin{outline}
+\begin{itemize}
+  \item Nominal; constant margin; wrapper \citep{maragno2025mixed}; C-MICL
+    \citep{ovalle2025cmicl} at its published settings.
+  \item One model per problem for every method.
+  \item Each method has one conservatism parameter. Two comparisons: as
+    prescribed for a 90\% target, and at equal ground-truth feasibility.
+\end{itemize}
+\end{outline}
+
+% ---------------------------------------------------------------------------
+\section{Computational experiments}\label{sec:experiments}
+
+\begin{outline}
+Nothing in this section has been run on the paper's design. The lead model on
+the reactor is not yet decided (see \texttt{paper\_plan.md}, ``Tonight'').
+\begin{itemize}
+  \item \textbf{Membrane reactor design.} One learned constraint, ODE oracle,
+    $\sigma = 2$; the cost vectors of \citet{ovalle2025cmicl} with the noise
+    redrawn for each. Table 1: feasibility, cost, fraction solved, solve time,
+    rows used, per method at target 0.9. Figure 2: cost against ground-truth
+    feasibility.
+  \item \textbf{Is the guarantee tight enough to use?} Same runs at three
+    radii and three values of $\epsilon$. Figure 3: violation rate against
+    $\epsilon$, against the clean-label model and the ODE.
+  \item \textbf{Chemotherapy regimen design.} Real trial data, six learned
+    constraints, the protocol of \citet{maragno2025mixed}. Table 2: fraction
+    of cohorts prescribed for, toxicity limits met, predicted survival.
+  \item \textbf{World Food Programme diet.} Table 3, same columns as Table 1.
+\end{itemize}
+\end{outline}
+
+% ---------------------------------------------------------------------------
 \section{Discussion}
-\subsection{Price of robustness}
-\subsection{Limitations}
-\subsection{Future work}
 
-\section{Conclusion}
+\begin{outline}
+\begin{itemize}
+  \item When to use which safeguard.
+  \item Limitations: the guarantee is against the clean-label model; learned
+    structure needs honest fitting for the theorem; models not affine in the
+    labels.
+  \item Classification, one paragraph: linear probability models and
+    classification forests are affine in Bernoulli labels, whose noise is
+    bounded; logistic models are not. Future work.
+  \item Future work: feature noise, model selection for embedding, recourse.
+\end{itemize}
+\end{outline}
+
+\bibliographystyle{plainnat}
+\bibliography{paper_a}
 
 \appendix
-\section{Formulation details}
-\section{Additional experimental detail}
-\section{Additional results}
-
-\bibliographystyle{plain}
-% \bibliography{refs}
+\section{Proofs and formulations}
+\begin{outline}
+Sub-Gaussian version of the subspace radius; formulations per model class; the
+bias margin for Lipschitz $h^\star$ (if proved); experimental detail and three
+checks on the reactor (standard against honest forest, non-Gaussian noise,
+cubic ridge).
+\end{outline}
 
 \end{document}
