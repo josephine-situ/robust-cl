@@ -1,34 +1,420 @@
-% Starter file. Entries marked VERIFY were written from memory: check authors,
-% venue and year against the source before submission.
+% Bibliography for paper.tex. Entries are checked against the Zotero record
+% (key in the comment above each) or, where the item is not in Zotero, against
+% the publisher's page. An entry marked VERIFY has not been checked.
 
+% Zotero: not in library. Dynamic Ideas, Belmont MA.
 @book{bertsimas2022robust,
   author    = {Bertsimas, Dimitris and den Hertog, Dick},
   title     = {Robust and Adaptive Optimization},
   publisher = {Dynamic Ideas},
+  address   = {Belmont, MA},
   year      = {2022}
 }
 
-% VERIFY
+% Zotero: 3LMUQCIP
 @article{maragno2025mixed,
   author  = {Maragno, Donato and Wiberg, Holly and Bertsimas, Dimitris and
-             Birbil, {\c{S}}. {\.I}lker and den Hertog, Dick and Fajemisin, Adejuyigbe O.},
+             Birbil, {\c{S}}. {\.I}lker and den Hertog, Dick and
+             Fajemisin, Adejuyigbe O.},
   title   = {Mixed-Integer Optimization with Constraint Learning},
   journal = {Operations Research},
-  year    = {2025}
+  year    = {2025},
+  volume  = {73},
+  number  = {2},
+  pages   = {1011--1028},
+  doi     = {10.1287/opre.2021.0707}
 }
 
-% VERIFY
-@article{ovalle2025cmicl,
-  author  = {Ovalle, Daniel and others},
-  title   = {Conformal Mixed-Integer Constraint Learning with Feasibility Guarantees},
-  journal = {arXiv preprint},
-  year    = {2025}
+% Zotero: E5D7SQLI. Preprint; no journal version as of 2026-11-14.
+@misc{ovalle2025cmicl,
+  author        = {Ovalle, Daniel and Biegler, Lorenz T. and Grossmann,
+                   Ignacio E. and Laird, Carl D. and Dulce Rubio, Mateo},
+  title         = {Conformal Mixed-Integer Constraint Learning with
+                   Feasibility Guarantees},
+  year          = {2025},
+  eprint        = {2506.03531},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  howpublished  = {arXiv:2506.03531},
+  doi           = {10.48550/arXiv.2506.03531}
 }
 
-% VERIFY
+% Zotero: EIBR8XC5
 @article{fajemisin2024optimization,
   author  = {Fajemisin, Adejuyigbe O. and Maragno, Donato and den Hertog, Dick},
   title   = {Optimization with Constraint Learning: A Framework and Survey},
   journal = {European Journal of Operational Research},
-  year    = {2024}
+  year    = {2024},
+  volume  = {314},
+  number  = {1},
+  pages   = {1--14},
+  doi     = {10.1016/j.ejor.2023.04.041}
+}
+
+% ---------------------------------------------------------------------------
+% Literature check of 2026-11-14 (notes: paper_a_literature.md). Every entry
+% below was pulled into Zotero by DOI (Crossref metadata) or arXiv id and
+% tagged lit-check-2026-11-14; volume and year follow the journal issue, not
+% the online-first date Zotero records.
+
+% --- Other constraint learning with uncertainty ---------------------------
+
+% Zotero: 2PXRHLN5
+@article{alcantara2023datadriven,
+  author  = {Alc{\'a}ntara, Antonio and Ruiz, Carlos},
+  title   = {On Data-Driven Chance Constraint Learning for Mixed-Integer
+             Optimization Problems},
+  journal = {Applied Mathematical Modelling},
+  year    = {2023},
+  volume  = {121},
+  pages   = {445--462},
+  doi     = {10.1016/j.apm.2023.04.032}
+}
+
+% Zotero: FQVA5R86
+@article{cremer2019datadriven,
+  author  = {Cremer, Jochen L. and Konstantelos, Ioannis and Tindemans,
+             Simon H. and Strbac, Goran},
+  title   = {Data-Driven Power System Operation: Exploring the Balance
+             Between Cost and Risk},
+  journal = {IEEE Transactions on Power Systems},
+  year    = {2019},
+  volume  = {34},
+  number  = {1},
+  pages   = {791--801},
+  doi     = {10.1109/TPWRS.2018.2867209}
+}
+
+% Zotero: UJEV9YU8. Preprint.
+@misc{oztekin2026dcl,
+  author        = {Oztekin, Ezgi and Oztoprak, Figen and Birbil, {\c{S}}. {\.I}lker},
+  title         = {Optimization with Dynamic Constraint Learning ({DCL})},
+  year          = {2026},
+  eprint        = {2607.25719},
+  archivePrefix = {arXiv},
+  howpublished  = {arXiv:2607.25719},
+  doi           = {10.48550/arXiv.2607.25719}
+}
+
+% --- Simultaneous bands, post-selection inference, optimizer's curse ------
+
+% Zotero: 49M6VHU3
+@article{scheffe1953method,
+  author  = {Scheff{\'e}, Henry},
+  title   = {A Method for Judging All Contrasts in the Analysis of Variance},
+  journal = {Biometrika},
+  year    = {1953},
+  volume  = {40},
+  number  = {1--2},
+  pages   = {87--110},
+  doi     = {10.1093/biomet/40.1-2.87}
+}
+
+% Zotero: ABIIHP89
+@article{wynn1971simultaneous,
+  author  = {Wynn, Henry P. and Bloomfield, P.},
+  title   = {Simultaneous Confidence Bands in Regression Analysis},
+  journal = {Journal of the Royal Statistical Society: Series B},
+  year    = {1971},
+  volume  = {33},
+  number  = {2},
+  pages   = {202--217},
+  doi     = {10.1111/j.2517-6161.1971.tb00873.x}
+}
+
+% Zotero: GRCPAWLT
+@article{naiman1987simultaneous,
+  author  = {Naiman, Daniel Q.},
+  title   = {Simultaneous Confidence Bounds in Multiple Regression Using
+             Predictor Variable Constraints},
+  journal = {Journal of the American Statistical Association},
+  year    = {1987},
+  volume  = {82},
+  number  = {397},
+  pages   = {214--219},
+  doi     = {10.1080/01621459.1987.10478422}
+}
+
+% Zotero: SADELGG9. The closest statistical precedent for the simulated
+% radius: the critical constant is the simulated quantile of a sup over a box
+% of the covariates, each draw computed by an optimization (a QP).
+@article{liu2005simulation,
+  author  = {Liu, W. and Jamshidian, M. and Zhang, Y. and Donnelly, J.},
+  title   = {Simulation-Based Simultaneous Confidence Bands in Multiple Linear
+             Regression with Predictor Variables Constrained in Intervals},
+  journal = {Journal of Computational and Graphical Statistics},
+  year    = {2005},
+  volume  = {14},
+  number  = {2},
+  pages   = {459--484},
+  doi     = {10.1198/106186005X47408}
+}
+
+% Zotero: 9SJJHH27 (Open Library metadata; publisher checked by hand)
+@book{liu2010simultaneous,
+  author    = {Liu, Wei},
+  title     = {Simultaneous Inference in Regression},
+  publisher = {Chapman \& Hall/CRC},
+  address   = {Boca Raton, FL},
+  year      = {2010},
+  isbn      = {978-1-4398-2809-0}
+}
+
+% Zotero: GL2ZGHYK
+@article{montielolea2019simultaneous,
+  author  = {Montiel Olea, Jos{\'e} Luis and Plagborg-M{\o}ller, Mikkel},
+  title   = {Simultaneous Confidence Bands: Theory, Implementation, and an
+             Application to {SVARs}},
+  journal = {Journal of Applied Econometrics},
+  year    = {2019},
+  volume  = {34},
+  number  = {1},
+  pages   = {1--17},
+  doi     = {10.1002/jae.2656}
+}
+
+% Zotero: N9W3LGMV
+@article{berk2013valid,
+  author  = {Berk, Richard and Brown, Lawrence and Buja, Andreas and
+             Zhang, Kai and Zhao, Linda},
+  title   = {Valid Post-Selection Inference},
+  journal = {Annals of Statistics},
+  year    = {2013},
+  volume  = {41},
+  number  = {2},
+  pages   = {802--837},
+  doi     = {10.1214/12-AOS1077}
+}
+
+% Zotero: 6MGF7B62
+@article{andrews2024inference,
+  author  = {Andrews, Isaiah and Kitagawa, Toru and McCloskey, Adam},
+  title   = {Inference on Winners},
+  journal = {Quarterly Journal of Economics},
+  year    = {2024},
+  volume  = {139},
+  number  = {1},
+  pages   = {305--358},
+  doi     = {10.1093/qje/qjad043}
+}
+
+% Zotero: AF45NBBE
+@article{smith2006optimizer,
+  author  = {Smith, James E. and Winkler, Robert L.},
+  title   = {The Optimizer's Curse: Skepticism and Postdecision Surprise in
+             Decision Analysis},
+  journal = {Management Science},
+  year    = {2006},
+  volume  = {52},
+  number  = {3},
+  pages   = {311--322},
+  doi     = {10.1287/mnsc.1050.0451}
+}
+
+% --- Robust optimization with statistical guarantees ----------------------
+
+% Zotero: T8FZAPQG
+@article{goldfarb2003robust,
+  author  = {Goldfarb, Donald and Iyengar, Garud},
+  title   = {Robust Portfolio Selection Problems},
+  journal = {Mathematics of Operations Research},
+  year    = {2003},
+  volume  = {28},
+  number  = {1},
+  pages   = {1--38},
+  doi     = {10.1287/moor.28.1.1.14260}
+}
+
+% Zotero: 5RLHYNM2
+@article{bertsimas2018datadriven,
+  author  = {Bertsimas, Dimitris and Gupta, Vishal and Kallus, Nathan},
+  title   = {Data-Driven Robust Optimization},
+  journal = {Mathematical Programming},
+  year    = {2018},
+  volume  = {167},
+  number  = {2},
+  pages   = {235--292},
+  doi     = {10.1007/s10107-017-1125-8}
+}
+
+% Zotero: KHRKFSQK
+@article{hong2021learning,
+  author  = {Hong, L. Jeff and Huang, Zhiyuan and Lam, Henry},
+  title   = {Learning-Based Robust Optimization: Procedures and Statistical
+             Guarantees},
+  journal = {Management Science},
+  year    = {2021},
+  volume  = {67},
+  number  = {6},
+  pages   = {3447--3467},
+  doi     = {10.1287/mnsc.2020.3640}
+}
+
+% Zotero: E3UZB2HL
+@article{hullen2020managing,
+  author  = {H{\"u}llen, Gordon and Zhai, Jianyuan and Kim, Sun Hye and
+             Sinha, Anshuman and Realff, Matthew J. and Boukouvala, Fani},
+  title   = {Managing Uncertainty in Data-Driven Simulation-Based Optimization},
+  journal = {Computers \& Chemical Engineering},
+  year    = {2020},
+  volume  = {136},
+  pages   = {106519},
+  doi     = {10.1016/j.compchemeng.2019.106519}
+}
+
+% Zotero: TIHNIBSW
+@article{mutapcic2009cutting,
+  author  = {Mutapcic, Almir and Boyd, Stephen},
+  title   = {Cutting-Set Methods for Robust Convex Optimization with
+             Pessimizing Oracles},
+  journal = {Optimization Methods and Software},
+  year    = {2009},
+  volume  = {24},
+  number  = {3},
+  pages   = {381--406},
+  doi     = {10.1080/10556780802712889}
+}
+
+% Zotero: YAGHC6NB
+@article{bertsimas2016reformulation,
+  author  = {Bertsimas, Dimitris and Dunning, Iain and Lubin, Miles},
+  title   = {Reformulation versus Cutting-Planes for Robust Optimization:
+             A Computational Study},
+  journal = {Computational Management Science},
+  year    = {2016},
+  volume  = {13},
+  number  = {2},
+  pages   = {195--217},
+  doi     = {10.1007/s10287-015-0236-z}
+}
+
+% --- Uniform bounds in safe learning and GP-constrained optimization ------
+
+% Zotero: XAVWQ2CJ
+@article{srinivas2012information,
+  author  = {Srinivas, Niranjan and Krause, Andreas and Kakade, Sham M. and
+             Seeger, Matthias W.},
+  title   = {Information-Theoretic Regret Bounds for {G}aussian Process
+             Optimization in the Bandit Setting},
+  journal = {IEEE Transactions on Information Theory},
+  year    = {2012},
+  volume  = {58},
+  number  = {5},
+  pages   = {3250--3265},
+  doi     = {10.1109/TIT.2011.2182033}
+}
+
+% Zotero: JZUK22KH
+@inproceedings{sui2015safe,
+  author    = {Sui, Yanan and Gotovos, Alkis and Burdick, Joel W. and
+               Krause, Andreas},
+  title     = {Safe Exploration for Optimization with {G}aussian Processes},
+  booktitle = {Proceedings of the 32nd International Conference on Machine
+               Learning},
+  series    = {Proceedings of Machine Learning Research},
+  volume    = {37},
+  pages     = {997--1005},
+  year      = {2015}
+}
+
+% Zotero: SLPLCEP7
+@article{berkenkamp2023bayesian,
+  author  = {Berkenkamp, Felix and Krause, Andreas and Schoellig, Angela P.},
+  title   = {Bayesian Optimization with Safety Constraints: Safe and Automatic
+             Parameter Tuning in Robotics},
+  journal = {Machine Learning},
+  year    = {2023},
+  volume  = {112},
+  number  = {10},
+  pages   = {3713--3747},
+  doi     = {10.1007/s10994-021-06019-1}
+}
+
+% Zotero: ASV7RAV7 (arXiv record; proceedings details from the NeurIPS page)
+@inproceedings{amani2019linear,
+  author    = {Amani, Sanae and Alizadeh, Mahnoosh and Thrampoulidis, Christos},
+  title     = {Linear Stochastic Bandits Under Safety Constraints},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {32},
+  pages     = {9256--9266},
+  year      = {2019}
+}
+
+% Zotero: 9SUF8BAC. The closest single precedent: its noise term bounds
+% |s(x)^T eps| uniformly over the domain for kernel ridge regression.
+@inproceedings{fiedler2021practical,
+  author    = {Fiedler, Christian and Scherer, Carsten W. and Trimpe, Sebastian},
+  title     = {Practical and Rigorous Uncertainty Bounds for {G}aussian Process
+               Regression},
+  booktitle = {Proceedings of the AAAI Conference on Artificial Intelligence},
+  volume    = {35},
+  pages     = {7439--7447},
+  year      = {2021},
+  doi       = {10.1609/aaai.v35i8.16912}
+}
+
+% Zotero: A2J35WWV
+@article{schweidtmann2021deterministic,
+  author  = {Schweidtmann, Artur M. and Bongartz, Dominik and Grothe, Daniel and
+             Kerkenhoff, Tim and Lin, Xiaopeng and Najman, Jaromi{\l} and
+             Mitsos, Alexander},
+  title   = {Deterministic Global Optimization with {G}aussian Processes
+             Embedded},
+  journal = {Mathematical Programming Computation},
+  year    = {2021},
+  volume  = {13},
+  number  = {3},
+  pages   = {553--581},
+  doi     = {10.1007/s12532-021-00204-y}
+}
+
+% Zotero: RHY78G7J
+@article{wiebe2022robust,
+  author  = {Wiebe, J. and Cec{\'i}lio, I. and Dunlop, J. and Misener, R.},
+  title   = {A Robust Approach to Warped {G}aussian Process-Constrained
+             Optimization},
+  journal = {Mathematical Programming},
+  year    = {2022},
+  volume  = {196},
+  number  = {1--2},
+  pages   = {805--839},
+  doi     = {10.1007/s10107-021-01762-8}
+}
+
+% Zotero: SXVD5GY8 (arXiv record; proceedings details from the NeurIPS page)
+@inproceedings{thebelt2022tree,
+  author    = {Thebelt, Alexander and Tsay, Calvin and Lee, Robert M. and
+               Sudermann-Merx, Nathan and Walz, David and Shafei, Behrang and
+               Misener, Ruth},
+  title     = {Tree Ensemble Kernels for {B}ayesian Optimization with Known
+               Constraints over Mixed-Feature Spaces},
+  booktitle = {Advances in Neural Information Processing Systems},
+  volume    = {35},
+  pages     = {37401--37415},
+  year      = {2022}
+}
+
+% --- Statistical ingredients for forests ----------------------------------
+
+% Zotero: NA7PSE3K
+@article{wager2018estimation,
+  author  = {Wager, Stefan and Athey, Susan},
+  title   = {Estimation and Inference of Heterogeneous Treatment Effects using
+             Random Forests},
+  journal = {Journal of the American Statistical Association},
+  year    = {2018},
+  volume  = {113},
+  number  = {523},
+  pages   = {1228--1242},
+  doi     = {10.1080/01621459.2017.1319839}
+}
+
+% Zotero: MMBB5GMH
+@article{meinshausen2006quantile,
+  author  = {Meinshausen, Nicolai},
+  title   = {Quantile Regression Forests},
+  journal = {Journal of Machine Learning Research},
+  year    = {2006},
+  volume  = {7},
+  pages   = {983--999}
 }

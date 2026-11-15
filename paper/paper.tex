@@ -57,9 +57,11 @@ design problem with a mechanistic ground truth, the nominal decision is
 feasible in \tbd{N}\% of runs and the robust counterpart in \tbd{X}\% at a
 target of 90\%, at \tbd{Z}\% lower cost than a constant margin, the bootstrap
 wrapper and conformal constraint learning at the same feasibility. On
-chemotherapy regimen design with real trial data and six learned constraints,
-it prescribes for \tbd{A}\% of cohorts and \tbd{B}\% of its prescriptions
-satisfy every toxicity limit.
+chemotherapy regimen design with real trial data and five learned toxicity
+constraints, it certifies a regimen at the 90\% level for \tbd{A}\% of
+cohorts, against \tbd{C}\% for the best baseline; every other cohort receives
+the regimen with the highest certified level, or is reported as one for which
+the data support no safe regimen.
 \end{abstract}
 
 % ---------------------------------------------------------------------------
@@ -67,29 +69,91 @@ satisfy every toxicity limit.
 
 \begin{outline}
 \begin{itemize}
-  \item Open with the failure, in numbers: on the reactor with the network of
-    \citet{ovalle2025cmicl}, the nominal decision is infeasible under the ODE
-    in \tbd{most} runs.
+  \item Open with the failure, in numbers. On the reactor under the cost
+    vectors of \citet{ovalle2025cmicl}, the nominal decision is feasible under
+    the ODE in only \tbd{0.18 to 0.25} of runs with their network and
+    \tbd{0.66} with cubic ridge (probes, 100 noise redraws; final numbers
+    depend on the lead model).
+  \item The cleanest illustration of selection is C-MICL itself: at random
+    points inside its feasible region the truth is feasible \tbd{0.93 to 0.99}
+    of the time for their network, forest and boosting surrogates, and at the
+    optimizer's choice \tbd{0.59 to 0.72} (Section~\ref{sec:experiments},
+    preliminary results).
   \item Why it happens: the optimizer searches for the point where the model
     is most optimistic. A bound that holds at a fixed $x$ does not hold at
-    $x^\star$.
+    $x^\star$. This is the optimizer's curse \citep{smith2006optimizer}
+    applied to feasibility rather than to the objective;
+    \citet{cremer2019datadriven} report a 99.9\%-accurate learned security
+    rule that is 0\% accurate at the optimized operating points.
   \item Why existing safeguards fall short. A constant margin pays the same
     everywhere and has no rule for its size. The wrapper
     \citep{maragno2025mixed} has no link between its fraction and a violation
     level. C-MICL \citep{ovalle2025cmicl} varies its margin with $x$ through a
     second, learned model, whose own errors the optimizer can exploit; it also
-    holds out calibration rows and doubles the embedded model.
+    holds out calibration rows and doubles the embedded model. Its guarantee
+    holds for an exchangeable test point and reaches the optimum only through
+    a conditional-independence assumption that the authors say may fail.
   \item What we do: a margin that varies with the decision and is computed,
     not learned.
   \item What a practitioner gets: a radius set from the target violation
     level, with no ground truth, no calibration split and no tuning run.
   \item Contributions (four): the counterpart; exact solution methods; the
     guarantee at $x^\star$ with a simulated radius; experiments \tbd{to run}.
-  \item Literature, one page: constraint learning
-    \citep{fajemisin2024optimization, maragno2025mixed}; conformal
-    \citep{ovalle2025cmicl}; robust optimization \citep{bertsimas2022robust};
-    other robust constraint learning; simultaneous confidence bands (Scheff\'e,
-    sup-$t$), post-selection inference and the optimizer's curse.
+  \item Literature, one page (checked 2026-11-14; notes in
+    \texttt{paper\_a\_literature.md}).
+    \begin{itemize}
+      \item Constraint learning \citep{fajemisin2024optimization,
+        maragno2025mixed}; conformal \citep{ovalle2025cmicl}. Other
+        uncertainty-aware constraint learning, none modelling the error of
+        the fitted model under label noise: conditional-quantile models
+        \citep{alcantara2023datadriven} hedge the outcome's own spread, not
+        the estimate's error; \citet{cremer2019datadriven} tune per-split
+        margins on embedded trees against a simulator; DCL
+        \citep{oztekin2026dcl} localizes the surrogate and leaves feasibility
+        certification open.
+      \item Robust optimization with statistical guarantees
+        \citep{bertsimas2022robust, bertsimas2018datadriven,
+        hong2021learning}. For a linear model the label ball is an ellipsoid
+        on the coefficients, so with the closed-form radius our counterpart is
+        the robust counterpart of a confidence ellipsoid
+        \citep{goldfarb2003robust}; RO on surrogate parameters
+        \citep{hullen2020managing}. Cutting-set methods
+        \citep{mutapcic2009cutting, bertsimas2016reformulation}.
+      \item Simultaneous inference. Bands restricted to a region of the
+        covariates \citep{wynn1971simultaneous, naiman1987simultaneous}, with
+        the critical constant simulated by optimizing over the region on each
+        draw \citep{liu2005simulation, liu2010simultaneous}: this is our
+        simulated radius for a linear model over a box. Sup-$t$ bands
+        \citep{montielolea2019simultaneous}; Scheff\'e
+        \citep{scheffe1953method}. Validity at a data-selected point from a
+        simultaneous band is the projection argument of post-selection and
+        winner's-curse inference \citep{berk2013valid, andrews2024inference}.
+      \item Uniform bounds in safe learning. ``Mean $+\,\beta\cdot$sd $\le b$''
+        with $\beta$ valid over the whole domain is the safe set of safe
+        Bayesian optimization \citep{srinivas2012information, sui2015safe,
+        berkenkamp2023bayesian} and of safe linear bandits
+        \citep{amani2019linear}. \citet{fiedler2021practical} bound the noise
+        term of kernel ridge regression by a multiple of the same
+        $\|s(x)\|_2$, uniformly over the domain: the closest precedent for
+        the margin, though for learning-based robust control (a learned
+        dynamics model inside a robust controller), not constraint
+        learning. GP
+        chance constraints in global optimization
+        \citep{schweidtmann2021deterministic, wiebe2022robust} have the same
+        algebraic form with a Bayesian, pointwise probability; in mixed-integer
+        form over trees the multiplier is a tuning constant
+        \citep{thebelt2022tree}.
+      \item What is new, stated against these: the target is the clean-label
+        model, so no bound on the true function's norm enters the radius (and
+        the claim is weaker, which we say); the region is the mixed-integer
+        feasible set and each simulated supremum is a global MIP solved to a
+        bound; one label-space form covers ridge, last-layer networks and
+        tree ensembles; and the band is imposed as a constraint, so the
+        optimizer's choice inherits it. Not new, and not claimed: restricting
+        a band to a region, simulating its constant by optimization, the
+        ellipsoidal counterpart for linear models, or validity at a selected
+        point by simultaneity.
+    \end{itemize}
 \end{itemize}
 \end{outline}
 
@@ -145,7 +209,8 @@ prediction at $x$. We call $s(x)$ the sensitivity vector.
     $i$ falls in the leaf $\ell$ that contains $x$ and $0$ otherwise, where
     $n_\ell$ is the number of training rows in that leaf. So
     $\|s(x)\|_2 = 1/\sqrt{n_\ell}$.
-  \item \emph{Forest} with fixed splits: the average of its trees' vectors.
+  \item \emph{Forest} with fixed splits: the average of its trees' vectors,
+    which are the forest weights of \citet{meinshausen2006quantile}.
 \end{itemize}
 
 \subsection{The robust counterpart}
@@ -159,7 +224,12 @@ s(x)^\top\delta$. Requiring the constraint for every such $\delta$ gives
 since $\max_{\|\delta\|_2 \le R} \, -s(x)^\top\delta = R\|s(x)\|_2$. This is
 the exact robust counterpart; nothing is approximated. The robust problem is
 \eqref{eq:nominal} with \eqref{eq:rc-method} in place of the learned
-constraint.
+constraint. For ridge regression the coefficients are linear in the labels,
+so the ball on the labels is an ellipsoid on the coefficients and
+\eqref{eq:rc-method} is the familiar counterpart of ellipsoidal parameter
+uncertainty \citep{goldfarb2003robust, bertsimas2022robust}. What the
+label-space form adds is that the same constraint applies unchanged to trees,
+forests and last-layer networks.
 
 The margin $R\|s(x)\|_2$ depends on the decision. For a tree it is
 $R/\sqrt{n_\ell}$, a multiple of the standard error of the leaf mean. For ridge
@@ -185,9 +255,9 @@ the fitted model and the training inputs; no second model is trained.
 \section{Guarantee at the optimum}\label{sec:guarantee}
 
 A confidence bound on $f(x;\theta^\star)$ at a fixed $x$ does not hold at the
-optimizer's $x^\star$, because $x^\star$ is chosen using the same noisy labels.
-This section bounds the violation probability at any feasible point, however
-it was chosen.
+optimizer's $x^\star$, because $x^\star$ is chosen using the same noisy labels
+\citep{smith2006optimizer, andrews2024inference}. This section bounds the
+violation probability at any feasible point, however it was chosen.
 
 \input{paper_a_guarantee}
 
@@ -200,15 +270,45 @@ it was chosen.
     $\epsilon$. Each maximization is solved with the solver's upper bound.
     Smaller than the closed-form radii because the feasible decisions reach
     only part of the model's parameter space. \tbd{to prove: short}
+    Precedent to credit here: for a linear model over a box this is the
+    simulation-based band of \citet{liu2005simulation}, whose per-draw
+    supremum is a quadratic program; ours is a global MIP over the decision
+    set, and must use the solver's bound, not its incumbent, or the radius
+    is anticonservative.
+  \item \textbf{Positioning, one paragraph.} The proof of
+    Theorem~\ref{thm:selection} is the projection argument of post-selection
+    inference \citep{berk2013valid, andrews2024inference}: $W$ is the maximum
+    of standardized errors over the directions $s(x)/\|s(x)\|_2$,
+    $x \in \mathcal{X}$, and Corollary~\ref{cor:subspace} is Scheff\'e's
+    radius \citep{scheffe1953method}. Uniform bounds of this kind also
+    underlie safe Bayesian optimization and learning-based control;
+    \citet{fiedler2021practical} is the closest, and targets the true
+    function, so its radius needs a bound on the function's norm that ours
+    does not.
   \item One table of radii: pointwise (not valid at $x^\star$), closed-form,
-    simulated. \tbd{first numbers on the reactor: 1.28$\sigma$, 8.4$\sigma$,
-    about 3.6$\sigma$ at $\epsilon = 0.1$ for cubic ridge; not the final
-    model}
-  \item Several constraints: the simulated joint radius. \tbd{to prove}
+    simulated. \tbd{first numbers on the reactor at $\epsilon = 0.1$: cubic
+    ridge 1.28$\sigma$, 8.4$\sigma$, about 3.7$\sigma$; network (last layer,
+    24 dimensions) 1.28$\sigma$, 5.8$\sigma$, about 3.5$\sigma$}. The
+    simulated radius must use the solver's bound on each $W$: enumeration over
+    sampled points understated it by 0.10 to 0.24$\sigma$ on the network in
+    every one of ten draws.
+  \item Several constraints: the simulated joint radius. \tbd{to prove} With
+    fixed context variables, $W$'s supremum is over the treatment slices of
+    the contexts prescribed for, not the whole box.
+  \item \textbf{Certified level of any decision.} \tbd{to write; the argument
+    is Theorem~\ref{thm:selection}'s proof} With
+    $\hat r(x) = \min_j (b_j - f_j(x;\hat\theta_j)) / \|\Sigma_j^{1/2}
+    s_j(x)\|_2$, violation implies $W > \hat r(x^\star)$, so
+    $\mathbb{P}(\text{violation and } \hat r(x^\star) \ge r) \le
+    \mathbb{P}(W > r)$ for every $r$, however $x^\star$ was chosen. This
+    certifies any method's decision on one scale, and it is the fallback when
+    the RC at the target radius is infeasible. The statement is joint, not
+    conditional on reaching $\hat r$.
   \item Estimated $\sigma$: guarantee with an upper confidence bound.
     \tbd{to prove}
-  \item Learned structure: what honest fitting means for trees and for the
-    hidden layers of a network; the method runs on any frozen structure.
+  \item Learned structure: what honest fitting means for trees
+    \citep{wager2018estimation} and for the hidden layers of a network; the
+    method runs on any frozen structure.
   \item Remark on the true function: extending the guarantee from
     $f(\cdot\,;\theta^\star)$ to $h^\star$ needs an assumption on $h^\star$;
     Section~\ref{sec:experiments} measures the gap.
@@ -222,14 +322,19 @@ it was chosen.
 \begin{itemize}
   \item Linear models and last-layer networks: one second-order cone of the
     dimension of the feature vector; hidden layers by the standard ReLU
-    embedding. \tbd{first test: cubic ridge on the reactor solves in about one
-    second; a (32, 32) network in 15 to 100 seconds with untightened big-M
-    bounds}
+    embedding. \tbd{first tests on the reactor: cubic ridge solves in under
+    one second; a (32, 32) network in 4 to 10 seconds on average; one
+    solver-certified draw of $W$ takes 4 to 19 seconds on the network and
+    about 43 on cubic ridge}
   \item Trees and forests: $\|s(x)\|_2$ through the leaf binaries; directed
-    cuts; at most $K$ iterations. \tbd{to prove: short}
-  \item Certifying any decision: one evaluation of \eqref{eq:rc-method} at a
-    given $x$ checks whether the guarantee applies, whichever method produced
-    $x$.
+    cuts \citep{mutapcic2009cutting}; at most $K$ iterations. \tbd{to prove:
+    short} Reformulation against cuts compared as in
+    \citet{bertsimas2016reformulation}.
+  \item Certifying any decision: one evaluation of $\hat r(x)$ gives the
+    level at which a decision is certified, whichever method produced $x$.
+  \item When the RC is infeasible: maximize $t$ subject to the RC at radius
+    $t$, by bisection over feasibility problems, and report the level
+    $\mathbb{P}(W > \hat r)$; with no useful $t$, report abstention.
 \end{itemize}
 \end{outline}
 
@@ -250,8 +355,9 @@ it was chosen.
 \section{Computational experiments}\label{sec:experiments}
 
 \begin{outline}
-Nothing in this section has been run on the paper's design. The lead model on
-the reactor is not yet decided (see \texttt{paper\_plan.md}, ``Tonight'').
+Nothing in this section has been run on the paper's final design. The lead
+model on the reactor is not yet decided (see Next steps). Preliminary probes
+are summarized after the plan below.
 \begin{itemize}
   \item \textbf{Membrane reactor design.} One learned constraint, ODE oracle,
     $\sigma = 2$; the cost vectors of \citet{ovalle2025cmicl} with the noise
@@ -261,10 +367,85 @@ the reactor is not yet decided (see \texttt{paper\_plan.md}, ``Tonight'').
   \item \textbf{Is the guarantee tight enough to use?} Same runs at three
     radii and three values of $\epsilon$. Figure 3: violation rate against
     $\epsilon$, against the clean-label model and the ODE.
-  \item \textbf{Chemotherapy regimen design.} Real trial data, six learned
-    constraints, the protocol of \citet{maragno2025mixed}. Table 2: fraction
-    of cohorts prescribed for, toxicity limits met, predicted survival.
+  \item \textbf{Chemotherapy regimen design.} Real trial data, five learned
+    toxicity constraints, the protocol of \citet{maragno2025mixed}; $\sigma$
+    per arm from the binomial sampling error. Where the RC is infeasible, the
+    certified fallback. Table 2: fraction of cohorts certified at
+    $\epsilon \in \{0.05, 0.1, 0.2\}$ for every method, fraction prescribed,
+    toxicity limits met under the judge, predicted survival.
   \item \textbf{World Food Programme diet.} Table 3, same columns as Table 1.
+\end{itemize}
+\end{outline}
+
+\begin{outline}
+\textbf{Preliminary results (probes, 2026-11-14; not the paper's design).}
+Reactor, the 100 cost vectors of \citet{ovalle2025cmicl}, $\sigma = 2$ known,
+noise redrawn for every run, $\epsilon = 0.1$. Feasibility against the
+clean-label model / against the ODE; standard errors at most 0.05.
+\texttt{experiments/probe\_rc\_ridge.py}, \texttt{results/paper\_a/prelim/}.
+
+\smallskip
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Model & Nominal & Pointwise & Simulated & Closed-form \\
+\midrule
+Cubic ridge                    & 0.49 / 0.66 & 0.90 / 0.80 & 1.00 / 0.95 & 1.00 / 1.00 \\
+Network, hidden layers frozen  & 0.60 / 0.18 & 0.91 / 0.22 & 1.00 / 0.52 & 1.00 / 0.79 \\
+Network, sample split          & 0.57 / 0.25 & 0.92 / 0.28 & 1.00 / 0.42 & 1.00 / 0.61 \\
+Network, standard fitting      & 0.32 / 0.23 & 0.42 / 0.29 & 0.76 / 0.33 & 0.98 / 0.45 \\
+\bottomrule
+\end{tabular}
+\smallskip
+
+\begin{itemize}
+  \item The RC delivers on cubic ridge at 4.2\% of the objective range over
+    nominal (closed-form: 8.6\%).
+  \item On the network it does not, and the cause is bias, not label noise:
+    at the nominal optimum the clean-label network overstates the ODE in 80
+    to 90\% of runs, by 1.6 to 2.8 flow units on average; cubic ridge's error
+    there has mean zero. The optimizer selects on misfit, which a label-noise
+    margin cannot see.
+  \item Standard fitting breaks the guarantee itself: 0.76 against the
+    clean-label model at a 0.90 target.
+  \item No selection effect against the clean-label model on cubic ridge: at
+    $\epsilon \in \{0.05, 0.1, 0.2\}$ the pointwise radius is on target (0.95,
+    0.90, 0.77). The simulated radius never violates the clean-label model,
+    and against the ODE holds 0.93 to 0.97 where pointwise holds 0.76 to
+    0.81: its extra margin pays for the spread of the bias.
+\end{itemize}
+
+\textbf{C-MICL by surrogate family} (their fixed settings, their 100 cost
+vectors, 4 to 5 noise redraws; \texttt{experiments/probe\_cmicl\_family\_coverage.py}).
+Truth feasible at a random point inside C-MICL's feasible region / at the
+optimizer's $x^\star$; and coverage at truly feasible points inside the region
+/ anywhere.
+
+\smallskip
+\begin{tabular}{@{}lcc@{}}
+\toprule
+Surrogate & Feasible: random point / $x^\star$ & Coverage: in region / anywhere \\
+\midrule
+MLP (32, 32)           & 0.99 / 0.60 & 0.93 / 0.97 \\
+Gradient boosting      & 0.96 / 0.72 & 0.66 / 0.94 \\
+Random forest          & 0.93 / 0.59 & 0.49 / 0.93 \\
+Single tree, depth 5   & 0.45 / 0.45 & 0.66 / 0.96 \\
+\bottomrule
+\end{tabular}
+\smallskip
+
+\begin{itemize}
+  \item Their Assumption 4.1 fails for every tree family (coverage drops
+    inside the feasible region) and nearly holds for the MLP.
+  \item Their guarantee nonetheless holds at random feasible points for the
+    MLP and both ensembles; at the optimizer's choice it fails for all four.
+    The shortfall is selection, which no exchangeability argument covers.
+  \item C-MICL's feasible region is 0.2 to 2.8\% of the design domain and
+    holds 0 to 12 of its 200 calibration rows: the quantile is calibrated
+    where no decision can go.
+  \item Nominal tree decisions sit at the cheapest point of their leaf cell
+    in every run, and most of their optimistic error (3.9 to 11.4 flow units)
+    is position within the cell. A tree RC, whose margin is constant on a
+    cell, cannot see this either.
 \end{itemize}
 \end{outline}
 
@@ -283,6 +464,78 @@ the reactor is not yet decided (see \texttt{paper\_plan.md}, ``Tonight'').
   \item Future work: feature noise, model selection for embedding, recourse.
 \end{itemize}
 \end{outline}
+
+% ---------------------------------------------------------------------------
+% INTERNAL: for the authors only. Remove before the draft is circulated.
+\section*{Next steps (internal draft)}
+\addcontentsline{toc}{section}{Next steps (internal draft)}
+
+\begin{tcolorbox}[breakable, colback=blue!3, colframe=blue!40!black,
+  title={For JS and DB only; remove before circulating},
+  fonttitle=\small\bfseries, left=4pt, right=4pt, top=3pt, bottom=3pt]
+
+\textbf{Decisions for DB.}
+\begin{enumerate}
+  \item \textbf{Lead model on the reactor.} Cubic ridge works (nominal 0.66,
+    RC 0.95 against the ODE), but no reference paper embeds it. The network of
+    \citet{ovalle2025cmicl} fails because of its bias (RC 0.42 to 0.52). The
+    third option is their LinearDT surrogate (a regression in each leaf): it
+    is at the noise floor on this instance, so its bias should be small, but
+    it is untested and needs a MIP embedding. Recommendation: cubic ridge as
+    lead, LinearDT probed next, the network as the example of where a
+    label-noise margin is not enough.
+  \item \textbf{Bias: a remark or part of the method?} Two results now show
+    the optimizer selecting on model bias, not label noise: the network (bias
+    optimistic in 80 to 90\% of runs at $x^\star$) and trees (within-cell
+    error of 4 to 11 flow units at the nominal $x^\star$). Either the paper
+    restricts its claim to low-bias models and says so, or the bias margin
+    $B(x)$ (T5) becomes part of the method.
+  \item \textbf{Figure 3's argument.} On cubic ridge the pointwise radius is
+    already on target against the clean-label model at every $\epsilon$, so
+    the probe shows no price of selection. Either find the setting where
+    selection bites (a cost nearly flat along the boundary, smaller $n$,
+    higher dimension) or reframe the figure around robustness to bias.
+  \item \textbf{How much of the C-MICL analysis goes in.} Assumption 4.1
+    fails for trees; the guarantee fails at $x^\star$ for every surrogate.
+    Options: a paragraph in Section~\ref{sec:baselines}, or a short
+    subsection. It is the clearest evidence for the paper's premise.
+  \item \textbf{Several constraints against a ground truth.} No experiment
+    tests the joint radius against a truth (the reactor has one learned
+    constraint, chemotherapy has no truth). Accept and say so, or add a
+    second ODE output as a constraint on the reactor.
+  \item \textbf{Random-bank cutting planes as a baseline?} Recommendation:
+    no. No guarantee, two oracle-tuned parameters, hours per cell.
+\end{enumerate}
+
+\textbf{Experiments, in order.}
+\begin{enumerate}
+  \item Probe P1 on chemotherapy: ridge on the training arms, the max-$t$
+    fallback per test cohort, binomial $\sigma$ against residual sd. Go/no-go
+    for H3 before the forest RC (I6), the chemo runner (I7) and the certified
+    radius (I9) are built.
+  \item Once the lead model is fixed: E1 on the reactor with the
+    solver-certified simulated radius, all baselines on the shared model,
+    plus C-MICL fitted as published. 100 redraws; 300 for the Table 1 rows if
+    the RC and C-MICL land within 0.05.
+  \item LinearDT: embedding, then the same probe as the network (job
+    29141177's design).
+  \item A selection check for Figure 3: how far $x^\star$ moves across
+    redraws, and one cost direction nearly flat along the boundary.
+  \item Minor: the C-MICL family probe crashes when no sampled point is
+    C-MICL-feasible (two of 20 runs); guard it before any rerun.
+\end{enumerate}
+
+\textbf{Theory, in order.} T1 (simulated radius, single and joint); T6
+(certified level of any decision; needed for the chemo fallback); T2
+(estimated and per-arm $\sigma$, including the binomial plug-in); T3 (cuts
+terminate). Check whether C-MICL's coverage event is for the noisy label or
+the true value (their App.~B): with the true value, the infeasible half of
+Assumption 4.1 can hold only if C-MICL is never wrong.
+
+\textbf{Writing.} Sections~\ref{sec:method} and~\ref{sec:guarantee} are prose.
+The introduction's numbers wait on the lead model; Section~\ref{sec:solving}
+and the experiments wait on E1 and P1.
+\end{tcolorbox}
 
 \bibliographystyle{plainnat}
 \bibliography{paper_a}
