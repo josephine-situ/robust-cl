@@ -533,3 +533,39 @@ rows, about 250 above 45. ODE feasibility, cost as % of the objective range.
   model but 0.62 against the ODE, with misses up to 13 flow units.
 
 Outputs: `results/paper_a/prelim/frontier_cubic_{n200,thin0.2}_paper_eps0.1*`.
+
+### Same day: quick C-MICL and split conformal on the same redraws (jobs 29226346-48)
+
+`--stage conformal`. Cubic ridge `h` on a random 80% of the design's rows,
+calibrated on the other 20%, score `|y − h|/u`, constraint `h − q·u ≥ 50`.
+**C-MICL-poly**: `u` a cubic polynomial on `h`'s absolute in-sample
+residuals, used raw with `u ≥ 0` (Ovalle et al.'s semantics, but NOT their
+32x32 width network). **Split conformal**: `u = 1`, a constant margin set by
+held-out residuals. Cost against the frontier's all-row nominal.
+
+At each method's own protocol setting (ε = α = 0.1, nothing tuned), ODE
+feasibility / cost:
+
+| Design | RC, simulated radius | C-MICL-poly, α = 0.1 | Split conformal, α = 0.1 |
+|---|---|---|---|
+| full, 1,000 | **0.95 / 4.2%** | 0.91 / 6.7% | 0.98 / 7.7% |
+| n = 200 | **0.98 / 12.9%** | 0.55 / 7.5% | 0.81 / 11.4% |
+| thin | **0.95 / 7.7%** | 0.87 / 8.2% | 0.98 / 9.2% |
+
+- **Only the RC reaches the target in all three designs, and it is the
+  cheapest delivering method at its protocol point in each.** Split conformal
+  overshoots where data is ample (0.98, paying 1.5 to 3.5 points more) and
+  falls short at n = 200 (0.81). C-MICL-poly falls short at n = 200 and thin.
+- **Along the whole α grid:** full design, C-MICL-poly reaches 0.90 at 4.1%
+  (α = 0.3) and 0.95 at 8.3% (α = 0.05), against the RC's 3.5% (0.92) and 4.2%
+  (0.95). At n = 200 it never passes 0.57 at any α, and `u(x*)` falls from 0.92
+  to 0.39 as α tightens: the optimizer goes where the width is small, the
+  family probe's width-dip mechanism. Thin: it never passes 0.91.
+- **Split conformal beats the RC on the thin design at 0.95** (6.75% at
+  α = 0.2 against 7.67%), as the ODE-tuned margin did. Elsewhere the RC is
+  cheaper at matched feasibility.
+- Caveats: polynomial `u`, not their network; C-MICL fits `h` on 80% of the
+  rows as published, which costs it most at n = 200 (n_cal = 40, so α = 0.02
+  is not certifiable there).
+
+Outputs: `results/paper_a/prelim/conformal_cubic_*`.
