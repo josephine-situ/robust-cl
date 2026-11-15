@@ -473,3 +473,31 @@ design box), against 2,000 random domain points. Means over 4 to 5 redraws.
   half is 0 by construction (0 in every run). Whether their coverage event is
   for the true value or the noisy label decides whether that is a flaw in the
   assumption or in this measurement; check against their App. B first.
+
+## 2026-11-15: First H2 check: the RC against a constant margin on cubic ridge
+
+Job 29223094 (`--stage frontier`, `submit_rc_frontier.sh`). Same 100 redraws as
+R1 (Ovalle et al.'s costs, noise redrawn, ε = 0.1, σ = 2), each solved on an RC
+radius grid and a constant-margin grid `F ≥ 50 + m`, judged by the ODE. The RC
+at its simulated radius reproduces R1 (0.95, +4.24%). Cost is the increase
+over nominal as % of the objective range; SE on feasibility ≤ 0.03.
+
+| ODE feasibility | RC (radius, cost) | Constant margin (m, cost) |
+|---|---|---|
+| ~0.90 | 3σ: 0.92, 3.54% | 1.75: 0.90, 3.41% |
+| ~0.95 | simulated 3.71σ: 0.95, 4.24% | 2.5: 0.96, 4.86% |
+| 1.00 | 4.5σ: 1.00, 4.96% | 3.5: 1.00, 6.79% |
+
+- **At 0.9 the two frontiers coincide** (within one SE). H2 as stated ("the
+  RC is cheapest at matched feasibility") is not supported at the target on
+  this model.
+- **The RC is cheaper at higher feasibility**: 4.96% against 6.79% to reach
+  1.00. Where its margin shape matters is the tail.
+- **The margin's m was picked with the ODE; the RC's radius was not.** No rule
+  sets m. The natural one, `m = z₀.₉ σ = 2.56`, gives about 0.96 at 4.9%,
+  against 0.95 at 4.24% for the simulated radius.
+- Why so close: with a uniform design on the box, `‖s(x)‖` varies little
+  near the optima, so the cone margin is nearly constant there. A design with
+  uneven coverage (or smaller n) is where the shape should pay.
+
+Outputs: `results/paper_a/prelim/frontier_cubic_paper_eps0.1*.{json,csv}`.
