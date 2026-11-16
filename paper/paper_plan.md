@@ -133,6 +133,24 @@ assumed about how predictions depend on labels.
   The reactor's (32, 32) network has 1,281 weights, so its Hessian can be
   formed exactly. (G2) Unrolled differentiation through T warm-started
   training steps (back-gradient). G1 first.
+- **The ascent (added 2026-11-16).** The set of relabelings is infinite but
+  finite-dimensional: `Δy` has one entry per training label (n = 1,000 on
+  the reactor), and the retrained prediction at `x^t` is a smooth function of
+  it. So the separation is a continuous optimization, not an enumeration.
+  - With per-constraint cuts and one model per outcome, constraint k's
+    separation is `max ĥₖ(x^t; ȳ + Δyₖ)` over `‖Σₖₖ^{-1/2}Δyₖ‖ ≤ R`: the
+    retrained prediction itself, with no hinge, so no zero gradient. A cut
+    is added if the maximum exceeds `bₖ + τ`.
+  - Gradient by G1: retrain warm-started on `ȳ + Δy` to get `θ`, then
+    `∇_Δy ĥ(x^t) = J H⁻¹ ∇_θ f(x^t; θ)` (squared loss; `J` stacks the
+    training rows' `∇_θ f(xᵢ; θ)`). One linear solve per step, whatever n is.
+  - Step in whitened coordinates `z = Σ^{-1/2}Δy`: `g̃ = Σ^{1/2}∇`, then
+    `z ← R g̃/‖g̃‖` (the linear maximizer over the ball, exact in one step for
+    an affine map), or a projected step `z ← Proj_{‖z‖≤R}(z + η g̃)` if that
+    oscillates. Stop when `ĥ` stops increasing.
+  - Cost per step: one warm-started retraining plus one solve (seconds on the
+    reactor). Starts × steps retrainings per separation, per violated
+    constraint.
 - **The norm.** The RC's ellipsoid `‖Σ^{-1/2}Δy‖`, jointly over outcomes
   (settled above). Σ is diagonal with σᵢ² per row where noise levels differ
   (chemotherapy's binomial σ per arm). Cross-outcome covariance is open for

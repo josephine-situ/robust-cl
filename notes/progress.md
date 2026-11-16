@@ -569,3 +569,64 @@ feasibility / cost:
   is not certifiable there).
 
 Outputs: `results/paper_a/prelim/conformal_cubic_*`.
+
+## 2026-11-16: Meeting with DB: a non-parametric method joins the RC
+
+**Decisions.**
+
+- Still exploratory: work on the outline and plan, not the draft.
+- We went through C-MICL and the old random-bank cutting planes. DB is
+  reasonably happy with the robust counterpart, but it is parametric (the
+  prediction must be affine in the training labels), so he also wants a
+  non-parametric method.
+- His proposal (sketch: `c:\Users\jsitu\Downloads\robust-cl-cp.jpeg`): cutting
+  planes in which the model is retrained on each relabeling and the worst
+  relabeling is found by first-order methods (for example PyTorch). The
+  separation is `max_{‖Δy‖≤R} Σₖ wₖ max(ĥₖ(x*; ȳ + Δy) − bₖ, 0)`, a ReLU
+  with one weight per constraint so infeasibility can be handled. The master
+  adds the model retrained on `ȳ + Δy*` and re-solves.
+- Semi-synthetic data first; real data later.
+
+**Methodology.**
+
+- The sketch writes `bₖ − ĥₖ`; it is the violation `ĥₖ − bₖ` (confirmed).
+- The uncertainty set is the RC's: `‖Σ^{-1/2}Δy‖ ≤ R`, jointly over all
+  outcomes' labels, with Σ the noise covariance (confirmed).
+- The RC is the method's closed-form case: for an affine map, one ascent step
+  gives the RC's directed cut `R s(x)/‖s(x)‖`. On a network the first step,
+  by implicit differentiation, is an RC with the linearized `s(x)`. The
+  non-parametric method adds whatever lies beyond that step.
+- It runs on a network trained end to end, so it avoids the honest-fitting
+  problem that broke the last-layer RC under standard fitting (R3: 0.76
+  against the clean-label model, target 0.90).
+- Open: the guarantee. An exact one needs the model-free radius
+  `σ√χ²(n, 1−ε)` (about 32σ at n = 1,000, against 3.6σ for the RC's
+  simulated radius on cubic ridge) and exact separation, which a local search
+  does not give. The cheaper radii (linearized subspace, scenario/bootstrap)
+  are approximate.
+- Consequence for the weights: over that joint set, a weighted hinge sum of 0
+  means every constraint holds under every relabeling, whatever the
+  weights. So in the separation the weights choose which cut is found, not
+  where the loop ends, and they cannot resolve infeasibility. The same
+  argument recovers the RC as written: each constraint's worst case uses only
+  its own block of Σ. With one model per outcome, one cut per violated
+  constraint is deeper than the weighted-sum cut, so FO-CP uses
+  per-constraint cuts. Infeasibility is handled by the certified fallback
+  (largest feasible R) or by protecting a fraction of the constraints
+  (binary per constraint, at least ⌈pK⌉ protected; the guarantee then covers
+  the protected set). Penalizing violations in the master was considered
+  and dropped: no guarantee, and the weights become another dial.
+- The objective stays nominal; a robust objective is a deferred variant.
+
+**Data for the plan.** SS1: the reactor (ODE truth, Ovalle et al.'s 100 cost
+vectors, σ = 2), plus a realizable truth (a network fitted to noise-free ODE
+labels) to separate label noise from the bias that sank the network RC. SS2:
+the 416 real chemotherapy arms' covariates, a fixed fitted model per outcome
+as the truth, binomial noise from the real arm sizes. This gives the plan its
+first several-constraints experiment with a ground truth. SS1 has everything
+built except the new method; SS2 needs a generator.
+
+**Next.** PyTorch training map and separation (not installed yet); F0, the
+check that the new method reproduces the RC on cubic ridge; F1, whether the
+non-parametric step adds anything over the linearized one. Details:
+`paper/paper_plan.md`, "After the meeting with DB (2026-11-16)".

@@ -244,7 +244,10 @@ probes: `paper_plan.md`, "After the meeting with DB".
   `max_{‖Δy‖≤R} Σₖ wₖ max(ĥₖ(x^t; ȳ + Δy) − bₖ, 0)`, by projected gradient
   ascent through the training map (implicit differentiation). Add the model
   retrained on `ȳ + Δy*` as a cut, re-solve the master, and stop when the
-  separation value is at most τ.
+  separation value is at most τ. With per-constraint cuts this splits into
+  one problem per constraint, `max ĥₖ(x^t; ȳ + Δyₖ)` over the ellipsoid:
+  continuous in `Δy` (one entry per training label), each step a
+  warm-started retraining plus one linear solve.
 - **Special case.** For an affine map with one constraint, one ascent step
   gives `R s(x)/‖s(x)‖`, so the method is the RC solved by directed cuts. The
   first step on a network is an RC with the linearized `s(x)`.
