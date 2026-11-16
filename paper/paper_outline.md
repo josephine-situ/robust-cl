@@ -1,11 +1,24 @@
-# Constraint Learning under Label Noise: A Robust Counterpart that Stays Feasible at the Optimum
+# Constraint Learning under Label Noise
 
 Target: *Operations Research*. Josephine Situ and Dimitris Bertsimas.
-Version 3 (2026-11-14, last revised late that night). Supersedes
-`paper_outline_v2.md`.
+Version 4 (2026-11-16, after the meeting with DB). Version 3 (2026-11-14) is
+this file's previous commit; it superseded `paper_outline_v2.md`.
 Experiments and sequencing: `paper_plan.md`. Proofs: `paper_a_guarantee.md`.
 
-**What changed from v2.**
+**What changed from v3 (DB, 2026-11-16).** Exploratory: outline and plan
+only, `paper.tex` untouched.
+
+- A second, non-parametric method: cutting planes whose separation problem
+  is solved by first-order methods through the training map (FO-CP;
+  Section 2.2). The RC is its closed-form case. Its guarantee is **[open]**
+  (Section 3), and so is whether it shares this paper (question for DB in
+  `paper_plan.md`).
+- Semi-synthetic instances come first (Section 6.0). Real chemotherapy data
+  (6.3) comes later.
+- The abstract and contributions below still describe the RC alone, apart
+  from contribution 5. Rewrite them once FO-CP's place is settled.
+
+**What changed from v2 (in v3).**
 
 - The paper is organized around a practical claim, with the theory as its
   justification. Experiments are about 40% of the paper.
@@ -57,8 +70,8 @@ Draft, with placeholders for the numbers:
 > R4 in `paper_plan.md`], and is solved as a mixed-integer second-order cone problem or by
 > finitely many cuts. We prove that, at any feasible decision, however it was
 > chosen, the probability of violating the constraint of the model fitted on
-> noise-free labels is at most ε, and give a radius computed by simulation from
-> the fitted model and the noise level. On a membrane reactor design problem
+> noise-free labels is at most ε, and size the radius from sampled noise
+> scenarios using only the fitted model and the noise level. On a membrane reactor design problem
 > with a mechanistic ground truth, the nominal decision is feasible in [N]% of
 > runs and the robust counterpart in [X]% at a target of 90%, at [Z]% lower
 > cost than a constant margin, the bootstrap wrapper and conformal constraint
@@ -101,13 +114,18 @@ Draft, with placeholders for the numbers:
    second-order cone for linear models and last-layer networks, finitely many
    cuts for tree ensembles.
 3. A violation guarantee at the optimizer's own choice of `x*`, with a radius
-   computed by simulation that is much smaller than the closed-form bounds.
+   sized from sampled noise scenarios that is much smaller than the
+   closed-form bounds.
 4. Experiments on a design problem with a mechanistic ground truth and on two
    case studies from the constraint-learning literature, showing that the
    method reaches its target feasibility without tuning and at lower cost than
    a constant margin, the wrapper and conformal constraint learning. Where the
    target cannot be met (several binding constraints), it prescribes with a
    certified level per decision instead of failing. **[to run]**
+5. **[added 2026-11-16, open]** A non-parametric counterpart for models that
+   are not affine in their labels (networks trained end to end, logistic
+   models): cutting planes whose worst-case relabeling is found by gradient
+   ascent through retraining, with the RC as its exact special case.
 
 ### 1.2 Literature (one page)
 
@@ -132,6 +150,15 @@ Checked 2026-11-14. Per-paper notes, quotes and how much of each was read:
   rule, 0% at optimized points). DCL (Oztekin et al., 2026) localizes the
   surrogate and names feasibility certification as open. **Xavier et al. is
   learning-to-optimize, not constraint learning: dropped.**
+- **Data poisoning and scenario optimization** (added 2026-11-16 for FO-CP;
+  to check, none read). FO-CP's separation is a norm-budgeted label-poisoning
+  attack solved as a bilevel problem (Biggio et al. 2012; Mei and Zhu 2015;
+  Muñoz-González et al. 2017; Jagielski et al. 2018; influence functions,
+  Koh and Liang 2017). The difference to argue: the attack targets the
+  optimizer's decision, and each attack becomes a cut in a MIP. Imposing
+  sampled retrained models is scenario optimization (Calafiore and Campi
+  2006; Campi and Garatti 2008; Campi, Garatti and Ramponi 2018 for
+  non-convex problems).
 - **Robust optimization.** Bertsimas and den Hertog; Bertsimas, Gupta and
   Kallus; Hong, Huang and Lam (data-splitting guarantees for the optimized
   decision, the closest OR precedent for a guarantee at the optimum). For a
@@ -142,7 +169,7 @@ Checked 2026-11-14. Per-paper notes, quotes and how much of each was read:
 - **Simultaneous inference.** Bands restricted to a region of the covariates
   are classical (Wynn and Bloomfield 1971; Naiman 1987), and Liu et al. (2005)
   already simulate the critical constant by optimizing over the region on each
-  draw (a QP over a box): that is our simulated radius for a linear model.
+  draw (a QP over a box): that is our scenario radius for a linear model.
   Liu (2010) surveys it. Sup-t bands: Montiel Olea and Plagborg-Møller.
   Scheffé. Validity at a data-selected point via a simultaneous band is the
   projection argument of PoSI (Berk et al.) and inference on winners
@@ -163,13 +190,15 @@ Checked 2026-11-14. Per-paper notes, quotes and how much of each was read:
   weights (Meinshausen).
 - **What is new, stated against these.** The target is the clean-label model,
   so no bound on the true function's norm enters the radius (and the claim is
-  weaker, which we say). The region is the mixed-integer feasible set, and
-  each simulated supremum is a global MIP solved to a bound. One label-space
-  form covers ridge, last-layer networks and tree ensembles. The band is
-  imposed as a constraint, so the optimizer's choice inherits it. **Not
-  claimed:** restricting a band to a region, simulating its constant by
-  optimization, the ellipsoidal counterpart for linear models, or validity at
-  a selected point by simultaneity.
+  weaker, which we say). The decisions the protection must cover are the
+  mixed-integer feasible set, so each sampled scenario's worst-case decision
+  problem is a global MIP solved to a bound. One label-space form covers
+  ridge, last-layer networks and tree ensembles. The protection is imposed as
+  a robust constraint, so the optimizer's choice inherits it. **Not
+  claimed:** restricting a confidence band to a region or simulating its
+  width by optimization (Liu et al.), the ellipsoidal counterpart for linear
+  models, or validity at a selected point from protection that holds at every
+  decision.
 
 ## 2. Problem and method
 
@@ -198,9 +227,37 @@ Written so that a reader can implement the method from this section alone.
      last layer on the rest, so `s(x)` does not depend on the noise it is
      meant to bound. **[to run: R4 in `paper_plan.md` decides the split]**
   1. Estimate σ from out-of-fold residuals (an upper confidence bound).
-  2. Simulate the radius for the target ε (Section 3).
+  2. Size the radius for the target ε from sampled noise scenarios (Section 3).
   3. Solve. No ground truth and no held-out calibration rows are used.
   - Alternative for a practitioner with a validation oracle: choose `R` on it.
+
+### 2.2 Non-parametric method: first-order cutting planes (added 2026-11-16) **[open]**
+
+For a model that is not affine in its labels. Specification, open choices and
+probes: `paper_plan.md`, "After the meeting with DB".
+
+- **Robust constraint.** `ĥₖ(x; ȳ + Δy) ≤ bₖ` for all `‖Σ^{-1/2}Δy‖ ≤ R`,
+  where `ĥₖ(·; y)` is the model **retrained** on labels `y`, and `Δy` stacks
+  every outcome's labels. This is the RC's uncertainty set (settled
+  2026-11-16).
+- **Loop.** Nominal `x⁰`. Separation at `x^t`:
+  `max_{‖Δy‖≤R} Σₖ wₖ max(ĥₖ(x^t; ȳ + Δy) − bₖ, 0)`, by projected gradient
+  ascent through the training map (implicit differentiation). Add the model
+  retrained on `ȳ + Δy*` as a cut, re-solve the master, and stop when the
+  separation value is at most τ.
+- **Special case.** For an affine map with one constraint, one ascent step
+  gives `R s(x)/‖s(x)‖`, so the method is the RC solved by directed cuts. The
+  first step on a network is an RC with the linearized `s(x)`.
+- **The weights.** The sketch's `bₖ − ĥₖ` is read as the violation
+  `ĥₖ − bₖ` (confirmed). Over the joint set, a weighted hinge sum of 0 means
+  every constraint is robust-feasible whatever the weights, so in the
+  separation they only choose which cut is found. **[open, for DB]**
+  Infeasibility is handled by the certified fallback (largest feasible R) or
+  by protecting a fraction p of the constraints (binary `zₖ`,
+  `Σ zₖ ≥ ⌈pK⌉`, weights `wₖ = zₖ`). Cuts are added per violated
+  constraint.
+- **Open.** The training map for nonconvex models (warm-started and
+  deterministic is proposed).
 
 ## 3. Guarantee at the optimum
 
@@ -208,8 +265,12 @@ Kept to about four pages. Proofs in the appendix.
 
 - **Theorem 1.** At any RC-feasible `x*`, however chosen, the violation
   probability is at most `P(W > R)`. **[proved]**
-- **Radii.** `W` is the largest standardized error of the model over the whole
-  domain, so any `R` that `W` exceeds with probability at most ε works. Two
+- **Radii.** The RC at radius `R` protects against every noise scenario in an
+  effective uncertainty set `𝒰_R` (a scenario is in it if no RC-feasible `x`
+  is pushed past its margin); `𝒰_R` contains the ball of radius `R` and is
+  larger. `W`, the radius the realized noise requires, is the largest
+  normalized error of the model over the whole domain, so any `R` that `W`
+  exceeds with probability at most ε works. Two
   ways to get one, in one table. (The pointwise value `σ z(1−ε)`, valid at a
   fixed `x` only, is not offered as a radius; it appears once in Section 6.2
   as the control that ignores selection.)
@@ -218,22 +279,31 @@ Kept to about four pages. Proofs in the appendix.
     case `σ√χ²(d, 1−ε)` (a linear model or last layer with d features).
     **[proved]** These protect against every direction the noise could take in
     the model's parameter space, whether or not any feasible `x` can reach it.
-  - **Simulated:** the `1−ε` quantile of `W` itself, by drawing noise vectors
-    and maximizing over the actual domain for each. Smaller, because the
-    feasible decisions reach only part of the parameter space. This is the
-    radius the experiments use. Rule: draw N noise vectors, compute `W` for
-    each, take the ⌈(N+1)(1−ε)⌉-th smallest. The true `W` and the N draws are
-    exchangeable, so the violation probability is at most ε with no extra
-    sampling-error term. **[to prove: short]** Each `W` is a maximization over
-    the domain; it is solved with the solver's upper bound, not estimated from
-    a sample of points (a sample underestimates `W` and so the radius). Needs
-    the noise distribution up to scale (Gaussian in the main text).
-- **Several constraints.** Bonferroni **[proved]**; the simulated joint radius
-  as the tighter option **[to prove]** with the above. The experiments use the
-  joint radius. When the decision has fixed context variables (a cohort's
-  characteristics), `W`'s supremum is taken over the treatment slices of the
+  - **Scenario radius:** size `𝒰_R` so it contains a `1−ε` fraction of
+    sampled noise scenarios, as data-driven RO sizes an uncertainty set
+    (Hong, Huang and Lam). Smaller, because the feasible decisions reach only
+    part of the parameter space. This is the radius the experiments use.
+    Rule: sample N noise scenarios, solve each one's worst-case decision
+    problem (the radius it requires), take the ⌈(N+1)(1−ε)⌉-th smallest. The
+    realized noise and the N scenarios are exchangeable, so the violation
+    probability is at most ε with no extra sampling-error term. **[to prove:
+    short]** Each worst-case problem maximizes over the domain with the
+    scenario fixed (the reverse of a separation problem); it is solved with
+    the solver's upper bound, not estimated from a sample of decisions (a
+    sample understates the required radius and so the radius). Needs the
+    noise distribution up to scale (Gaussian in the main text).
+- **Several constraints.** Risk allocation, ε/m per constraint (union bound)
+  **[proved]**; the joint scenario radius as the tighter option **[to
+  prove]** with the above. The experiments use the joint radius. When the
+  decision has fixed context variables (a cohort's characteristics), each
+  scenario's worst-case problem is taken over the treatment slices of the
   contexts prescribed for, not the whole box: valid for all of them at once,
   and smaller.
+- **Protecting a fraction of the constraints (added 2026-11-16).** When the
+  optimizer chooses which constraints to protect, P(a protected constraint
+  is violated) ≤ P(maxₖ Wₖ > R), because the bound is uniform over the
+  domain. **[to prove: short]** Unprotected constraints carry only their
+  certified level.
 - **Certified level of any decision.** **[to write: the argument is Theorem
   1's proof]** For a decision `x`, let
   `r̂(x) = minⱼ (bⱼ − f̂ⱼ(x)) / ‖Σⱼ^½ sⱼ(x)‖`. Violation implies `W > r̂(x*)`,
@@ -255,6 +325,15 @@ Kept to about four pages. Proofs in the appendix.
   values or last layer (honest fitting). The method itself runs on any fitted
   model with its structure frozen; an appendix table measures what standard
   fitting costs in violations and what honest fitting costs in accuracy.
+- **Guarantee for FO-CP. [open, added 2026-11-16]** Theorem 1 uses the
+  affine error `s(x)ᵀe`. Without it there are three options: the
+  model-free ball `σ√χ²(n, 1−ε)` (exact if the separation is exact, valid for
+  any model, but about 32σ at n = 1,000); a radius on the linearized subspace
+  (first order only); or a scenario radius from retrained noise draws (a
+  bootstrap: it bounds the violation for a fresh resampled model, not for the
+  clean-label model). The separation is a local search, so stopping certifies
+  nothing for a nonlinear map. The question for DB is which of these the
+  paper needs.
 - **Remark: the true function.** The guarantee is against the clean-label
   model. Extending it to `h*` requires an assumption on `h*` (for example
   Lipschitz, or linear in the features), which gives a bound `B(x)` on the
@@ -274,9 +353,15 @@ Kept to about four pages. Proofs in the appendix.
   decision satisfies the RC. Only the directed cut does. (One sentence; this
   is where the earlier random-bank cutting planes are placed. See "Why the
   earlier approaches are not the paper's method" in `paper_plan.md`.)
+- **FO-CP's separation (added 2026-11-16).** Gradient ascent on `Δy`, with
+  the gradient of the retrained prediction by implicit differentiation, run
+  from several starts. Each candidate is checked by full retraining before it
+  becomes a cut. The random bank comes back here only as an ablation: the
+  same master with sampled rather than optimized relabelings.
 - **Certifying any decision.** One evaluation of `r̂(x)` (Section 3) gives the
   level at which a decision is certified, whichever method produced it.
-- **When the RC is infeasible.** `max t` subject to the RC at radius t, by
+- **When the RC is infeasible (maximum-radius fallback).** `max t` subject to
+  the RC at radius t, by
   bisection over feasibility problems: the decision with the highest
   certified level. If no t of any use is feasible, report abstention.
 - Solve times are reported in Section 6, not analysed here.
@@ -297,7 +382,7 @@ Kept to about four pages. Proofs in the appendix.
   safety: the radius `R` (ours), the margin `m`, the wrapper's violation limit
   α, C-MICL's miscoverage α. Two comparisons, both defined here:
   - *As prescribed:* each method at the setting its authors give for a 90%
-    target (C-MICL α = 0.1; the RC at its simulated radius for ε = 0.1). The
+    target (C-MICL α = 0.1; the RC at its scenario radius for ε = 0.1). The
     margin and the wrapper have no such setting, which is part of the result;
     Table 1 shows them at the setting the oracle picks, labelled as such.
   - *At equal feasibility:* each method's parameter is varied over its range,
@@ -307,6 +392,26 @@ Kept to about four pages. Proofs in the appendix.
 ## 6. Computational experiments
 
 Three problems. Each subsection opens with its question.
+
+### 6.0 Semi-synthetic instances first (added 2026-11-16) **[to build]**
+DB is happy to start on semi-synthetic data: real covariates, a known truth,
+injected noise.
+- **SS1, reactor.** As 6.1, plus a realizable truth: a (32, 32) network
+  fitted to noise-free ODE labels. With the truth inside the model class
+  there is no bias, which is what sank the network RC against the ODE, so the
+  label-noise protection is tested by itself.
+- **SS2, chemotherapy.** The real arms' covariates and treatments, one fixed
+  model per outcome treated as the truth, binomial noise from the real arm
+  sizes. The several-constraints experiment with a ground truth, and the test
+  of FO-CP's weights and infeasibility handling. Variant: DLT written as
+  `1 − Πₖ(1 − ĥₖ(x))`, several models in one constraint.
+- **Proposed: SS1+, the reactor with a second ODE output as a constraint**
+  (e.g. a methane-conversion floor), fitted separately or as one
+  multi-output network: several constraints against an exact truth.
+  Candidates and their trade-offs: `paper_plan.md`.
+- Real data (6.3) after these.
+- The objective stays nominal everywhere; a robust objective (epigraph) is a
+  deferred variant (2026-11-16).
 
 ### 6.1 Membrane reactor design (the lead result)
 *Does the method deliver the feasibility it targets, and what does it cost?*
@@ -334,13 +439,13 @@ Three problems. Each subsection opens with its question.
 ### 6.2 Is the guarantee tight enough to use?
 *How conservative is the radius?* **[to run]** The same runs as Section 6.1,
 repeated at three radii and three values of ε.
-- **Figure 3.** Violation rate against ε for the pointwise, simulated and
+- **Figure 3.** Violation rate against ε for the pointwise, scenario and
   closed-form radii, against the clean-label model and against the ODE.
-- Cost of each radius. Expect the closed-form radius to overpay; the simulated
+- Cost of each radius. Expect the closed-form radius to overpay; the scenario
   radius is the recommendation.
-- The pointwise radius is the control: it is what a fixed-`x` confidence bound
-  gives. If it violates more than ε, that is the direct evidence that selection
-  by the optimizer matters. If it does not, the simulated radius is
+- The pointwise radius is the control: it is what a margin sized to protect a
+  fixed `x` gives. If it violates more than ε, that is the direct evidence that selection
+  by the optimizer matters. If it does not, the scenario radius is
   conservative on this problem and we say so.
 - Gap to the truth at the optimum: clean-label model against the ODE at `x*`,
   beside the margin there. This decides whether the bias margin stays a remark.
@@ -393,7 +498,8 @@ chemotherapy".
   and the noise scale can be bounded; conformal methods when it is not.
 - Limitations: the guarantee is against the clean-label model; learned
   structure needs honest fitting for the theorem; models not affine in the
-  labels.
+  labels (FO-CP runs on them, but with the guarantee only as strong as the
+  answer to Section 3's open question).
 - Classification (one paragraph): with Bernoulli labels and a linear
   probability model or classification forest, the same counterpart applies and
   the noise is bounded, so `σ = 1/2` is known. Logistic and softmax models are

@@ -1,10 +1,260 @@
 # Paper A plan
 
-Revised 2026-11-14 (late, after the first solver test and a narrowing of
-scope). Outline: `paper_outline_v3.md`. Proofs: `paper_a_guarantee.md` (its
-Sections 5 and 6 are superseded by this file). Results: the go/no-go probe
-(job 29141177, under "Tonight") and the earlier local checks under "Results
-so far". No baseline has been run on the paper's design.
+Revised 2026-11-16 (after the meeting with DB; the new section below comes
+first). Before that, 2026-11-14 (late, after the first solver test and a
+narrowing of scope). Outline: `paper_outline.md` (version 4). Proofs:
+`paper_a_guarantee.md` (its Sections 5 and 6 are superseded by this file).
+Results: the go/no-go probe (job 29141177, under "Tonight") and the earlier
+local checks under "Results so far". No baseline has been run on the paper's
+design.
+
+## After the meeting with DB (2026-11-16)
+
+**What DB said.**
+
+- Still exploratory. Work on the outline and this plan, not on `paper.tex`.
+- We went through C-MICL and the old (random-bank) cutting planes in detail.
+- DB is reasonably happy with the robust counterpart (RC). It is parametric:
+  it needs the prediction to be affine in the training labels,
+  `f(x; θ(y)) = s(x)ᵀy + c(x)`. He also wants a non-parametric method.
+- His proposal: a new cutting-plane method whose separation problem is solved
+  by first-order methods (for example in PyTorch), with the loss in his sketch
+  (`c:\Users\jsitu\Downloads\robust-cl-cp.jpeg`, transcribed below). The
+  `max(·, 0)` is a ReLU, and each constraint has its own weight so that
+  infeasibility can be handled.
+- Semi-synthetic data first. Real data later.
+
+**The method as sketched (FO-CP, working name).** Data `(xᵢ, ȳᵢ)`. Write
+`ĥₖ(x; y)` for constraint k's model trained on labels `y`, so `ĥₖ(x; ȳ)` is
+the nominal model. The robust constraint is `ĥₖ(x; ȳ + Δy) ≤ bₖ` for every
+`‖Δy‖ ≤ R`: the model is **retrained** on each relabeling, so nothing is
+assumed about how predictions depend on labels.
+
+1. Solve the nominal problem (`Δy = 0`). Call the solution `x^t`.
+2. **Separation, by first-order methods.**
+   `Δy* = argmax_{‖Δy‖ ≤ R} Σₖ wₖ max(ĥₖ(x^t; ȳ + Δy) − bₖ, 0)`.
+3. **Master.** Add the cut `ĥₖ(x; ȳ + Δy*) ≤ bₖ`, an embedded copy of the
+   model retrained on `ȳ + Δy*`, and re-solve `min obj` over all cuts so far
+   to get `x^{t+1}`.
+4. Stop when the separation value is at most τ.
+
+**Settled with the user (2026-11-16).**
+
+- **Sign.** The violation `ĥₖ − bₖ`. (The sketch writes `bₖ − ĥₖ`, which
+  as a maximization would find the most favourable relabeling.)
+- **The set is the RC's.** `Δy` stacks every outcome's labels, and the norm
+  is the RC's ellipsoid, `‖Σ^{-1/2}Δy‖ ≤ R`, with Σ the noise covariance. So
+  FO-CP and the RC protect against the same uncertainty set.
+
+**What follows for the weights (my derivation; to put to DB).**
+
+- **They do not move the end point.** Each robust constraint must hold for
+  every `Δy` in the set. With exact separation, a maximum of 0 for the
+  weighted hinge sum means every hinge is 0 at every `Δy`, so every
+  constraint is robust-feasible, whatever the positive weights. The weights
+  change which cut is found, not the robust feasible set where the loop
+  stops. So they cannot make an infeasible robust problem feasible.
+- **Consistent with the RC.** Constraint k's worst case over the joint
+  ellipsoid uses only its own block `Σₖₖ` (the ellipsoid's projection), which
+  gives `fₖ + R‖Σₖₖ^{1/2} sₖ(x)‖ ≤ bₖ`, the RC as written. Correlation across
+  outcomes does not change the RC. It enters only the joint radius
+  (outline, Section 3, several constraints).
+- **With one model per outcome, the sum gives shallower cuts.** `ĥₖ`
+  depends only on `Δyₖ`, so the separation splits into K problems, each with
+  the full budget. The weighted sum finds a compromise direction that
+  violates several constraints at once, each by less than its own worst case.
+  One cut per violated constraint per iteration, as the old incoherent CP
+  did, is deeper. **Decided (2026-11-16): use per-constraint cuts; no
+  experiment compares the two.** The joint objective is needed only when one
+  model is trained on several outcomes (a multi-output network), because
+  then `Δyⱼ` moves `ĥₖ`.
+- **Infeasibility: two options, both with a stated level.**
+  - The RC's certified fallback carried over: the largest R at which the
+    robust problem is feasible (bisection), reported as the decision's level.
+  - Protect a fraction of the constraints (from the user), below.
+  - *Dropped (2026-11-16): the soft master*, which moves the hinges into the
+    master's objective as penalties, `min obj + Σₖ wₖ Σⱼ max(ĥₖ(x; ȳ + Δyʲ) − bₖ, 0)`.
+    It is never infeasible, but it has no guarantee and the weights become
+    one more dial to tune.
+- **Protect a fraction of the constraints (user, 2026-11-16).** Binary `zₖ` per constraint (constraints, not cohorts). The
+  robust cuts for k hold only if `zₖ = 1` (big-M), the nominal constraint
+  always holds, and `Σₖ zₖ ≥ ⌈pK⌉`. The separation uses `wₖ = zₖ`. Unlike
+  the weights, this moves the end point: the optimizer chooses which
+  constraints it can afford to protect. Guarantee: Theorem 1's bound is
+  uniform over the domain, so the data-driven choice of the protected set
+  costs nothing, and P(a protected constraint is violated) ≤ P(maxₖ Wₖ > R)
+  **[to prove: short]**. Unprotected constraints get only their certified
+  level `r̂ₖ(x*)`. Compare with the fallback (shrink R for all) and with an
+  unequal split of ε (`Σ εₖ ≤ ε`, which keeps a joint guarantee but cannot
+  drop a constraint). RO precedents to check: light robustness (Fischetti and
+  Monaci 2009), the globalized robust counterpart (Ben-Tal, Boyd and
+  Nemirovski 2006); the wrapper's α is the same idea over bootstrap models.
+
+**How it relates to what we have.**
+
+| | Old CP (random bank) | RC (current paper) | FO-CP (new) |
+|---|---|---|---|
+| Model | any, retrained per relabeling | affine in labels (ridge, last-layer network, trees with fixed splits) | any whose training is differentiable in the labels (networks trained end to end, GLMs including logistic) |
+| Separation | best of B = 200 sampled relabelings | closed form, `Δy = R s(x)/‖s(x)‖` | gradient ascent on `Δy` through the training map |
+| Separation exact? | no (inner sample) | yes | no (local search) |
+| Stopping certifies `x*`? | no | yes (T3) | no, unless the map is affine |
+| Guarantee | none | Theorem 1 | open (below) |
+
+- **The RC is FO-CP's closed-form case.** For an affine map with one
+  constraint, the hinge's gradient is `s(x)`, and one normalized ascent step
+  lands on `R s(x)/‖s(x)‖`, the RC's directed cut. So FO-CP on ridge must
+  reproduce the RC's decision exactly. That is the correctness test (F0).
+- **The first gradient is a linearized RC.** By implicit differentiation at
+  the trained weights, `∇_Δy ĥ(x) = J H⁻¹ ∇_θ f(x; θ̂)`, with `J` the Jacobian
+  of the training predictions and `H` the training loss's Hessian. With the
+  Gauss–Newton `H = JᵀJ + λI` this is ridge's `s(x)` on the network's gradient
+  features (the influence function of Koh and Liang). So one step from
+  `Δy = 0` is the RC on a linearized network. What the non-parametric method
+  adds is everything beyond that step: retraining and ascending again where
+  the map bends. Probe F1 measures how much that is.
+- **The old bank becomes an ablation of the separation**, on the same master:
+  random sampling against gradient ascent, at the same `R`.
+- **It removes the honest-fitting problem for networks.** Probe R3 (hidden
+  layers trained on each redraw's own labels) broke the last-layer RC's
+  guarantee: 0.76 against the clean-label model at the simulated radius,
+  target 0.90. FO-CP retrains the whole network on every relabeling, so the
+  standard fit is the method's own model, every row is used, and the R4
+  sample split is not needed.
+
+**What has to be defined before anything runs.**
+
+- **The training map.** Network training is nonconvex, so `y ↦ θ(y)` is not
+  unique. Proposal: full-batch, deterministic training, warm-started from the
+  nominal weights `θ̂`. The clean-label reference is the same map applied to
+  `y*`. Also measure from-scratch training on `y*`, and retraining on `ȳ`
+  with only the seed changed: if the seed alone moves `ĥ(x*)` as much as the
+  label noise does, the label ball is not modelling the main uncertainty.
+- **The gradient.** (G1) Implicit differentiation at the retrained optimum.
+  The reactor's (32, 32) network has 1,281 weights, so its Hessian can be
+  formed exactly. (G2) Unrolled differentiation through T warm-started
+  training steps (back-gradient). G1 first.
+- **The norm.** The RC's ellipsoid `‖Σ^{-1/2}Δy‖`, jointly over outcomes
+  (settled above). Σ is diagonal with σᵢ² per row where noise levels differ
+  (chemotherapy's binomial σ per arm). Cross-outcome covariance is open for
+  chemotherapy, where toxicities in one arm are correlated.
+- **Search effort.** Multi-start: from `Δy = 0`, from the linearized
+  direction, and from random points on the sphere. Each candidate is checked
+  by full retraining before it becomes a cut.
+
+**The guarantee is the open question.** Theorem 1 uses that the error of an
+affine model is `s(x)ᵀe`. For a retrained nonlinear model, three options:
+
+| Option | Radius | What it guarantees | Catch |
+|---|---|---|---|
+| (a) Model-free ball | `√χ²(nK, 1−ε)` in the whitened norm: the norm of the whole noise vector over all K outcomes (`σ√χ²(n, 1−ε)` for one constraint) | If separation were exact, the clean-label model is feasible at `x*` with probability ≥ 1−ε, for **any** training map. Short proof. | Separation is local. And the radius protects every direction in label space: about 32σ at n = 1,000, against the RC's 8.4σ closed-form and 3.6σ simulated radii on cubic ridge. On ridge it would make the margin about 9 times the simulated one. |
+| (b) Linearized subspace | `σ√χ²(d_eff, 1−ε)`, with `Δy` restricted to the span of the linearized map | Exact for affine maps (it is the RC's subspace radius); approximate otherwise | Valid only to first order |
+| (c) Scenarios | Sample noise vectors, retrain on each, and size `R` so the robust set covers a 1−ε fraction of them. Or impose the N retrained models directly (scenario optimization, Calafiore and Campi; Campi and Garatti) | A bound for a fresh **resampled** model | That is a parametric bootstrap, not the clean-label model. With integer decisions it needs the non-convex scenario theory. The old random bank was this, without the theory. |
+
+Recommendation: state (a) as the exact result. Test in F2 how conservative
+it is, and use (c) as the practical radius if (a) overpays badly. This is
+DB's call: does the non-parametric method need a finite-sample guarantee, or
+is an approximate one acceptable?
+
+**Semi-synthetic instances (DB: first).** Real covariates, a known truth
+`h*`, labels `h*(xᵢ) + noise` at a chosen σ, so every decision is judged
+exactly.
+
+| # | Instance | Truth | Why |
+|---|---|---|---|
+| SS1 | Reactor, Ovalle et al.'s design and 100 cost vectors, σ = 2 | (i) the ODE; (ii) a realizable truth: a (32, 32) network fitted to noise-free ODE labels | (i) as in E1. (ii) puts the truth inside the model class, so the model has no bias. The network RC missed against the ODE because of bias (bias at `x*` negative in 80 to 90% of runs, job 29141177), so (ii) is where FO-CP's label-noise protection can be tested by itself. |
+| SS2 | Chemotherapy: the 416 real arms' covariates and treatments, five toxicity constraints, survival objective | One fixed model per outcome, fitted on the real labels, then treated as the truth. Noise σᵢ binomial from the real arm sizes. | Gives the several-constraints experiment with a ground truth that the plan lacked (see "Scope"), and is where the weights and infeasibility handling are tested. |
+
+SS1 first: the ODE, the cost draws, the redraw harness (`probe_rc_ridge.py`)
+and the baselines exist. SS2 needs a generator. Real chemotherapy data (E2)
+comes after.
+
+**Candidate instances beyond these (proposed 2026-11-16, not decided).** What
+the plan lacks is several learned constraints against an exact truth, and a
+constraint or model that couples several outcomes (where the joint set's
+shape and cross-outcome covariance matter).
+
+| Candidate | What it adds | Truth | Cost to build | Verdict |
+|---|---|---|---|---|
+| **SS1+: reactor with more ODE outputs as constraints** | Several constraints with an exact truth. The ODE already integrates eight flows (tube and shell CH4, C2H6, H2, C6H6, `src/data/dma_mr.py`), so e.g. a methane-conversion floor or an ethane cap is one more output of the same solve. Fit them separately or as one multi-output network (shared training: the case where the joint separation is needed) | ODE | Low: same harness | **Recommended first.** The constraints are ours, not Ovalle et al.'s; say so |
+| SS2: chemotherapy with DLT as a function of the four toxicities | `1 − Πₖ(1 − ĥₖ(x)) ≤ b`: several models in one constraint, from the literature's own instance | fitted, fixed | Medium (I14) | Already planned; add the DLT variant |
+| Student enrollment (JANOS, Bergman et al.; Gurobi ML example; OptiCL compares against it) | Logistic model: not affine in labels, so FO-CP's case; a constraint summing predictions over many students | a fixed logistic model, Bernoulli labels: noise known exactly | Medium; data are synthetic in the public example | Good FO-CP showcase, but classification, which the outline keeps to a paragraph |
+| Autothermal reformer (IDAES/OMLT example) | Multi-output network trained on 2,800 simulated points; maximize H2 s.t. an N2 concentration cap (GAMSPy version) | IDAES flowsheet | High: idaes-pse and Ipopt; only two decision variables | Not now |
+| Power-system security rules (Cremer et al. 2019 and successors) | The literature's clearest at-optimum failure | power-flow simulator | High; classification | Motivation only |
+| WFP (E3) | Second literature case | palatability simulator | High (I8) | As planned |
+
+**Probes, in order.**
+
+| # | Question | Design | Decides |
+|---|---|---|---|
+| F0 | Does FO-CP reproduce the RC where the RC is exact? | Cubic ridge and the last-layer network on one reactor redraw. Gradient ascent's maximum against `R‖s(x)‖`; FO-CP's final decision against the RC's cone solution. Local, minutes. | The code is right. Gate for everything else. |
+| F1 | Is the training map nonlinear enough for the non-parametric method to matter, and how strong is the attack? | (32, 32) network trained end to end, nominal `x*`, a few redraws, several R. Violation found by: the linearized step; FO multi-start with retraining; the random bank (B = 200) in the same ball; seed-only retraining. Cluster quick-test. | If multi-start ≈ the linearized step, FO-CP collapses to an RC on the linearized network (simpler, and it keeps a guarantee). If the seed-only change is comparable, training randomness, not label noise, dominates. |
+| F2 | Does FO-CP deliver on SS1, and at what cost? | 100 cost vectors, noise redrawn. FO-CP at radii (a) and (c); the last-layer RC; nominal; margin, wrapper and C-MICL on the same network. Feasibility against the clean-label model (same training map on `y*`), the ODE, and the realizable truth; cost; cuts; time. | H1 and H2 for the non-parametric method |
+| F3 | Several constraints and infeasibility | SS2, joint ellipsoid, per-constraint cuts. Where the robust problem is infeasible: the certified fallback against protecting a fraction p of the constraints | Infeasibility handling; H3 on a known truth |
+
+**Theory tasks added.**
+
+- **T7.** If separation is exact, termination gives robust feasibility (as T3).
+  With local separation, state what stopping does and does not show. Also:
+  over the joint ellipsoid, the weighted hinge sum has maximum 0 exactly when
+  every constraint is robust-feasible, for any positive weights (short; see
+  "What follows for the weights"). For affine maps with one model per
+  outcome, each constraint's separation is closed form. The weighted sum
+  itself is a convex function, so maximizing it is not a concave problem, but
+  it can be solved exactly by enumerating which constraints are violated
+  (2^K − 1 subsets; K = 5 on chemotherapy). That is an exact checker for F3
+  on ridge.
+- **T8.** Guarantee options (a) to (c) above. (a) is short. (c) needs either
+  a linearization argument or scenario theory with the bootstrap caveat.
+
+**Implementation tasks added.**
+
+- **I11.** PyTorch as a dependency (not installed; check wheels for Python
+  3.14, else JAX). The training map: deterministic, full-batch, warm-started.
+  Export the trained weights to the existing MLP embedding in
+  `src/models/embed.py`.
+- **I12.** The separation: projected gradient ascent with G1, multi-start, a
+  retraining check of each candidate.
+- **I13.** The master loop. `cp.py`'s incremental master already embeds one
+  retrained model per cut, so swap in the new separation there or in a slim
+  copy. To check which is less work.
+- **I14.** SS2 generator; the realizable-truth variant of SS1.
+
+**Literature to add (to check; none read yet, none in `paper_a.bib`).** The
+separation is a targeted label-poisoning attack with a norm budget, solved
+as a bilevel problem: Biggio, Nelson and Laskov (2012); Mei and Zhu (2015);
+Muñoz-González et al. (2017, back-gradient); Jagielski et al. (2018,
+regression); Koh and Liang (2017, influence functions). The novelty has to be
+argued against them. There the attack targets a prediction; here it targets
+the optimizer's decision, and the cut goes into a MIP. Scenario optimization:
+Calafiore and Campi (2006), Campi and Garatti (2008), Campi, Garatti and
+Ramponi (2018, non-convex). Implicit differentiation: Blondel et al. (2022).
+
+**New risks.**
+
+- No certificate. Local separation can miss the worst relabeling, which is the
+  same objection the plan makes to the random bank, only weaker.
+- The exact radius (a) may be useless in practice (about 32σ at n = 1,000).
+- Bias. FO-CP protects against label noise only, so on the end-to-end network
+  it will miss against the ODE for the same reason the network RC did. SS1(ii)
+  separates the two effects.
+- The master grows by one embedded (32, 32) network per cut and constraint.
+  One network solve already takes 15 to 100 seconds.
+- The hinge has zero gradient at constraints with slack, and a kink at `Δy = 0`
+  for a binding one. Starting from the linearized direction avoids both.
+
+**Questions for DB.**
+
+1. One paper with two methods (the RC as the exact case, FO-CP for the rest),
+   or the RC paper first and FO-CP as its own paper? Recommendation: one
+   paper, the RC presented as FO-CP's closed form.
+2. What guarantee must the non-parametric method carry: exact (radius (a)),
+   approximate (b, c), or none beyond experiments?
+3. The weights. Under the RC's joint ellipsoid they change only which cut is
+   found, not where the loop ends (above). We propose handling infeasibility
+   instead with the certified fallback (largest feasible radius) or by
+   protecting a fraction of the constraints. Is that what he had in mind?
+4. Not answered on 2026-11-16 and still open: the reactor's lead model
+   (network or cubic ridge, see "Proposed for DB" under "Tonight").
 
 ## Tonight (2026-11-14), before the meeting with DB
 
@@ -220,7 +470,7 @@ of 2026-09-07) and the gastric cell (2026-09-08).
 
 | Earlier approach | What it did | Why it is not the method | In the paper |
 |---|---|---|---|
-| Cutting planes over a random bank | Drew 200 relabelings from an ellipsoid of radius rho, retrained the model on each, cut the worst one at `x*`, stopped at tolerance tau. With several constraints, a cut that left a protected cohort infeasible was rolled back and rejected. | No guarantee: the bank is a finite sample of the set, so stopping shows `x*` is feasible for the drawn models only. Two parameters (rho, tau) with no rule tying either to a violation level; both were set against the ground truth, and the rho that works had to be re-measured per instance (rho = 1 never passed 0.30, rho = 2 delivered). The result also depends on the bank's seed. For a model affine in its labels the worst relabeling has a closed form, `R s(x)/‖s(x)‖`, so sampling is unnecessary. The rollback kept the master feasible by giving up robustness wherever it was unaffordable, so what was delivered had no stated level. | Out. One sentence in Section 4: random-draw cuts carry no guarantee. Stays in the thesis. The rollback's role (prescribing when full robustness is infeasible) passes to the certified fallback; see "Infeasibility on chemotherapy". |
+| Cutting planes over a random bank | Drew 200 relabelings from an ellipsoid of radius rho, retrained the model on each, cut the worst one at `x*`, stopped at tolerance tau. With several constraints, a cut that left a protected cohort infeasible was rolled back and rejected. | No guarantee: the bank is a finite sample of the set, so stopping shows `x*` is feasible for the drawn models only. Two parameters (rho, tau) with no rule tying either to a violation level; both were set against the ground truth, and the rho that works had to be re-measured per instance (rho = 1 never passed 0.30, rho = 2 delivered). The result also depends on the bank's seed. For a model affine in its labels the worst relabeling has a closed form, `R s(x)/‖s(x)‖`, so sampling is unnecessary. The rollback kept the master feasible by giving up robustness wherever it was unaffordable, so what was delivered had no stated level. | Out as a method. One sentence in Section 4: random-draw cuts carry no guarantee. **2026-11-16:** the cutting-plane loop returns with first-order separation (FO-CP, top of this file), and the random bank becomes its separation ablation. The rollback's role (prescribing when full robustness is infeasible) passes to the certified fallback; see "Infeasibility on chemotherapy". |
 | Right-hand-side margin | Tightened the constraint by a constant `m` | The margin is the same at every `x`, and nothing says how large to make it: `m* = 4.0` was found only with the oracle. At 0.9 feasibility it was the most expensive of the three tuned methods (6.043, against 5.816 for cutting planes and 5.885 for the wrapper). On gastric a large `m` makes the problem infeasible instead of conservative (`m = 0.75` solved 20% of contexts). | Baseline. |
 | Wrapper | Embedded 20 bootstrapped models and required a fraction to hold | The fraction is not tied to a violation level. At its strictest setting it reached 0.00 and 0.10 on the two rho columns where cutting planes operated, and it embeds 20 models. On gastric it solved 64 to 68% of contexts. | Baseline. |
 | Robust regression | Trained a label-robust model and embedded it nominally | It acts on the learner, not the embedding. | Out. Paper B. |
@@ -361,6 +611,14 @@ the gap to a 0.9 target is two to three standard errors at 100 runs.
   draft.
 - **Classification is a paragraph in the discussion.**
 - **No formal hypothesis tests.** Means with standard errors.
+- **A non-parametric method joins the RC** (DB, 2026-11-16): cutting planes
+  with first-order separation (FO-CP). Its place in the paper and its
+  guarantee are open. See the section at the top.
+- **Semi-synthetic data first** (DB, 2026-11-16), real data later.
+- **Infeasibility options to test include protecting a fraction of the
+  constraints** (user, 2026-11-16), beside the certified fallback.
+- **The objective stays nominal; a robust objective is a deferred variant**
+  (user, 2026-11-16).
 
 ## Open design points from the 2026-11-14 review
 
@@ -451,7 +709,12 @@ What changes for the RC:
   second row only. It mixes misfit into σ, which the theorem does not ask for,
   and it is likely to make the RC infeasible the way C-MICL is.
 - **Objective.** Survival is a learned objective. The default is no margin on
-  it, as for the other methods.
+  it, as for the other methods. **A robust objective (epigraph form,
+  `max t` s.t. `ĥ_OS(x; ȳ + Δy) ≥ t` over the set) is a variant, deferred**
+  (user, 2026-11-16). It would give a certified lower bound on clean-label
+  survival. If it is ever run, the epigraph constraint is never droppable
+  under the fraction-protected option, and the survival labels join the
+  joint set.
 - **What it can show.** The certified level of each method's prescriptions
   (the main measure), the fraction prescribed, toxicity limits met under the
   judge, and survival. The judge is itself fitted, so this experiment does not
@@ -598,6 +861,11 @@ The simulated radius at 200 draws is a cluster job.
 6. **I8 and E3.**
 
 Step 1 and a small version of step 2 are tonight's runs (top of this file).
+
+**Added 2026-11-16, alongside the RC track:** I11 and I12, then F0 (local),
+then F1 (go or no-go: does the non-parametric method add anything over a
+linearized RC?), then I13 and I14, F2 on SS1, and F3 on SS2. The real-data E2
+comes after F3.
 
 ## Risks
 
