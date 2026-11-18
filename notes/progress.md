@@ -630,3 +630,21 @@ built except the new method; SS2 needs a generator.
 check that the new method reproduces the RC on cubic ridge; F1, whether the
 non-parametric step adds anything over the linearized one. Details:
 `paper/paper_plan.md`, "After the meeting with DB (2026-11-16)".
+
+## 2026-11-18: Paper A decisions on the non-parametric method
+
+- **One paper, two methods**: the RC for models affine in their labels, the
+  first-order cutting planes (FO-CP) for the rest, with the RC as FO-CP's
+  closed-form case.
+- **FO-CP's radius is chosen by how it performs on the reactor** (model-free
+  ball, linearized subspace or scenario radius; probe F2), not fixed in
+  advance.
+- **Infeasibility**: binary weights, a protected fraction p of the
+  constraints chosen by the master, compared with the certified fallback
+  (probe F3 on semi-synthetic chemotherapy).
+- **Instances**: new ones come from those widely used in the optimization
+  literature (WFP; student enrollment, a logistic model, as FO-CP's case), not
+  from new constraints on the reactor.
+- The plan's top section is condensed to what is settled, and the 2026-11-14
+  run notes are reduced to the results table and the lead-model proposal,
+  which is still open.

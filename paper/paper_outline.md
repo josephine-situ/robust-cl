@@ -10,13 +10,12 @@ only, `paper.tex` untouched.
 
 - A second, non-parametric method: cutting planes whose separation problem
   is solved by first-order methods through the training map (FO-CP;
-  Section 2.2). The RC is its closed-form case. Its guarantee is **[open]**
-  (Section 3), and so is whether it shares this paper (question for DB in
-  `paper_plan.md`).
+  Section 2.2). One paper, two methods; the RC is FO-CP's closed-form case.
+  Its radius is **[open]** (Section 3).
 - Semi-synthetic instances come first (Section 6.0). Real chemotherapy data
   (6.3) comes later.
-- The abstract and contributions below still describe the RC alone, apart
-  from contribution 5. Rewrite them once FO-CP's place is settled.
+- The abstract and contributions 1–4 still describe the RC alone. Rewrite
+  them for two methods.
 
 **What changed from v2 (in v3).**
 
@@ -237,30 +236,21 @@ For a model that is not affine in its labels. Specification, open choices and
 probes: `paper_plan.md`, "After the meeting with DB".
 
 - **Robust constraint.** `ĥₖ(x; ȳ + Δy) ≤ bₖ` for all `‖Σ^{-1/2}Δy‖ ≤ R`,
-  where `ĥₖ(·; y)` is the model **retrained** on labels `y`, and `Δy` stacks
-  every outcome's labels. This is the RC's uncertainty set (settled
-  2026-11-16).
-- **Loop.** Nominal `x⁰`. Separation at `x^t`:
-  `max_{‖Δy‖≤R} Σₖ wₖ max(ĥₖ(x^t; ȳ + Δy) − bₖ, 0)`, by projected gradient
-  ascent through the training map (implicit differentiation). Add the model
-  retrained on `ȳ + Δy*` as a cut, re-solve the master, and stop when the
-  separation value is at most τ. With per-constraint cuts this splits into
-  one problem per constraint, `max ĥₖ(x^t; ȳ + Δyₖ)` over the ellipsoid:
-  continuous in `Δy` (one entry per training label), each step a
-  warm-started retraining plus one linear solve.
-- **Special case.** For an affine map with one constraint, one ascent step
-  gives `R s(x)/‖s(x)‖`, so the method is the RC solved by directed cuts. The
-  first step on a network is an RC with the linearized `s(x)`.
-- **The weights.** The sketch's `bₖ − ĥₖ` is read as the violation
-  `ĥₖ − bₖ` (confirmed). Over the joint set, a weighted hinge sum of 0 means
-  every constraint is robust-feasible whatever the weights, so in the
-  separation they only choose which cut is found. **[open, for DB]**
-  Infeasibility is handled by the certified fallback (largest feasible R) or
-  by protecting a fraction p of the constraints (binary `zₖ`,
-  `Σ zₖ ≥ ⌈pK⌉`, weights `wₖ = zₖ`). Cuts are added per violated
-  constraint.
-- **Open.** The training map for nonconvex models (warm-started and
-  deterministic is proposed).
+  where `ĥₖ(·; y)` is the model **retrained** on labels `y` and `Δy` has one
+  entry per training row and outcome: the RC's uncertainty set.
+- **Loop.** At `x^t`, for each protected constraint, maximize the retrained
+  prediction `ĥₖ(x^t; ȳ + Δy)` over the set by gradient ascent (implicit
+  differentiation through training, one linear solve per step). If it
+  exceeds `bₖ + τ`, add the retrained model as a cut; re-solve; stop when no
+  cut is added.
+- **Which constraints are protected.** Binary `zₖ` chosen by the master,
+  `Σ zₖ ≥ ⌈pK⌉`; the alternative is the certified fallback (largest feasible
+  R).
+- **Special case.** For a model affine in its labels, one step gives
+  `R s(x)/‖s(x)‖`: the RC by directed cuts. On a network the first step is
+  the RC on the linearized network.
+- **Training map** for nonconvex models: full-batch, deterministic,
+  warm-started from the nominal weights.
 
 ## 3. Guarantee at the optimum
 
@@ -329,14 +319,12 @@ Kept to about four pages. Proofs in the appendix.
   model with its structure frozen; an appendix table measures what standard
   fitting costs in violations and what honest fitting costs in accuracy.
 - **Guarantee for FO-CP. [open, added 2026-11-16]** Theorem 1 uses the
-  affine error `s(x)ᵀe`. Without it there are three options: the
-  model-free ball `σ√χ²(n, 1−ε)` (exact if the separation is exact, valid for
-  any model, but about 32σ at n = 1,000); a radius on the linearized subspace
-  (first order only); or a scenario radius from retrained noise draws (a
-  bootstrap: it bounds the violation for a fresh resampled model, not for the
-  clean-label model). The separation is a local search, so stopping certifies
-  nothing for a nonlinear map. The question for DB is which of these the
-  paper needs.
+  affine error `s(x)ᵀe`. Without it, three radii: the model-free ball
+  `√χ²(nK, 1−ε)` (exact for any model if separation is exact, but about 32σ
+  at n = 1,000), the linearized subspace (first order), or a scenario radius
+  from retrained noise draws (a bootstrap). Chosen by how each performs on
+  the reactor (`paper_plan.md`, F2). Separation is local, so stopping
+  certifies nothing for a nonlinear model.
 - **Remark: the true function.** The guarantee is against the clean-label
   model. Extending it to `h*` requires an assumption on `h*` (for example
   Lipschitz, or linear in the features), which gives a bound `B(x)` on the
@@ -405,16 +393,12 @@ injected noise.
   label-noise protection is tested by itself.
 - **SS2, chemotherapy.** The real arms' covariates and treatments, one fixed
   model per outcome treated as the truth, binomial noise from the real arm
-  sizes. The several-constraints experiment with a ground truth, and the test
-  of FO-CP's weights and infeasibility handling. Variant: DLT written as
-  `1 − Πₖ(1 − ĥₖ(x))`, several models in one constraint.
-- **Proposed: SS1+, the reactor with a second ODE output as a constraint**
-  (e.g. a methane-conversion floor), fitted separately or as one
-  multi-output network: several constraints against an exact truth.
-  Candidates and their trade-offs: `paper_plan.md`.
-- Real data (6.3) after these.
-- The objective stays nominal everywhere; a robust objective (epigraph) is a
-  deferred variant (2026-11-16).
+  sizes. Several constraints against a known truth, and the test of
+  infeasibility handling.
+- Further instances come from those widely used in the optimization
+  literature: WFP (6.4) and, as FO-CP's case (a logistic model), student
+  enrollment (JANOS, OptiCL). Real data (6.3) after these.
+- The objective stays nominal; a robust objective is a deferred variant.
 
 ### 6.1 Membrane reactor design (the lead result)
 *Does the method deliver the feasibility it targets, and what does it cost?*
