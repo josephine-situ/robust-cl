@@ -729,3 +729,32 @@ clean-label model / the ODE; cost as % of the objective range.
   selection problem back); gradient ascent then searches the ball of that
   radius at every iteration. For affine models it is exactly Theorem 1's
   simulated radius; for networks the argument is first order.
+
+## 2026-11-19: Probe P1: the RC certifies half the gastric cohorts under the binomial σ
+
+Job 29576766 (`experiments/probe_p1_gastric.py`, 8 `mit_quicktest` tasks).
+Ridge (fixed penalty) on the five toxicity percentile labels, fit on the 320
+training arms (training R² 0.37–0.48). For each of the 96 test cohorts, the
+certified radius r̂ = the largest RC radius at which the cohort still has a
+regimen (exact, by Dinkelbach over MISOCPs with the domain constraint and
+trust region; 5–6 solves, 10–20 s per cohort). Joint radius over all five
+toxicities by enumeration (96 contexts × 282 training regimens, 1,000 draws).
+Every cohort is nominally feasible.
+
+| σ | Joint radius, ε = 0.1 | Certified at ε = 0.05 / 0.1 / 0.2 | Median r̂ | Median level |
+|---|---|---|---|---|
+| Binomial per arm, delta method to the percentile scale (median 0.10–0.26) | 4.29 | 0.43 / 0.50 / 0.61 | 4.31 | 0.09 |
+| Out-of-fold residual sd (0.31–0.33) | 4.19 | 0 / 0 / 0 | 2.73 | 1.00 |
+
+- **Under the label noise the theorem is about (binomial σ), half the
+  cohorts get a regimen certified at 90%.** H3 stays viable.
+- **But the median cohort sits on the radius**: 0.47 / 0.43 / 0.22 are
+  certified if the radius is 0.1 / 0.2 / 0.5σ larger, and enumeration
+  understated the solver's W by 0.10–0.24σ on the reactor network. E2 needs
+  the solver-certified radius before any fraction is quoted.
+- **Under the out-of-fold σ nothing is certified** (best level 0.53): the
+  residual sd is about the label sd, so σ is mostly ridge's misfit. This is
+  the misfit C-MICL's width also absorbs, and why it prescribes for ~6%.
+- Data: 416 real arms (320 train, 96 test), five toxicities as percentile
+  ranks, arm sizes 11–289. Not yet measured: baselines' certified levels,
+  forests in place of ridge.

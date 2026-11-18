@@ -545,16 +545,30 @@ This also sidesteps the judge's weak separation: the certified level does not
 depend on the judge. The judge's verdict stays beside it as the check against
 misfit.
 
-**Probe P1 (local, minutes; not yet run; step 1 of the Sequence).**
-- Fit ridge on the training arms for the five toxicities.
-- For each of the 96 test cohorts, solve the max-t problem.
-- Report the fraction whose `r̂` reaches the joint radius at ε = 0.1, under
-  the binomial σ and under the out-of-fold residual sd. For the radius, use
-  enumeration, which is good enough for a go/no-go.
+**Probe P1: done (job 29576766, 2026-11-19).** `experiments/probe_p1_gastric.py`.
+Ridge (fixed penalty) on the five toxicity percentile labels; for each of the
+96 test cohorts the certified radius r̂ by Dinkelbach over its regimens
+(domain constraint and trust region); joint radius by enumeration over 96
+contexts × 282 training regimens, 1,000 draws.
 
-This decides H3 before I6 and I7 are built. If even the binomial σ certifies
-few cohorts, E2 is reframed as a demonstration of the fallback and of
-abstention, and H3 is weakened to the comparison of certified levels.
+| σ | σ median (percentile scale) | Joint radius, ε = 0.1 | Certified at ε = 0.05 / 0.1 / 0.2 | Median r̂ | Median level |
+|---|---|---|---|---|---|
+| Binomial per arm (delta method) | 0.10–0.26 by outcome | 4.29 | 0.43 / **0.50** / 0.61 | 4.31 | 0.09 |
+| Out-of-fold residual sd | 0.31–0.33 | 4.19 | 0.00 / 0.00 / 0.00 | 2.73 | 1.00 |
+
+Every cohort is nominally feasible. Ridge fits poorly (training R² 0.37–0.48).
+
+- **Under the binomial σ, H3 stays viable**: half the cohorts are certified
+  at ε = 0.1. But the median r̂ sits on the radius, so the fraction is
+  sensitive to it: 0.47 / 0.43 / 0.22 if the radius is 0.1 / 0.2 / 0.5σ
+  larger (enumeration understated the solver's W by 0.10–0.24σ on the
+  reactor network). E2 needs the solver-certified radius.
+- **Under the out-of-fold σ, nothing is certified** at any level (best level
+  0.53): residual sd 0.31 against a label sd of about 0.29, i.e. σ is mostly
+  misfit, as predicted. The binomial σ stays the main result; the
+  out-of-fold row shows what misfit does.
+- Not yet measured: the baselines' certified levels, and the plan's forests
+  in place of ridge.
 
 ## Theory tasks
 
@@ -586,7 +600,7 @@ forests.
 | I7 | RC in the chemotherapy runner; per-outcome σ; fixed models | to build | E2 |
 | I8 | WFP instance, regression, with OptiCL App. C.1's truth function (constants recovered from the public data or from the authors) | to build | E3 |
 | I9 | Certified radius `r̂(x)` for any decision; the max-t fallback by bisection; `ε̂` from the stored W draws | to build | E2, Table 2 |
-| I10 | Probe P1: ridge on the gastric training arms, max-t per test cohort, two choices of σ | to build; local, minutes; **still not run** | H3 go/no-go |
+| I10 | Probe P1: ridge on the gastric training arms, max-t per test cohort, two choices of σ | done (`probe_p1_gastric.py`, job 29576766) | H3 go/no-go |
 | I11–I14 | FO-CP: training map, separation, slim master, SS1 truth / WFP / SS2 | to build (top of this file) | F0–F2, E3, P2 |
 
 Everything beyond a probe goes through `sbatch`. E1 is many short solves and
@@ -607,8 +621,9 @@ The simulated radius at 200 draws is a cluster job.
 Revised 2026-11-18. Step 1 of the old sequence and a small version of
 step 2 were job 29141177.
 
-1. **Cheap checks now.** F−1 (existing code, cluster) and P1 (local,
-   minutes). F−1 decides whether radius (a) survives; P1 decides H3.
+1. **Cheap checks: done.** F−1 (job 29561590): radius (a) is impractical.
+   P1 (job 29576766): binomial σ certifies half the cohorts at ε = 0.1,
+   out-of-fold σ none; H3 stays, conditional on the binomial σ.
 2. **The reactor's lead model**, with DB, from R1 to R4 and F−1.
 3. **FO-CP gate.** I11, I12, F0 (local), then F1 (go or no-go: does ascent
    add anything over the linearized step?). Then I13 and the F2 pilot

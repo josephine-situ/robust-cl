@@ -481,6 +481,10 @@ repeated at three radii and three values of ε.
 cohorts can the method certify a regimen for, and what does it do with the
 rest?* **[to run]** The design is in `paper_plan.md`, "Infeasibility on
 chemotherapy".
+- Go/no-go (P1, ridge, enumerated radius; not a paper result): under the
+  binomial σ, 50% of the 96 test cohorts are certified at ε = 0.1 (43% at
+  0.05, 61% at 0.2), with the median cohort on the radius, so E2 needs the
+  solver-certified radius; under the out-of-fold σ, none.
 - Maragno et al.'s gastric cancer case study on the real trial data: 416 arms,
   five toxicity constraints and overall survival as the objective.
 - Their evaluation protocol: prescribe for the 96 held-out arms; judge with an
