@@ -238,6 +238,127 @@ text.
   Mistry et al. (*IJOC* 2021), which add distance or penalty terms to embedded
   trees with no guarantee.
 
+## FO-CP, robust-optimization machinery and instances (2026-11-18, web search)
+
+Checked for the second method (first-order cutting planes, FO-CP) and the
+instance choice. Not yet in `paper_a.bib` or Zotero. DOIs were checked in
+Crossref or on the publisher's page unless marked †. "Read" says how much.
+
+### Verdict for FO-CP
+
+| Claim | Status | Prior work |
+|---|---|---|
+| Worst-case relabeling in a norm ball, by gradient through retraining, at a fixed decision | **Not new as a technique** | Label/data poisoning as a bilevel problem: Biggio et al. 2012; Mei and Zhu 2015; Muñoz-González et al. 2017; Jagielski et al. 2018; Koh and Liang 2017 (targeted at one test point); Xiao et al. 2012 (label flips) |
+| The retrained model on `ȳ + Δy*` added as a cut in a MIP | **Partly new** | Cutting sets with approximate oracles (Mutapcic and Boyd 2009; Bertsimas, Nohadani and Teo 2010); several retrained models embedded together is the OptiCL wrapper. Choosing them adversarially, as cuts: not found |
+| First linearized step = influence / leverage margin | **Known argument** | Koh and Liang 2017; ridge prediction `αᵀy` with `α = X(XᵀX+λI)⁻¹h(x)` in Rosenfeld et al. 2020 |
+| The combination as RO for constraint learning | **Not found** | Closest: Kinsey et al. 2022 (poisoning a predict-then-optimize pipeline's decision); Johnson-Yu et al. 2023 (robust predict-then-optimize against label drift, in training); Zhang, Amin and Perakis 2026 (influence of noisy points on LP decisions) |
+
+**Read Kinsey et al. 2022 and Zhang, Amin and Perakis 2026 in full before
+claiming the combination.** Both were read at abstract level only.
+
+### Poisoning, influence, implicit differentiation
+
+- **Biggio, Nelson and Laskov 2012**, ICML, pp. 1467–1474, arXiv:1206.6389.
+  Read: abstract. Gradient ascent through the SVM's optimality conditions to
+  raise test error.
+- **Mei and Zhu 2015**, AAAI, pp. 2871–2877, doi:10.1609/aaai.v29i1.9569.
+  Read: abstract. Optimal training-set attack as a bilevel problem with
+  implicit-function gradients (SVM, logistic, linear regression): FO-CP's
+  separation with a different attacker objective.
+- **Muñoz-González et al. 2017**, AISec, pp. 27–38, arXiv:1708.08689,
+  doi:10.1145/3128572.3140451†. Read: abstract. Back-gradient (unrolled)
+  differentiation, the alternative when a network has no clean optimum.
+- **Jagielski et al. 2018**, IEEE S&P, arXiv:1804.00308,
+  doi:10.1109/SP.2018.00057†. Read: abstract. Poisoning ridge and LASSO by
+  inserted points (not a label ball); the TRIM defense.
+- **Koh and Liang 2017**, ICML (PMLR 70†), arXiv:1703.04730. Read: abstract.
+  The influence of training points on a test prediction: FO-CP's first
+  gradient.
+- **Blondel et al. 2022**, NeurIPS, arXiv:2105.15183. Read: abstract. Tooling
+  for implicit differentiation.
+- **Rosenfeld, Winston, Ravikumar and Kolter 2020**, ICML (PMLR 119),
+  arXiv:2002.03018. Read: method section. Certifies a prediction (not a
+  decision) against label flips, using ridge on a fixed feature map, the RC's
+  `s(x)`.
+- **Kinsey, Tuck, Sinha and Nguyen 2022**, GameSec, LNCS 13727, pp. 231–252,
+  doi:10.1007/978-3-031-26369-9_12. Read: abstract. Meta-gradient poisoning
+  of a predict-then-optimize decision; targets the objective, no robust
+  constraint.
+- **Johnson-Yu, Finocchiaro, Wang et al. 2023**, GameSec (earlier at AAMAS
+  2023). Read: abstract; author list and DOI not verified.
+- **Zhang, Amin and Perakis 2026**, NeurIPS (OpenReview CiBySOXzK9). Read:
+  abstract. Influence functions with LP geometry to reweight noisy points.
+- Not cited unless needed: Meyer, Albarghouthi and D'Antoni 2022
+  (arXiv:2206.03575, certifying linear regression against label bias;
+  perturbation set not confirmed); Bertsimas and Boucher 2025
+  (arXiv:2503.02173, uncertainty set on the predicted output).
+
+### Robust-optimization machinery
+
+- **Per-constraint sets.** Ben-Tal, El Ghaoui and Nemirovski 2009, *Robust
+  Optimization*, Princeton, doi:10.1515/9781400831050, **Ch. 1, Sec. 1.2,
+  item B, pp. 11–12** (Example 1.2.6): the RC "is a purely 'constraint-wise'
+  construction" and "remains intact when U is extended to the direct product
+  of its projections". Read: those pages.
+- **Risk allocation.** Nemirovski and Shapiro 2006, *SIAM J. Optim.*
+  17(4):969–996, doi:10.1137/050622328, eq. (2.14)–(2.15) and Remark 2.1
+  (p. 977): Σαᵢ ≤ α by the union bound; αᵢ as decision variables destroys
+  convexity, so αᵢ = α/m. Read: Sec. 2. Joint calibration instead: Chen, Sim,
+  Sun and Teo 2010, *OR* 58(2):470–485, doi:10.1287/opre.1090.0712 (not
+  read).
+- **Protecting a fraction of the constraints.** Gorissen, Yanıkoğlu and den
+  Hertog 2015, *Omega* 53:124–137, doi:10.1016/j.omega.2014.12.006, Sec. 6,
+  "K out of N constraints": exactly the big-M model with Σzᵢ ≥ K; they note
+  it is more conservative than "for every ζ, K of N hold". Ours adds the
+  nominal rows. Related: light robustness (Fischetti and Monaci 2009, LNCS
+  5868:61–84, doi:10.1007/978-3-642-05465-5_3, abstract only); the
+  comprehensive RC (Ben-Tal, Boyd and Nemirovski 2006, *Math. Program.*
+  107:63–89, doi:10.1007/s10107-005-0679-z); soft robustness (Ben-Tal,
+  Bertsimas and Brown 2010, *OR* 58(4):1220–1234,
+  doi:10.1287/opre.1100.0821); maximum feasible subsystem (Amaldi, Pfetsch
+  and Trotter 2003, *Math. Program.* 95(3):533–554).
+- **Scenario optimization.** Calafiore and Campi 2006, *IEEE TAC*
+  51(5):742–753, doi:10.1109/TAC.2006.875041; Campi and Garatti 2008, *SIAM
+  J. Optim.* 19(3):1211–1230, doi:10.1137/07069821X (metadata only). **Campi,
+  Garatti and Ramponi 2018**, *IEEE TAC* 63(12):4067–4078,
+  doi:10.1109/TAC.2018.2808446 (read in full): for nonconvex or
+  mixed-integer decisions the guarantee is a posteriori, from the size s* of
+  a support sub-sample, and it bounds violation under a **fresh draw**, not
+  violation of the true constraint. Sample sizes at ε = 0.1, β = 10⁻³
+  (computed): convex d = 5, 143; a posteriori s* = 5, 361; s* = 10, 600;
+  mixed-integer a priori (5 continuous, 3 binary), 698. Also Calafiore,
+  Lyons and Fagiano 2012 (CDC, doi:10.1109/CDC.2012.6426905), Mohajerin
+  Esfahani, Sutter and Lygeros 2015 (*IEEE TAC* 60(1):46–58).
+- **Inexact separation.** Mutapcic and Boyd 2009, *Optim. Methods Softw.*
+  24(3):381–406, doi:10.1080/10556780802712889 (Secs. 1, 4 read): with an
+  approximate pessimizing oracle "we cannot say that the method solves the
+  robust problem; indeed, we cannot even (surely) determine if a point x is
+  feasible"; they certify the final point separately. Bertsimas, Nohadani
+  and Teo 2010, *OR* 58(1):161–178, doi:10.1287/opre.1090.0715 (preprint
+  read; constrained version *IJOC* 22(1):44–58): multistart gradient ascent
+  for the worst case, "a heuristic strategy". Guarantees under inexact
+  worst cases: Kuchlbauer, Liers and Stingl 2022 (*JOTA* 195:1056–1086;
+  *IJOC* 34(4):2106–2124; not read); Mitsos 2011 (semi-infinite programs).
+
+### Instances used across constraint learning
+
+Fajemisin, Maragno and den Hertog 2024, *EJOR* 314(1):1–14,
+doi:10.1016/j.ejor.2023.04.041: the survey does not organize by application;
+its lead example is the WFP diet. C-MICL (Ovalle et al.) has exactly two case
+studies: the reactor (regression, ODE truth) and the **WFP baskets as
+classification** (4 palatability classes, a network fitted on all baskets as
+truth).
+
+| Instance | Used by | Learned constraints | Truth | Data |
+|---|---|---|---|---|
+| **WFP palatable diet** (regression) | the survey, OptiCL, Alcántara and Ruiz 2023, SurrogateLIB, DCL 2026, Liu et al. 2026 (C-MICL as classification) | 1 (25 decisions) | **closed form**: OptiCL App. C.1 generates palatability from a known function (constants γ_g not published) | OptiCL repo, 5,000 rows |
+| Workload dispatching (Lombardi, Milano and Bartolini 2017, *AIJ*) | EML, OptiCL App. E, SurrogateLIB | 48 (one per core) | thermal simulator, apparently not public | SurrogateLIB / PySCIPOpt-ML |
+| Concrete mix (UCI) | Alcántara and Ruiz 2023, DCL 2026 | 1 | none; semi-synthetic | UCI |
+| Oil-well production (Grimstad and Andersson 2019) | that paper, Liu et al. 2026 | about 10 | noise-free simulator data | location not found |
+| Student enrollment (JANOS) | JANOS, OptiCL, Gurobi ML | classification | — | synthetic |
+
+Not verified: page numbers for JANOS, EML, Peters et al.; the WDP simulator.
+
 ## Still to read before submission
 
 Updated 2026-11-14: Liu et al. (2005), Schweidtmann et al. (2021) and Fiedler
@@ -247,3 +368,5 @@ found for these two:
 - Liu (2010), the chapters on polynomial and nonlinear bands.
 - Hüllen et al. (2020): what its uncertainty set is. Until it is read, the
   paper cites it only as "RO on surrogate parameters".
+- Kinsey et al. (2022) and Zhang, Amin and Perakis (2026), in full: the two
+  closest to FO-CP's combination (added 2026-11-18).
