@@ -45,6 +45,12 @@ Stages:
     --stage radius   simulated radius through the solver (Dinkelbach), N draws
     --stage redraw   redraws: refit, solve at each radius, judge against the
                      clean-label model and the ODE
+    --stage modelfree  probe F-1: the same redraws (same noise, same cost
+                     vectors) at the MODEL-FREE radius sigma*sqrt(chi2(n, 1-eps)),
+                     the norm of the whole noise vector. For a model affine in
+                     its labels this is FO-CP at radius (a). Writes its own
+                     files; never touches the committed redraw files, which
+                     --stage modelfree_collect pairs it with.
 """
 import argparse
 import json
@@ -491,6 +497,71 @@ def stage_redraw(args):
     summarize(rows, tag)
 
 
+def stage_modelfree(args):
+    """Probe F-1 (paper_plan.md): is the model-free radius affordable?
+
+    Same redraws as --stage redraw (noise from default_rng([seed, k]), cost
+    vector k), one solve each at R = sigma * sqrt(chi2.ppf(1 - eps, n)): a
+    label ball containing the whole noise vector with probability 1 - eps,
+    valid for ANY training map. Fixed-structure models only, so the rows pair
+    with the committed redraw files for the nominal and simulated rows.
+    """
+    if args.model not in ("cubic", "net_frozen"):
+        raise SystemExit("--stage modelfree: cubic or net_frozen only")
+    inst, md, sigma = setup()
+    last = args.first + args.n_redraws
+    costs = cost_vectors(args.costs, last, inst)
+    span = inst.variable_ub - inst.variable_lb
+    cr = build(args.model, inst, md, sigma, frozen_labels(md, sigma))
+    g = float(np.sqrt(stats.chi2.ppf(1 - args.eps, cr.n)))
+    R = sigma * g
+    print(f"{args.model}: n={cr.n}, model-free radius {g:.2f} sigma "
+          f"(R = {R:.2f}), chi2 {np.sqrt(stats.chi2.ppf(1 - args.eps, cr.dim)):.2f} "
+          f"sigma", flush=True)
+    tag = f"modelfree_{args.model}_{args.costs}_eps{args.eps}_{args.first:03d}"
+    path = os.path.join(OUT_DIR, tag + ".json")
+    rows = json.load(open(path)) if os.path.exists(path) else []
+    done = {r["redraw"] for r in rows}
+    for k in range(args.first, last):
+        if k in done:
+            continue
+        rng = np.random.default_rng([args.seed, k])
+        y = md.y_true + sigma * rng.standard_normal(len(md.y_true))
+        coef, clean = cr.fit(y), cr.fit(md.y_true)
+        c = costs[k]
+        r = solve_rc(cr, inst, coef, R, c)
+        row = {"redraw": k, "radius": "modelfree", "R": R, "status": r["status"],
+               "time_s": r["time"], "obj": r["obj"],
+               "obj_range": float(np.abs(c) @ span)}
+        if r["x"] is not None:
+            xs = r["x"]
+            row.update(f_clean=float(cr.predict(xs, clean)[0]),
+                       f_ode=ode_flow(inst, xs),
+                       margin=float(R * cr.snorm(xs)[0]), x=xs.tolist())
+        rows.append(row)
+        print(f"redraw {k}: status {r['status']}, obj {r['obj']:.4f}, "
+              f"{r['time']:.1f}s", flush=True)
+        _save(tag + ".json", rows)
+    _save(tag + ".json", rows)
+
+
+def stage_modelfree_collect(args):
+    """Pair the model-free rows with the committed redraw rows and summarize."""
+    import glob
+    for model in ("cubic", "net_frozen"):
+        pat = f"_{model}_{args.costs}_eps{args.eps}_*.json"
+        base = [r for f in sorted(glob.glob(os.path.join(OUT_DIR, "redraw" + pat)))
+                for r in json.load(open(f))]
+        mf = [r for f in sorted(glob.glob(os.path.join(OUT_DIR, "modelfree" + pat)))
+              for r in json.load(open(f))]
+        if not mf:
+            continue
+        ks = {r["redraw"] for r in mf}
+        rows = [r for r in base if r["redraw"] in ks] + mf
+        summarize(rows, f"F-1 {model}, {args.costs} costs, eps={args.eps}, "
+                        f"{len(ks)} redraws")
+
+
 # Frontier grids. The RC's radius is in SIGMA units (R = sigma * g), the
 # constant margin in FLOW units (F_C6H6 >= 50 + m). Both start at the nominal
 # decision (one shared row, kind="nominal"). The pointwise and simulated radii
@@ -817,7 +888,8 @@ if __name__ == "__main__":
     ap.add_argument("--stage", required=True,
                     choices=["solve", "radius", "redraw", "prep", "collect",
                              "frontier", "frontier_collect", "conformal",
-                             "conformal_collect"])
+                             "conformal_collect", "modelfree",
+                             "modelfree_collect"])
     ap.add_argument("--first", type=int, default=0, help="first redraw index")
     ap.add_argument("--model",
                     choices=["cubic", "net_frozen", "net_standard", "net_honest"],
@@ -838,4 +910,5 @@ if __name__ == "__main__":
     {"solve": stage_solve, "radius": stage_radius, "redraw": stage_redraw,
      "prep": stage_prep, "collect": stage_collect, "frontier": stage_frontier,
      "frontier_collect": stage_frontier_collect, "conformal": stage_conformal,
-     "conformal_collect": stage_conformal_collect}[args.stage](args)
+     "conformal_collect": stage_conformal_collect, "modelfree": stage_modelfree,
+     "modelfree_collect": stage_modelfree_collect}[args.stage](args)

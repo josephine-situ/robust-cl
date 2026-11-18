@@ -17,7 +17,7 @@ the true constraint. The standing thesis plan (Papers A–C) is `notes/research_
 | file | role |
 |---|---|
 | `paper_outline.md` | **the method reference**: problem, methods, guarantee, experiments (v4) |
-| `paper_plan.md` | decisions, probes (F0–F3, P1, R*), theory tasks (T*), implementation tasks (I*), risks, questions for DB. Newest section first |
+| `paper_plan.md` | decisions, probes (F−1–F2, P1, P2, R*), theory tasks (T*), implementation tasks (I*), risks, questions for DB. Newest section first |
 | `paper_a_guarantee.md` | proof notes (its Sections 5–6 are superseded by the plan) |
 | `paper.tex` + `paper_a_guarantee.tex`, `paper_a_proofs.tex` | the draft; `paper_a_guarantee_held.tex` is NOT input, waiting on probe P1 |
 | `paper_a_literature.md`, `paper_a.bib` | literature check and bib (also in Zotero) |
@@ -34,9 +34,10 @@ outline Section 6 is a result until a probe says so.
   trees with fixed splits). Theorem 1 holds at any RC-feasible `x*`. The current
   implementation is `experiments/probe_rc_ridge.py`; there is no `src/methods/rc.py` yet.
 - **FO-CP (new, not built)**: cutting planes whose separation retrains the model on
-  `ȳ + Δy` and ascends by first-order methods. The RC is its closed-form case;
-  probe F0 checks that it reproduces the RC. Guarantee open. Needs PyTorch (not
-  installed; I11).
+  `ȳ + Δy` and ascends by first-order methods. On affine models its cut is the
+  RC's (probe F0 checks this); the RC's radius does not carry over, and F−1
+  tests the model-free one. Guarantee open. sklearn + numpy first, PyTorch only
+  if too slow (I11).
 - **Baselines**: constant margin, split conformal, the wrapper, C-MICL (as published,
   and on the same model). `src/methods/` still holds the legacy implementations.
 - **Not in the paper**: random-bank CP (`src/methods/cp.py`) and the dial/rho sweeps.
