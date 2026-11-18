@@ -78,7 +78,7 @@ write-up in `notes/progress.md`, 2026-11-14) and the local checks under
 | SS1 | Reactor, Ovalle et al.'s 100 cost vectors, σ = 2 | (i) the ODE; (ii) a (32, 32) network fitted to noise-free ODE labels | First: everything but FO-CP exists. (ii) has no model bias, which is what sank the network RC against the ODE, so it tests the label-noise protection alone |
 | SS2 | Chemotherapy: the real arms' covariates, five toxicity constraints | one fixed fitted model per outcome; binomial noise from the real arm sizes | Several constraints against a known truth; F3 |
 | — | WFP diet (OptiCL; E3) | palatability simulator | Literature case, as planned (I8) |
-| — | Student enrollment (JANOS; OptiCL; Gurobi ML) | a fixed logistic model, Bernoulli labels | Widely used; logistic is not affine in its labels, so it is FO-CP's case. Classification: decide whether it enters the paper |
+| — | Student enrollment (JANOS; OptiCL; Gurobi ML) | a fixed logistic model, Bernoulli labels | Widely used; logistic is not affine in its labels, so it is FO-CP's case. **Later**: classification is wanted eventually, after regression is sorted (user, 2026-11-18) |
 
 To check: which case studies recur most in the constraint-learning
 literature (the Fajemisin et al. survey is the place to start).

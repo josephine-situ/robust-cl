@@ -396,8 +396,9 @@ injected noise.
   sizes. Several constraints against a known truth, and the test of
   infeasibility handling.
 - Further instances come from those widely used in the optimization
-  literature: WFP (6.4) and, as FO-CP's case (a logistic model), student
-  enrollment (JANOS, OptiCL). Real data (6.3) after these.
+  literature: WFP (6.4). Real data (6.3) after these. Classification comes
+  after regression is sorted; student enrollment (JANOS, OptiCL; a logistic
+  model, so FO-CP's case) is the candidate then.
 - The objective stays nominal; a robust objective is a deferred variant.
 
 ### 6.1 Membrane reactor design (the lead result)
