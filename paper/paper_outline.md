@@ -298,6 +298,17 @@ Kept to about four pages. Proofs in the appendix.
   is violated) ≤ P(maxₖ Wₖ > R), because the bound is uniform over the
   domain. **[to prove: short]** Unprotected constraints carry only their
   certified level.
+- **Remark: a different level per constraint (2026-11-18; remark only, no
+  experiment).** With one set per outcome, constraint k can take its own
+  radius Rₖ sized for its own εₖ (a severe toxicity stricter than a mild
+  one). Sized one constraint at a time, this guarantees each constraint
+  separately; with Σₖ εₖ ≤ ε (risk allocation) it guarantees them jointly.
+  An unprotected constraint is the case εₖ = 1.
+- **Remark: several models in one constraint (2026-11-18; remark only).**
+  None of our instances has one as the literature writes them. Such a
+  constraint gets one set over the labels of all its models; there the joint
+  set is the tighter choice (margin `R‖(s_A, s_B)‖` rather than
+  `R‖s_A‖ + R‖s_B‖`).
 - **Certified level of any decision.** **[to write: the argument is Theorem
   1's proof]** For a decision `x`, let
   `r̂(x) = minⱼ (bⱼ − f̂ⱼ(x)) / ‖Σⱼ^½ sⱼ(x)‖`. Violation implies `W > r̂(x*)`,
