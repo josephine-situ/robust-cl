@@ -690,3 +690,31 @@ non-parametric step adds anything over the linearized one. Details:
 - In the paper FO-CP is "for any model trained by a differentiable loss",
   not "non-parametric".
 - Next: F−1 (cluster, existing code) and P1 (local, still not run).
+
+## 2026-11-19: Probe F-1: the model-free radius is impractical
+
+Job 29561590 (`probe_rc_ridge.py --stage modelfree`). The RC at the
+model-free radius σ√χ²(n, 0.9) = 32.5σ (n = 1,000): the label ball that
+contains the whole noise vector, valid for any training map, i.e. the new
+method's exact radius (a). Same 100 redraws and Ovalle et al.'s cost vectors
+as job 29141177, so the rows pair with R1 and R2. Feasibility against the
+clean-label model / the ODE; cost as % of the objective range.
+
+| Model | Radius | R (flow) | Clean / ODE | Cost | Margin at x* |
+|---|---|---|---|---|---|
+| Cubic ridge | simulated 3.7σ | 7.43 | 1.00 / 0.95 | +4.2% | 2.51 |
+| Cubic ridge | closed-form 8.4σ | 16.72 | 1.00 / 1.00 | +8.6% | 4.65 |
+| Cubic ridge | model-free 32.5σ | 65.05 | infeasible in 100 of 100 | — | — |
+| Frozen network | simulated 3.5σ | 7.05 | 1.00 / 0.52 | +2.2% | 1.17 |
+| Frozen network | closed-form 5.8σ | 11.52 | 1.00 / 0.79 | +3.3% | 1.91 |
+| Frozen network | model-free 32.5σ | 65.05 | 1.00 / 1.00 | +15.7% | 8.45 |
+
+- **Radius (a) is out as a practical radius.** On cubic ridge no decision
+  satisfies it in any redraw (solver-certified; the largest affordable radius
+  is about 18–23σ by enumeration). On the frozen network it is feasible and
+  reaches 1.00 against the ODE, but at 7 times the cost of the simulated
+  radius: its 8.45-unit margin swamps the network's bias (mean −1.6), which
+  is why it delivers against the ODE.
+- So the new method needs a practical radius, option (c), which bounds
+  violation only for a resampled model unless a sharper argument is found.
+  That definition is the next decision; it gates FO-CP code.

@@ -97,7 +97,7 @@ no `s(x)`.
 
 | Option | Radius | Guarantee | Status |
 |---|---|---|---|
-| (a) Model-free ball | `√χ²(n, 1−ε/K)` per outcome, whitened (union bound) | Exact for any model, if separation were exact | **Tested first (F−1)**: about 32σ at n = 1,000 against the RC's 3.6σ; on chemotherapy (n = 320, K = 5) 19.3 per outcome, against 40.9 for one ellipsoid over all outcomes |
+| (a) Model-free ball | `√χ²(n, 1−ε/K)` per outcome, whitened (union bound) | Exact for any model, if separation were exact | **F−1 (job 29561590): impractical.** 32.5σ at n = 1,000. Infeasible on cubic ridge in 100 of 100 redraws; on the frozen network feasible, 1.00 against the ODE, but +15.7% of the objective range against +2.2% at the simulated radius. Stays as the exact but conservative reference |
 | (b) Linearized subspace | `√χ²(d_eff, 1−ε)`, `Δy` in the linearized map's span | Exact for affine maps only | If F1 finds d_eff ≈ n, (b) ≈ (a) |
 | (c) To define after F−1 | Either a W-type statistic with the linearized sensitivity as normalizer, `W_c = sup_x [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] / ‖s̃(x)‖`, over sampled draws e′; or scenario optimization (impose N retrained models; Campi, Garatti and Ramponi 2018) | Either way, for a resampled model (a bootstrap), not the clean-label model; scenario optimization needs about 361 models at ε = 0.1, β = 10⁻³ if 5 of them support the solution | Open |
 
@@ -115,7 +115,7 @@ no `s(x)`.
 
 | # | Question | Design | Decides |
 |---|---|---|---|
-| F−1 | Is the model-free radius (a) affordable? | Existing code: `probe_rc_ridge.py` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, the 100 redraws | If it is infeasible or far costlier than the simulated radius, (a) is out before any FO-CP code |
+| F−1 | Is the model-free radius (a) affordable? | Existing code: `probe_rc_ridge.py --stage modelfree` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, the 100 redraws | **Done (job 29561590): no.** Cubic infeasible in all 100; network +15.7% against +2.2% (simulated). (a) is out as a practical radius; (c) must be defined |
 | F0 | Is the machinery right? | (i) Affine models: one step equals `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against finite-difference retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's cone solution as τ → 0; record cuts | Code correct; gate |
 | F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and at one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, FO multi-start, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | If FO ≈ linearized, FO-CP reduces to one-step separation in the same loop. If cold restarts move ĥ as much, training randomness dominates label noise |
 | F2 | Does FO-CP deliver on SS1, at what cost? | Pilot: 10 cost vectors, one radius, SS1(ii). Then 100 cost vectors, both arms. On the end-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for every method); on `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4; the radius |

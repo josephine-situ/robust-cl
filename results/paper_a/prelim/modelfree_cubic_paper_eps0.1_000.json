@@ -1,0 +1,902 @@
+[
+ {
+  "redraw": 0,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6200330257415771,
+  "obj": NaN,
+  "obj_range": 25.654910181503887
+ },
+ {
+  "redraw": 1,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6609835624694824,
+  "obj": NaN,
+  "obj_range": 29.42635350700733
+ },
+ {
+  "redraw": 2,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.9602327346801758,
+  "obj": NaN,
+  "obj_range": 34.25845481742162
+ },
+ {
+  "redraw": 3,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5954654216766357,
+  "obj": NaN,
+  "obj_range": 22.838616510511095
+ },
+ {
+  "redraw": 4,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5782577991485596,
+  "obj": NaN,
+  "obj_range": 69.08260013145646
+ },
+ {
+  "redraw": 5,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.569084882736206,
+  "obj": NaN,
+  "obj_range": 27.55699022143417
+ },
+ {
+  "redraw": 6,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.706432580947876,
+  "obj": NaN,
+  "obj_range": 26.30415032020034
+ },
+ {
+  "redraw": 7,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5822210311889648,
+  "obj": NaN,
+  "obj_range": 29.214450907835815
+ },
+ {
+  "redraw": 8,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.4943826198577881,
+  "obj": NaN,
+  "obj_range": 8.986050360416558
+ },
+ {
+  "redraw": 9,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6832172870635986,
+  "obj": NaN,
+  "obj_range": 18.127778599525463
+ },
+ {
+  "redraw": 10,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.637202262878418,
+  "obj": NaN,
+  "obj_range": 20.81062414301287
+ },
+ {
+  "redraw": 11,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.596367597579956,
+  "obj": NaN,
+  "obj_range": 16.623178795228288
+ },
+ {
+  "redraw": 12,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6765143871307373,
+  "obj": NaN,
+  "obj_range": 11.17912995972494
+ },
+ {
+  "redraw": 13,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5720434188842773,
+  "obj": NaN,
+  "obj_range": 33.54343413616191
+ },
+ {
+  "redraw": 14,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6682868003845215,
+  "obj": NaN,
+  "obj_range": 56.65193187905423
+ },
+ {
+  "redraw": 15,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6342446804046631,
+  "obj": NaN,
+  "obj_range": 7.280697615211039
+ },
+ {
+  "redraw": 16,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6708314418792725,
+  "obj": NaN,
+  "obj_range": 6.261992662945814
+ },
+ {
+  "redraw": 17,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5391485691070557,
+  "obj": NaN,
+  "obj_range": 9.065875473769783
+ },
+ {
+  "redraw": 18,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.764920711517334,
+  "obj": NaN,
+  "obj_range": 19.367781644201365
+ },
+ {
+  "redraw": 19,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5461807250976562,
+  "obj": NaN,
+  "obj_range": 15.579486352864617
+ },
+ {
+  "redraw": 20,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7066810131072998,
+  "obj": NaN,
+  "obj_range": 29.198801604040312
+ },
+ {
+  "redraw": 21,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7241916656494141,
+  "obj": NaN,
+  "obj_range": 19.749319947146255
+ },
+ {
+  "redraw": 22,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5136103630065918,
+  "obj": NaN,
+  "obj_range": 37.645315818412335
+ },
+ {
+  "redraw": 23,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.565983772277832,
+  "obj": NaN,
+  "obj_range": 41.130824278867316
+ },
+ {
+  "redraw": 24,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6427419185638428,
+  "obj": NaN,
+  "obj_range": 33.61995360406801
+ },
+ {
+  "redraw": 25,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.791600227355957,
+  "obj": NaN,
+  "obj_range": 15.606116364357815
+ },
+ {
+  "redraw": 26,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6930642127990723,
+  "obj": NaN,
+  "obj_range": 12.28086136907431
+ },
+ {
+  "redraw": 27,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5582284927368164,
+  "obj": NaN,
+  "obj_range": 20.052394472371976
+ },
+ {
+  "redraw": 28,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.8179271221160889,
+  "obj": NaN,
+  "obj_range": 41.51013182942509
+ },
+ {
+  "redraw": 29,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6268537044525146,
+  "obj": NaN,
+  "obj_range": 38.42438748324987
+ },
+ {
+  "redraw": 30,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.562708854675293,
+  "obj": NaN,
+  "obj_range": 36.47234527959477
+ },
+ {
+  "redraw": 31,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5040907859802246,
+  "obj": NaN,
+  "obj_range": 57.40908065932212
+ },
+ {
+  "redraw": 32,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7141396999359131,
+  "obj": NaN,
+  "obj_range": 31.028856523061805
+ },
+ {
+  "redraw": 33,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 1.7196226119995117,
+  "obj": NaN,
+  "obj_range": 37.37851021970147
+ },
+ {
+  "redraw": 34,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6434597969055176,
+  "obj": NaN,
+  "obj_range": 9.04529888634068
+ },
+ {
+  "redraw": 35,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.551558256149292,
+  "obj": NaN,
+  "obj_range": 18.426595226563833
+ },
+ {
+  "redraw": 36,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6836986541748047,
+  "obj": NaN,
+  "obj_range": 18.629832281586502
+ },
+ {
+  "redraw": 37,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5718944072723389,
+  "obj": NaN,
+  "obj_range": 17.987400280837534
+ },
+ {
+  "redraw": 38,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5597550868988037,
+  "obj": NaN,
+  "obj_range": 11.230509402286714
+ },
+ {
+  "redraw": 39,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6477117538452148,
+  "obj": NaN,
+  "obj_range": 3.63709726014601
+ },
+ {
+  "redraw": 40,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6528885364532471,
+  "obj": NaN,
+  "obj_range": 19.14368871038439
+ },
+ {
+  "redraw": 41,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6754076480865479,
+  "obj": NaN,
+  "obj_range": 22.129076947755507
+ },
+ {
+  "redraw": 42,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6925473213195801,
+  "obj": NaN,
+  "obj_range": 48.774134508352034
+ },
+ {
+  "redraw": 43,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 2.713144540786743,
+  "obj": NaN,
+  "obj_range": 26.9861945435055
+ },
+ {
+  "redraw": 44,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7036871910095215,
+  "obj": NaN,
+  "obj_range": 46.57581931270259
+ },
+ {
+  "redraw": 45,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6462085247039795,
+  "obj": NaN,
+  "obj_range": 61.612841183182205
+ },
+ {
+  "redraw": 46,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.687929630279541,
+  "obj": NaN,
+  "obj_range": 5.765884560078055
+ },
+ {
+  "redraw": 47,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5660951137542725,
+  "obj": NaN,
+  "obj_range": 2.6835697992122967
+ },
+ {
+  "redraw": 48,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6200077533721924,
+  "obj": NaN,
+  "obj_range": 36.267433193616036
+ },
+ {
+  "redraw": 49,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.44850683212280273,
+  "obj": NaN,
+  "obj_range": 7.692469053486436
+ },
+ {
+  "redraw": 50,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.4143855571746826,
+  "obj": NaN,
+  "obj_range": 51.54894153335526
+ },
+ {
+  "redraw": 51,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6056869029998779,
+  "obj": NaN,
+  "obj_range": 15.947991870192311
+ },
+ {
+  "redraw": 52,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5102870464324951,
+  "obj": NaN,
+  "obj_range": 13.26995355697025
+ },
+ {
+  "redraw": 53,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.9756162166595459,
+  "obj": NaN,
+  "obj_range": 28.74589623090665
+ },
+ {
+  "redraw": 54,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7459824085235596,
+  "obj": NaN,
+  "obj_range": 77.92242100810489
+ },
+ {
+  "redraw": 55,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7361369132995605,
+  "obj": NaN,
+  "obj_range": 87.4789293608001
+ },
+ {
+  "redraw": 56,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5601620674133301,
+  "obj": NaN,
+  "obj_range": 35.053407595120625
+ },
+ {
+  "redraw": 57,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6513547897338867,
+  "obj": NaN,
+  "obj_range": 44.49734378782019
+ },
+ {
+  "redraw": 58,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6604712009429932,
+  "obj": NaN,
+  "obj_range": 13.651125989378436
+ },
+ {
+  "redraw": 59,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7000257968902588,
+  "obj": NaN,
+  "obj_range": 24.85548598311071
+ },
+ {
+  "redraw": 60,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6818475723266602,
+  "obj": NaN,
+  "obj_range": 58.20855089263769
+ },
+ {
+  "redraw": 61,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6649043560028076,
+  "obj": NaN,
+  "obj_range": 9.6490037927038
+ },
+ {
+  "redraw": 62,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7034969329833984,
+  "obj": NaN,
+  "obj_range": 28.606151787427944
+ },
+ {
+  "redraw": 63,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5314276218414307,
+  "obj": NaN,
+  "obj_range": 10.378356984767597
+ },
+ {
+  "redraw": 64,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6183345317840576,
+  "obj": NaN,
+  "obj_range": 6.6824421410507036
+ },
+ {
+  "redraw": 65,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5982449054718018,
+  "obj": NaN,
+  "obj_range": 21.60250491213449
+ },
+ {
+  "redraw": 66,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5881831645965576,
+  "obj": NaN,
+  "obj_range": 32.530886595085526
+ },
+ {
+  "redraw": 67,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 1.6362199783325195,
+  "obj": NaN,
+  "obj_range": 26.892121646396912
+ },
+ {
+  "redraw": 68,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5072174072265625,
+  "obj": NaN,
+  "obj_range": 6.447281549651208
+ },
+ {
+  "redraw": 69,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6816878318786621,
+  "obj": NaN,
+  "obj_range": 9.91653829646251
+ },
+ {
+  "redraw": 70,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7424860000610352,
+  "obj": NaN,
+  "obj_range": 16.706932806674388
+ },
+ {
+  "redraw": 71,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6970138549804688,
+  "obj": NaN,
+  "obj_range": 21.56205544729186
+ },
+ {
+  "redraw": 72,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6484866142272949,
+  "obj": NaN,
+  "obj_range": 40.59501798055606
+ },
+ {
+  "redraw": 73,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6688816547393799,
+  "obj": NaN,
+  "obj_range": 25.67800948551395
+ },
+ {
+  "redraw": 74,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5848946571350098,
+  "obj": NaN,
+  "obj_range": 27.244431003062616
+ },
+ {
+  "redraw": 75,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5654323101043701,
+  "obj": NaN,
+  "obj_range": 41.34487136173267
+ },
+ {
+  "redraw": 76,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7043962478637695,
+  "obj": NaN,
+  "obj_range": 46.313028629648564
+ },
+ {
+  "redraw": 77,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6799314022064209,
+  "obj": NaN,
+  "obj_range": 63.42298243134183
+ },
+ {
+  "redraw": 78,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.572988748550415,
+  "obj": NaN,
+  "obj_range": 9.513319965684381
+ },
+ {
+  "redraw": 79,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.694629430770874,
+  "obj": NaN,
+  "obj_range": 40.97878710303412
+ },
+ {
+  "redraw": 80,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7115681171417236,
+  "obj": NaN,
+  "obj_range": 46.01792415946755
+ },
+ {
+  "redraw": 81,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5917079448699951,
+  "obj": NaN,
+  "obj_range": 4.300837433149771
+ },
+ {
+  "redraw": 82,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6598412990570068,
+  "obj": NaN,
+  "obj_range": 6.3781006205514466
+ },
+ {
+  "redraw": 83,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7840757369995117,
+  "obj": NaN,
+  "obj_range": 7.856774805935544
+ },
+ {
+  "redraw": 84,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6842665672302246,
+  "obj": NaN,
+  "obj_range": 82.6853737957726
+ },
+ {
+  "redraw": 85,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.592383861541748,
+  "obj": NaN,
+  "obj_range": 45.96343985490717
+ },
+ {
+  "redraw": 86,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7124717235565186,
+  "obj": NaN,
+  "obj_range": 18.65033102154246
+ },
+ {
+  "redraw": 87,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.8255290985107422,
+  "obj": NaN,
+  "obj_range": 8.369485070848883
+ },
+ {
+  "redraw": 88,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5408906936645508,
+  "obj": NaN,
+  "obj_range": 41.44692895316655
+ },
+ {
+  "redraw": 89,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6111583709716797,
+  "obj": NaN,
+  "obj_range": 49.90317903673805
+ },
+ {
+  "redraw": 90,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5748248100280762,
+  "obj": NaN,
+  "obj_range": 47.461151480351326
+ },
+ {
+  "redraw": 91,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6903455257415771,
+  "obj": NaN,
+  "obj_range": 24.936622193967207
+ },
+ {
+  "redraw": 92,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.654714822769165,
+  "obj": NaN,
+  "obj_range": 6.454606006291867
+ },
+ {
+  "redraw": 93,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6309521198272705,
+  "obj": NaN,
+  "obj_range": 7.9904383283153955
+ },
+ {
+  "redraw": 94,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.5366902351379395,
+  "obj": NaN,
+  "obj_range": 48.71673159634892
+ },
+ {
+  "redraw": 95,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6016106605529785,
+  "obj": NaN,
+  "obj_range": 56.9342781971096
+ },
+ {
+  "redraw": 96,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.7130224704742432,
+  "obj": NaN,
+  "obj_range": 6.685733149583915
+ },
+ {
+  "redraw": 97,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.6475555896759033,
+  "obj": NaN,
+  "obj_range": 26.781952972998326
+ },
+ {
+  "redraw": 98,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.628652811050415,
+  "obj": NaN,
+  "obj_range": 21.264869635667722
+ },
+ {
+  "redraw": 99,
+  "radius": "modelfree",
+  "R": 65.04533500203114,
+  "status": 3,
+  "time_s": 0.8389530181884766,
+  "obj": NaN,
+  "obj_range": 2.9124689173218723
+ }
+]

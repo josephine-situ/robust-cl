@@ -349,7 +349,8 @@ Kept to about four pages. Proofs in the appendix.
   containing the noise (3.6σ against `‖e‖ ≈ 32σ`); it works because an
   affine model sees the noise only through `s(x)ᵀe`. Three options: the
   model-free ball `√χ²(n, 1−ε/K)` per outcome (exact for any model if
-  separation were exact; tested first, `paper_plan.md` F−1); the linearized
+  separation were exact; impractical: infeasible on cubic ridge, +15.7% of
+  the objective range on the frozen network, `paper_plan.md` F−1); the linearized
   subspace (first order); or a radius from retrained noise draws, to be
   defined (a bootstrap: it bounds violation for a resampled model, not the
   clean-label model). Separation is local, so stopping certifies nothing for
