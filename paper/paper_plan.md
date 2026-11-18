@@ -23,12 +23,13 @@ write-up in `notes/progress.md`, 2026-11-14) and the local checks under
 
 **FO-CP.**
 
-- **Uncertainty set: the RC's.** `Δy` has one entry per training row and
-  outcome, and the set is one ellipsoid over all of it,
-  `‖Σ^{-1/2}Δy‖ ≤ R`, with `σᵢₖ²` (row i, outcome k) on Σ's diagonal. Each
-  outcome's model sees only its own labels, so constraint k's worst case
-  spends the whole budget on `Δyₖ`: the counterpart acts per outcome, while
-  the radius has to cover all outcomes' noise at once.
+- **Uncertainty set: one ellipsoid per outcome** (2026-11-18), as in the
+  RC: `‖Σₖₖ^{-1/2}Δyₖ‖ ≤ Rₖ`, with `Δyₖ` one entry per training row of
+  outcome k and `σᵢₖ²` on Σₖₖ's diagonal. It gives the same robust
+  constraints as one ellipsoid over all outcomes (each model sees only its
+  own labels), is the standard RO form, and has a smaller model-free radius
+  (table below). By default `Rₖ = R`, calibrated jointly. A constraint that
+  contains several outcomes' models gets one set over those outcomes' labels.
 - **Loop.** Solve the nominal problem for `x⁰`. At `x^t`, for each protected
   constraint k, maximize the retrained prediction `ĥₖ(x^t; ȳ + Δy)` over the
   set. If the maximum exceeds `bₖ + τ`, add the model retrained on
@@ -67,7 +68,7 @@ write-up in `notes/progress.md`, 2026-11-14) and the local checks under
 
 | Option | Radius | Guarantee | Catch |
 |---|---|---|---|
-| (a) Model-free ball | `√χ²(nK, 1−ε)`, whitened | Exact for any model, if separation is exact | About 32σ at n = 1,000, against 3.6σ for the RC's simulated radius on cubic ridge; separation is local |
+| (a) Model-free ball | `√χ²(n, 1−ε/K)` per outcome, whitened (union bound) | Exact for any model, if separation is exact | About 32σ at n = 1,000 with one constraint, against 3.6σ for the RC's simulated radius on cubic ridge. On chemotherapy (n = 320, K = 5) 19.3 per outcome, against 40.9 for one ellipsoid over all outcomes. Separation is local |
 | (b) Linearized subspace | `√χ²(d_eff, 1−ε)`, `Δy` in the linearized map's span | Exact for affine maps only | First order |
 | (c) Scenarios | Retrain on sampled noise draws; size R to cover 1−ε of them | For a fresh resampled model (a bootstrap), not the clean-label model | Integer decisions need non-convex scenario theory |
 

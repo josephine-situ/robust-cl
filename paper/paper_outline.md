@@ -235,9 +235,10 @@ Written so that a reader can implement the method from this section alone.
 For a model that is not affine in its labels. Specification, open choices and
 probes: `paper_plan.md`, "After the meeting with DB".
 
-- **Robust constraint.** `ĥₖ(x; ȳ + Δy) ≤ bₖ` for all `‖Σ^{-1/2}Δy‖ ≤ R`,
-  where `ĥₖ(·; y)` is the model **retrained** on labels `y` and `Δy` has one
-  entry per training row and outcome: the RC's uncertainty set.
+- **Robust constraint.** `ĥₖ(x; ȳₖ + Δyₖ) ≤ bₖ` for all
+  `‖Σₖₖ^{-1/2}Δyₖ‖ ≤ R`, where `ĥₖ(·; y)` is the model **retrained** on
+  labels `y` and `Δyₖ` has one entry per training row of outcome k: one
+  ellipsoid per outcome, as in the RC.
 - **Loop.** At `x^t`, for each protected constraint, maximize the retrained
   prediction `ĥₖ(x^t; ȳ + Δy)` over the set by gradient ascent (implicit
   differentiation through training, one linear solve per step). If it
@@ -320,8 +321,8 @@ Kept to about four pages. Proofs in the appendix.
   fitting costs in violations and what honest fitting costs in accuracy.
 - **Guarantee for FO-CP. [open, added 2026-11-16]** Theorem 1 uses the
   affine error `s(x)ᵀe`. Without it, three radii: the model-free ball
-  `√χ²(nK, 1−ε)` (exact for any model if separation is exact, but about 32σ
-  at n = 1,000), the linearized subspace (first order), or a scenario radius
+  `√χ²(n, 1−ε/K)` per outcome (exact for any model if separation is exact,
+  but about 32σ at n = 1,000 with one constraint), the linearized subspace (first order), or a scenario radius
   from retrained noise draws (a bootstrap). Chosen by how each performs on
   the reactor (`paper_plan.md`, F2). Separation is local, so stopping
   certifies nothing for a nonlinear model.

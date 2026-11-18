@@ -648,3 +648,14 @@ non-parametric step adds anything over the linearized one. Details:
 - The plan's top section is condensed to what is settled, and the 2026-11-14
   run notes are reduced to the results table and the lead-model proposal,
   which is still open.
+
+### Same day: FO-CP uses one uncertainty set per outcome
+
+- Switched from one ellipsoid over all outcomes' labels to one per outcome,
+  `‖Σₖₖ^{-1/2}Δyₖ‖ ≤ R`, the form the RC already used. The robust
+  constraints are identical (each model sees only its own labels), it is the
+  standard RO form (a robust constraint depends only on the set's projection
+  onto its own parameters), and the model-free radius is much smaller: on
+  chemotherapy (n = 320, K = 5, ε = 0.1) 19.3 per outcome with ε split by a
+  union bound, against 40.9 for one joint ellipsoid. Correlation across
+  outcomes enters only through the jointly calibrated scenario radius.
