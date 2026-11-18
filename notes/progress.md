@@ -659,3 +659,34 @@ non-parametric step adds anything over the linearized one. Details:
   chemotherapy (n = 320, K = 5, ε = 0.1) 19.3 per outcome with ε split by a
   union bound, against 40.9 for one joint ellipsoid. Correlation across
   outcomes enters only through the jointly calibrated scenario radius.
+
+### Same day: literature check and plan review; FO-CP's radius is the crux
+
+- **Literature** (`paper/paper_a_literature.md`, new section). Every part of
+  FO-CP is prior work: its separation is bilevel label poisoning (Mei and Zhu
+  2015 and others), its first step the influence function (Koh and Liang
+  2017), its loop a cutting-set method with a local oracle (Mutapcic and Boyd
+  2009). The combination (adversarially retrained models as cuts protecting
+  a learned constraint) was not found; Kinsey et al. 2022 and Zhang, Amin and
+  Perakis 2026 are the closest and must be read in full. Protecting a
+  fraction of the constraints is Gorissen et al.'s (2015) "K out of N".
+- **Radius.** The RC's simulated radius (3.6σ on cubic ridge) is not the
+  radius of a ball that contains the noise (`‖e‖ ≈ 32σ` at n = 1,000); it
+  works because an affine model sees noise only through `s(x)ᵀe`. So the RC
+  shares FO-CP's constraint form, not its guarantee. FO-CP's only exact
+  radius is the model-free ball (about 32σ); new probe F−1 measures its cost
+  with existing code before any FO-CP code is written. The scenario
+  alternative guarantees violation only for a resampled model (Campi,
+  Garatti and Ramponi 2018; about 361 retrained models at ε = 0.1).
+- **Training map fixed**: every retraining from one fixed start, lbfgs to a
+  gradient tolerance, label standardization constants fixed from `ȳ` (the
+  probe standardized each label vector by its own mean and sd, not affine),
+  damped Hessian checked against finite differences.
+- **Instances.** WFP becomes regression with OptiCL's closed-form truth (the
+  most reused instance in constraint learning, six regression papers), the
+  second instance for both methods. Semi-synthetic chemotherapy and the
+  infeasibility probe move to the RC track (FO-CP needs a differentiable
+  training map; those models are forests and ridge).
+- In the paper FO-CP is "for any model trained by a differentiable loss",
+  not "non-parametric".
+- Next: F−1 (cluster, existing code) and P1 (local, still not run).

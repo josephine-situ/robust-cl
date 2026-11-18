@@ -8,12 +8,16 @@ Experiments and sequencing: `paper_plan.md`. Proofs: `paper_a_guarantee.md`.
 **What changed from v3 (DB, 2026-11-16).** Exploratory: outline and plan
 only, `paper.tex` untouched.
 
-- A second, non-parametric method: cutting planes whose separation problem
-  is solved by first-order methods through the training map (FO-CP;
-  Section 2.2). One paper, two methods; the RC is FO-CP's closed-form case.
-  Its radius is **[open]** (Section 3).
-- Semi-synthetic instances come first (Section 6.0). Real chemotherapy data
-  (6.3) comes later.
+- A second method, for any model trained by a differentiable loss (DB's
+  "non-parametric" method): cutting planes whose separation problem is
+  solved by first-order methods through the training map (FO-CP; Section
+  2.2). One paper, two methods. The RC shares FO-CP's constraint form, not
+  its radius argument; FO-CP's radius is **[open]** (Section 3).
+- Semi-synthetic instances come first (Section 6.0): the reactor, WFP as
+  regression with its closed-form truth, and semi-synthetic chemotherapy.
+  Real chemotherapy data (6.3) comes last.
+- The reactor's lead model (network or cubic ridge) is **[open]**
+  (`paper_plan.md`, "Results of job 29141177").
 - The abstract and contributions 1–4 still describe the RC alone. Rewrite
   them for two methods.
 
@@ -121,10 +125,10 @@ Draft, with placeholders for the numbers:
    a constant margin, the wrapper and conformal constraint learning. Where the
    target cannot be met (several binding constraints), it prescribes with a
    certified level per decision instead of failing. **[to run]**
-5. **[added 2026-11-16, open]** A non-parametric counterpart for models that
-   are not affine in their labels (networks trained end to end, logistic
-   models): cutting planes whose worst-case relabeling is found by gradient
-   ascent through retraining, with the RC as its exact special case.
+5. **[added 2026-11-16, open]** A counterpart for models trained by a
+   differentiable loss that are not affine in their labels (networks trained
+   end to end): cutting planes whose worst-case relabeling is found by
+   gradient ascent through retraining. On affine models its cut is the RC's.
 
 ### 1.2 Literature (one page)
 
@@ -149,15 +153,19 @@ Checked 2026-11-14. Per-paper notes, quotes and how much of each was read:
   rule, 0% at optimized points). DCL (Oztekin et al., 2026) localizes the
   surrogate and names feasibility certification as open. **Xavier et al. is
   learning-to-optimize, not constraint learning: dropped.**
-- **Data poisoning and scenario optimization** (added 2026-11-16 for FO-CP;
-  to check, none read). FO-CP's separation is a norm-budgeted label-poisoning
-  attack solved as a bilevel problem (Biggio et al. 2012; Mei and Zhu 2015;
-  Muñoz-González et al. 2017; Jagielski et al. 2018; influence functions,
-  Koh and Liang 2017). The difference to argue: the attack targets the
-  optimizer's decision, and each attack becomes a cut in a MIP. Imposing
-  sampled retrained models is scenario optimization (Calafiore and Campi
-  2006; Campi and Garatti 2008; Campi, Garatti and Ramponi 2018 for
-  non-convex problems).
+- **For FO-CP** (checked 2026-11-18; `paper_a_literature.md`). Its
+  separation is bilevel label poisoning (Mei and Zhu 2015; Biggio et al.
+  2012; Muñoz-González et al. 2017; Jagielski et al. 2018), its first step
+  the influence function (Koh and Liang 2017), and its loop a cutting-set
+  method with a local pessimizing oracle (Mutapcic and Boyd 2009; Bertsimas,
+  Nohadani and Teo 2010). Closest in purpose: poisoning a predict-then-
+  optimize decision (Kinsey et al. 2022) and influence of noisy points on
+  decisions (Zhang, Amin and Perakis 2026); both to read in full. **Not
+  claimed:** any of the parts. **Claimed (not found):** adversarially
+  retrained models as cuts protecting a learned constraint. Protecting a
+  fraction of the constraints is Gorissen et al.'s (2015) "K out of N";
+  imposing sampled retrained models is scenario optimization (Campi,
+  Garatti and Ramponi 2018 for non-convex problems).
 - **Robust optimization.** Bertsimas and den Hertog; Bertsimas, Gupta and
   Kallus; Hong, Huang and Lam (data-splitting guarantees for the optimized
   decision, the closest OR precedent for a guarantee at the optimum). For a
@@ -222,18 +230,20 @@ Written so that a reader can implement the method from this section alone.
 - **Choosing R: the recipe.**
   0. Fix the model before looking at the labels: class, architecture and
      hyperparameters. Ovalle et al. fix their networks the same way. For a
-     network, train the hidden layers on one part of the rows and refit the
-     last layer on the rest, so `s(x)` does not depend on the noise it is
-     meant to bound. **[to run: R4 in `paper_plan.md` decides the split]**
+     last-layer network, the hidden layers must not depend on the noise
+     `s(x)` is meant to bound. The sample split (R4) meets that with one
+     dataset but reached only 0.42 against the ODE; a network trained end to
+     end goes to FO-CP instead. **[open: tied to the lead model]**
   1. Estimate σ from out-of-fold residuals (an upper confidence bound).
   2. Size the radius for the target ε from sampled noise scenarios (Section 3).
   3. Solve. No ground truth and no held-out calibration rows are used.
   - Alternative for a practitioner with a validation oracle: choose `R` on it.
 
-### 2.2 Non-parametric method: first-order cutting planes (added 2026-11-16) **[open]**
+### 2.2 First-order cutting planes (added 2026-11-16) **[open]**
 
-For a model that is not affine in its labels. Specification, open choices and
-probes: `paper_plan.md`, "After the meeting with DB".
+For a model trained by a differentiable loss that is not affine in its
+labels. Specification, open choices and probes: `paper_plan.md`, "After the
+meeting with DB".
 
 - **Robust constraint.** `ĥₖ(x; ȳₖ + Δyₖ) ≤ bₖ` for all
   `‖Σₖₖ^{-1/2}Δyₖ‖ ≤ R`, where `ĥₖ(·; y)` is the model **retrained** on
@@ -243,15 +253,18 @@ probes: `paper_plan.md`, "After the meeting with DB".
   prediction `ĥₖ(x^t; ȳ + Δy)` over the set by gradient ascent (implicit
   differentiation through training, one linear solve per step). If it
   exceeds `bₖ + τ`, add the retrained model as a cut; re-solve; stop when no
-  cut is added.
+  cut is added. The guarantee is stated at `bₖ + τ`; the separation is
+  local, so the final decision is checked a posteriori by a stronger attack.
 - **Which constraints are protected.** Binary `zₖ` chosen by the master,
   `Σ zₖ ≥ ⌈pK⌉`; the alternative is the certified fallback (largest feasible
   R).
 - **Special case.** For a model affine in its labels, one step gives
-  `R s(x)/‖s(x)‖`: the RC by directed cuts. On a network the first step is
-  the RC on the linearized network.
-- **Training map** for nonconvex models: full-batch, deterministic,
-  warm-started from the nominal weights.
+  `R s(x)/‖s(x)‖`, the RC's cut. On a network the first step is the RC on
+  the linearized network. The radius does not carry over (Section 3).
+- **Training map** for nonconvex models: every retraining starts from one
+  fixed `θ₀` (the nominal fit), runs lbfgs to a gradient tolerance, and
+  standardizes labels with constants fixed from `ȳ`; the implicit gradient
+  uses a damped Hessian and is checked against finite differences.
 
 ## 3. Guarantee at the optimum
 
@@ -293,11 +306,12 @@ Kept to about four pages. Proofs in the appendix.
   scenario's worst-case problem is taken over the treatment slices of the
   contexts prescribed for, not the whole box: valid for all of them at once,
   and smaller.
-- **Protecting a fraction of the constraints (added 2026-11-16).** When the
-  optimizer chooses which constraints to protect, P(a protected constraint
-  is violated) ≤ P(maxₖ Wₖ > R), because the bound is uniform over the
-  domain. **[to prove: short]** Unprotected constraints carry only their
-  certified level.
+- **Protecting a fraction of the constraints (added 2026-11-16;** Gorissen
+  et al. 2015, "K out of N", plus the nominal rows). However the optimizer
+  chooses the protected set, a protected constraint is violated only if the
+  noise leaves its set: `Wₖ > Rₖ` for the RC's radius,
+  `‖Σₖₖ^{-1/2}eₖ‖ > Rₖ` for FO-CP's model-free radius. **[to prove: short]**
+  Unprotected constraints carry only their certified level.
 - **Remark: a different level per constraint (2026-11-18; remark only, no
   experiment).** With one set per outcome, constraint k can take its own
   radius Rₖ sized for its own εₖ (a severe toxicity stricter than a mild
@@ -330,13 +344,16 @@ Kept to about four pages. Proofs in the appendix.
   values or last layer (honest fitting). The method itself runs on any fitted
   model with its structure frozen; an appendix table measures what standard
   fitting costs in violations and what honest fitting costs in accuracy.
-- **Guarantee for FO-CP. [open, added 2026-11-16]** Theorem 1 uses the
-  affine error `s(x)ᵀe`. Without it, three radii: the model-free ball
-  `√χ²(n, 1−ε/K)` per outcome (exact for any model if separation is exact,
-  but about 32σ at n = 1,000 with one constraint), the linearized subspace (first order), or a scenario radius
-  from retrained noise draws (a bootstrap). Chosen by how each performs on
-  the reactor (`paper_plan.md`, F2). Separation is local, so stopping
-  certifies nothing for a nonlinear model.
+- **Guarantee for FO-CP. [open, added 2026-11-16]** Theorem 1 does not
+  carry over: the RC's simulated radius is not the radius of a ball
+  containing the noise (3.6σ against `‖e‖ ≈ 32σ`); it works because an
+  affine model sees the noise only through `s(x)ᵀe`. Three options: the
+  model-free ball `√χ²(n, 1−ε/K)` per outcome (exact for any model if
+  separation were exact; tested first, `paper_plan.md` F−1); the linearized
+  subspace (first order); or a radius from retrained noise draws, to be
+  defined (a bootstrap: it bounds violation for a resampled model, not the
+  clean-label model). Separation is local, so stopping certifies nothing for
+  a nonlinear model; the final decision gets an a posteriori attack.
 - **Remark: the true function.** The guarantee is against the clean-label
   model. Extending it to `h*` requires an assumption on `h*` (for example
   Lipschitz, or linear in the features), which gives a bound `B(x)` on the
@@ -359,8 +376,11 @@ Kept to about four pages. Proofs in the appendix.
 - **FO-CP's separation (added 2026-11-16).** Gradient ascent on `Δy`, with
   the gradient of the retrained prediction by implicit differentiation, run
   from several starts. Each candidate is checked by full retraining before it
-  becomes a cut. The random bank comes back here only as an ablation: the
-  same master with sampled rather than optimized relabelings.
+  becomes a cut. With continuous decisions the cuts converge only in the
+  limit (Kelley-type), so the loop stops at tolerance τ or an iteration cap;
+  the finite bound of the tree case does not apply. The random bank comes
+  back here only as an ablation: the same master with sampled rather than
+  optimized relabelings.
 - **Certifying any decision.** One evaluation of `r̂(x)` (Section 3) gives the
   level at which a decision is certified, whichever method produced it.
 - **When the RC is infeasible (maximum-radius fallback).** `max t` subject to
@@ -376,11 +396,11 @@ Kept to about four pages. Proofs in the appendix.
   not depend on `x`.
 - **Wrapper** (OptiCL): P bootstrapped models.
 - **C-MICL** (Ovalle et al.): their published settings.
-- **One model for everyone.** On each problem every method embeds the same
-  model class, so a difference in the results is a difference in the margin.
-  On the reactor that is Ovalle et al.'s architecture, trained as Section 6.1
-  describes, which is not how they train it. So C-MICL also gets one row
-  fitted end to end as published, so that the baseline is not handicapped.
+- **One model per comparison.** Every baseline embeds the same model as the
+  method it is compared with, so a difference in the results is a difference
+  in the margin: the RC's model (the lead model, open) for the RC, the
+  network trained end to end for FO-CP. C-MICL also gets one row fitted end
+  to end as published, so that the baseline is not handicapped.
 - **Conservatism parameter.** Each method has one parameter that trades cost for
   safety: the radius `R` (ours), the margin `m`, the wrapper's violation limit
   α, C-MICL's miscoverage α. Two comparisons, both defined here:
@@ -399,18 +419,21 @@ Three problems. Each subsection opens with its question.
 ### 6.0 Semi-synthetic instances first (added 2026-11-16) **[to build]**
 DB is happy to start on semi-synthetic data: real covariates, a known truth,
 injected noise.
-- **SS1, reactor.** As 6.1, plus a realizable truth: a (32, 32) network
-  fitted to noise-free ODE labels. With the truth inside the model class
-  there is no bias, which is what sank the network RC against the ODE, so the
-  label-noise protection is tested by itself.
-- **SS2, chemotherapy.** The real arms' covariates and treatments, one fixed
-  model per outcome treated as the truth, binomial noise from the real arm
-  sizes. Several constraints against a known truth, and the test of
-  infeasibility handling.
-- Further instances come from those widely used in the optimization
-  literature: WFP (6.4). Real data (6.3) after these. Classification comes
-  after regression is sorted; student enrollment (JANOS, OptiCL; a logistic
-  model, so FO-CP's case) is the candidate then.
+- **SS1, reactor.** As 6.1, plus a second arm whose labels come from a
+  realizable truth: a (32, 32) network fitted to noise-free ODE labels.
+  With the truth (nearly) inside the model class, bias, which sank the
+  network RC against the ODE, is removed, so the label-noise protection is
+  tested by itself. Each arm is judged against its own truth.
+- **WFP (6.4), regression.** The most reused instance in constraint
+  learning; OptiCL generates its palatability from a closed-form function,
+  so it has an exact truth. Both methods.
+- **SS2, chemotherapy (RC).** The real arms' covariates and treatments, one
+  fixed model per outcome treated as the truth, binomial noise from the
+  real arm sizes. Several constraints against a known truth, and the test
+  of infeasibility handling.
+- Real data (6.3) last. Workload dispatching (48 learned constraints) is
+  optional. Classification comes after regression; student enrollment
+  (JANOS, OptiCL; a logistic model, so FO-CP's case) is the candidate.
 - The objective stays nominal; a robust objective is a deferred variant.
 
 ### 6.1 Membrane reactor design (the lead result)
@@ -419,11 +442,10 @@ injected noise.
 - Reactor of Carrasco and Lima, as set up by Ovalle et al.: one learned
   constraint, ODE oracle, σ = 2. Chosen because the truth is integrated, not
   fitted, so the training noise can be redrawn and every decision judged exactly.
-- Model: Ovalle et al.'s network, fixed in advance. On each redraw the hidden
-  layers are trained on part of the rows and the last layer is refit on the
-  rest (sample split), which a practitioner with one dataset can do. A second
-  row freezes the hidden layers from an independent noise draw: the idealized
-  case, every row in the last layer. **[R2 against R4 decides which leads]**
+- Model: **[open]** the RC's lead model is the network's last layer or cubic
+  ridge (`paper_plan.md`, "Results of job 29141177": the last-layer RC
+  reached 0.42 to 0.52 against the ODE, cubic ridge 0.95). FO-CP runs on
+  Ovalle et al.'s network trained end to end.
 - Design: Ovalle et al.'s 100 cost vectors, with the training noise redrawn for
   each. The radius does not depend on the cost, so one radius serves all 100.
 - **Table 1.** Per method at target 0.9: ground-truth feasibility, cost,
@@ -487,8 +509,11 @@ chemotherapy".
 
 ### 6.4 World Food Programme diet
 *Does the reactor result carry over to a larger problem?*
-- Second case study from the literature (Maragno et al.; Ovalle et al.).
-  Palatability simulator as oracle, noise injected at chosen levels.
+- The most reused case study in constraint learning (OptiCL and at least
+  five later papers as regression; C-MICL as classification). Regression,
+  with OptiCL App. C.1's closed-form palatability function as the truth
+  (constants recovered from the public data or from the authors), noise
+  injected at chosen levels. Both methods.
 - **Table 3.** Same columns as Table 1.
   **[to run; instance not built]**
 
