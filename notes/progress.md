@@ -718,3 +718,14 @@ clean-label model / the ODE; cost as % of the objective range.
 - So the new method needs a practical radius, option (c), which bounds
   violation only for a resampled model unless a sharper argument is found.
   That definition is the next decision; it gates FO-CP code.
+
+### Same day: FO-CP's radius
+
+- Chosen: a sampled version of the RC's simulated radius. For noise draws e′,
+  retrain on `ȳ + e′` and record `W_c = max over the whole domain of
+  [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] / ‖s̃(x)‖`, with s̃ the linearized sensitivity; R is
+  the (1−ε) order statistic. Computed once before the loop, over a domain
+  fixed without the labels (re-sizing R around the iterates would bring the
+  selection problem back); gradient ascent then searches the ball of that
+  radius at every iteration. For affine models it is exactly Theorem 1's
+  simulated radius; for networks the argument is first order.

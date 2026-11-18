@@ -99,7 +99,7 @@ no `s(x)`.
 |---|---|---|---|
 | (a) Model-free ball | `√χ²(n, 1−ε/K)` per outcome, whitened (union bound) | Exact for any model, if separation were exact | **F−1 (job 29561590): impractical.** 32.5σ at n = 1,000. Infeasible on cubic ridge in 100 of 100 redraws; on the frozen network feasible, 1.00 against the ODE, but +15.7% of the objective range against +2.2% at the simulated radius. Stays as the exact but conservative reference |
 | (b) Linearized subspace | `√χ²(d_eff, 1−ε)`, `Δy` in the linearized map's span | Exact for affine maps only | If F1 finds d_eff ≈ n, (b) ≈ (a) |
-| (c) To define after F−1 | Either a W-type statistic with the linearized sensitivity as normalizer, `W_c = sup_x [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] / ‖s̃(x)‖`, over sampled draws e′; or scenario optimization (impose N retrained models; Campi, Garatti and Ramponi 2018) | Either way, for a resampled model (a bootstrap), not the clean-label model; scenario optimization needs about 361 models at ε = 0.1, β = 10⁻³ if 5 of them support the solution | Open |
+| **(c) Sampled W (chosen 2026-11-19)** | For N sampled noise draws e′, retrain on `ȳ + e′` and compute `W_c = max over x ∈ X of [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] / ‖s̃(x)‖`, with s̃ the linearized sensitivity at θ̂ and X the whole decision domain (fixed, label-free); R is the ⌈(N+1)(1−ε)⌉-th smallest. **Computed once, before the loop**; one R for every iteration and every cost vector; the ascent searches the ball of that radius | Exact for affine models: the numerator is `s(x)ᵀe′`, so this is Theorem 1's simulated radius. For networks, first order (a parametric bootstrap; s̃ depends on the fitted weights) | F2's radius. Scenario optimization (imposing about 361 retrained models) is not pursued |
 
 **Instances.**
 
@@ -118,7 +118,7 @@ no `s(x)`.
 | F−1 | Is the model-free radius (a) affordable? | Existing code: `probe_rc_ridge.py --stage modelfree` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, the 100 redraws | **Done (job 29561590): no.** Cubic infeasible in all 100; network +15.7% against +2.2% (simulated). (a) is out as a practical radius; (c) must be defined |
 | F0 | Is the machinery right? | (i) Affine models: one step equals `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against finite-difference retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's cone solution as τ → 0; record cuts | Code correct; gate |
 | F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and at one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, FO multi-start, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | If FO ≈ linearized, FO-CP reduces to one-step separation in the same loop. If cold restarts move ĥ as much, training randomness dominates label noise |
-| F2 | Does FO-CP deliver on SS1, at what cost? | Pilot: 10 cost vectors, one radius, SS1(ii). Then 100 cost vectors, both arms. On the end-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for every method); on `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4; the radius |
+| F2 | Does FO-CP deliver on SS1, at what cost? | Radius (c), with (b) as a closed-form check where d_eff is small. Pilot: 10 cost vectors, SS1(ii). Then 100 cost vectors, both arms. On the end-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for every method); on `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4; the radius |
 
 **Tasks.**
 
@@ -127,8 +127,9 @@ no `s(x)`.
   cuts converge only in the limit (Kelley-type; T3's K-iteration bound is
   for trees). With local separation, nothing beyond the a posteriori check.
   The protected-set guarantee for both radius events.
-- **T8.** Radius options (a) to (c). (a) is short; (c) needs a linearization
-  argument or scenario theory.
+- **T8.** Radius (c): exact for affine models (reduces to T1); a
+  first-order argument for networks. (a) is short and kept as the
+  conservative reference.
 - **I11.** The training map in sklearn (lbfgs, `warm_start` from the fixed
   `θ₀`) and the Hessian in numpy (1,281 weights). PyTorch only if that is too
   slow.
@@ -566,7 +567,7 @@ abstention, and H3 is weakened to the comparison of certified levels.
 | T5 | Lipschitz bias margin | to prove | appendix, optional |
 | T6 | Certified level of any decision: `P(violation and r̂(x*) ≥ r) ≤ P(W > r)` for all r, `x*` chosen in any way; the joint version over several constraints | drafted 2026-11-15, held until P1 in paper_a_guarantee_held.tex; not checked by JS | Section 3; E2 fallback and Table 2 |
 | T7 | FO-CP: what stopping certifies (exact separation, τ > 0, continuous decisions converge in the limit); the protected-set guarantee for both radius events | to prove | FO-CP, P2 |
-| T8 | FO-CP's radius options (a) to (c) | (a) short; (c) to define after F−1 | F2 |
+| T8 | FO-CP's radius (c): exact for affine models (reduces to T1), first order for networks; (a) as the reference | to prove | F2 |
 
 Theorem 1 and the finite, subspace and Bonferroni corollaries are proved.
 Dropped from this paper: classification, the ridge bias bound, counting K for

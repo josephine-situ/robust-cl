@@ -351,9 +351,12 @@ Kept to about four pages. Proofs in the appendix.
   model-free ball `√χ²(n, 1−ε/K)` per outcome (exact for any model if
   separation were exact; impractical: infeasible on cubic ridge, +15.7% of
   the objective range on the frozen network, `paper_plan.md` F−1); the linearized
-  subspace (first order); or a radius from retrained noise draws, to be
-  defined (a bootstrap: it bounds violation for a resampled model, not the
-  clean-label model). Separation is local, so stopping certifies nothing for
+  subspace (first order); or **the chosen one (2026-11-19)**, a sampled
+  version of the simulated radius: for noise draws e′, retrain on `ȳ + e′`
+  and take the quantile of `W_c = max over x ∈ X of [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] /
+  ‖s̃(x)‖` (s̃ the linearized sensitivity, X the whole domain). R is
+  computed once, before the loop. Exact for affine models, where it is the
+  simulated radius; first order for networks. Separation is local, so stopping certifies nothing for
   a nonlinear model; the final decision gets an a posteriori attack.
 - **Remark: the true function.** The guarantee is against the clean-label
   model. Extending it to `h*` requires an assumption on `h*` (for example
