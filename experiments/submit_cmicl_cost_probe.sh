@@ -2,7 +2,10 @@
 #SBATCH --job-name=cmicl-cost-probe
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jositu@mit.edu
-#SBATCH --partition=mit_normal
+#SBATCH --partition=mit_preemptable
+#SBATCH --requeue
+# No checkpoint: a preempted attempt reruns from the start (2026-11-19: moved off
+# mit_normal per CLAUDE.md; set --partition=mit_normal to avoid preemption).
 #SBATCH --time=12:00:00
 # Matches submit_dial_sweep.sh: 16G is far above the reactor's measured peak
 # (MaxRSS 0.95G on job 21224636) and 1G/core keeps the task packable.

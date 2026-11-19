@@ -2,7 +2,8 @@
 #SBATCH --job-name=chemo-robust
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jositu@mit.edu
-#SBATCH --partition=mit_normal
+#SBATCH --partition=mit_preemptable
+#SBATCH --requeue
 #SBATCH --time=12:00:00
 #SBATCH --mem=128G
 #SBATCH --cpus-per-task=16
@@ -44,6 +45,11 @@ RHS_GRID="${RHS_GRID:-0.3 0.4 0.5 0.6}"
 # Extra flags passed straight through, e.g. EXTRA_ARGS="--resume" to keep the
 # realization cells already in the long CSV after a crash or wall-clock kill.
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+# On mit_preemptable a requeued attempt keeps the realization cells already
+# written (the runner refuses --resume if the settings differ).
+if [ "${SLURM_RESTART_COUNT:-0}" -gt 0 ] && [[ " ${EXTRA_ARGS} " != *" --resume "* ]]; then
+    EXTRA_ARGS="${EXTRA_ARGS} --resume"
+fi
 
 if [[ "${RUN_MODE}" == "sweep" ]]; then
     python -u experiments/run_chemo_robust.py \

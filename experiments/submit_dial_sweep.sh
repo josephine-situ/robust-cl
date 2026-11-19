@@ -2,7 +2,8 @@
 #SBATCH --job-name=dial-sweep
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jositu@mit.edu
-#SBATCH --partition=mit_normal
+#SBATCH --partition=mit_preemptable
+#SBATCH --requeue
 #SBATCH --time=12:00:00
 # 16G is 5x the measured peak. seff/sacct on job 21224636 (2026-08-26):
 # MaxRSS 3.13G gastric, 0.95G reactor -- 2.4% and 0.7% of the 128G this used to
@@ -462,7 +463,7 @@ fi
 #       sbatch --array=0 experiments/submit_dial_sweep.sh
 #     RUN_SWEEP=0 PROBLEM=reactor sbatch --array=0 experiments/submit_dial_sweep.sh
 #
-#   PREEMPTABLE. mit_normal is 12h and often full; mit_preemptable is 2 days
+#   PREEMPTABLE (the default since 2026-11-19). mit_normal is 12h and often full; mit_preemptable is 2 days
 #   with idle capacity, and preemption is cheap here because append_score banks
 #   every finished cell, so a --requeue attempt replays them free. Ask for a LONG
 #   WALL rather than a big budget there: a single cell longer than the wall is

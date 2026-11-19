@@ -2,7 +2,10 @@
 #SBATCH --job-name=adv-probe
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jositu@mit.edu
-#SBATCH --partition=mit_normal
+#SBATCH --partition=mit_preemptable
+#SBATCH --requeue
+# No checkpoint: a preempted attempt reruns from the start (2026-11-19: moved off
+# mit_normal per CLAUDE.md; set --partition=mit_normal to avoid preemption).
 #SBATCH --time=04:00:00
 #SBATCH --mem=64G
 #SBATCH --cpus-per-task=16
