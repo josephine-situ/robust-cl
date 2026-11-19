@@ -758,3 +758,37 @@ Every cohort is nominally feasible.
 - Data: 416 real arms (320 train, 96 test), five toxicities as percentile
   ranks, arm sizes 11–289. Not yet measured: baselines' certified levels,
   forests in place of ridge.
+
+## 2026-11-19: Probe F0: FO-CP's machinery, and the network's L2 penalty
+
+**Built** `experiments/probe_focp.py`: the training map (I11; L-BFGS-B on the
+exact sklearn objective from one fixed θ₀, gradients and Hessian by torch
+autograd; torch is now a CPU-only dependency) and the separation (I12;
+implicit gradient, monotone projected ascent).
+
+**F0(i) passes.** On cubic ridge and the frozen network the generic implicit
+gradient equals `s(x)` to 4e-14, and one ascent step reproduces the RC's
+margin `R σ ‖s(x)‖` exactly, with no further step accepted.
+
+**The end-to-end network's training map is not exact.** A ReLU network's
+minimizer sits on kinks, so max|grad| stalls near 1e-3 while the loss is
+flat to 8 digits: the plan's gradient-tolerance stop is unattainable, and the
+map now stops on loss change. With the repo's α = 0.01, retraining on the same
+labels moves h(x*) by up to 0.09 flow units, more than one label's effect
+(0.005 to 0.05), so F0(ii)'s per-row check against finite differences cannot
+be measured. Run instead along whole directions (redraws 0 to 2, R = 3.59σ):
+
+| | α = 0.01 | α = 1 |
+|---|---|---|
+| drift of the map at x* | up to 0.09 | ≤ 0.002 |
+| drop of h(x*) along the implicit gradient at R | 5.5 to 8.2 | 1.4 to 2.3 |
+| along random directions | ≤ 1.5 | ≤ 0.08 |
+| frozen-network RC margin, same x | 0.84 to 0.92 | 0.95 to 1.38 |
+| ODE at the nominal x* (floor 50) | 39.3 to 42.3 | 48.6 to 50.1 |
+
+The implicit gradient is a good ascent direction at both. α = 0.01 (the
+synthetic instance's CV pick) makes the end-to-end network so label-sensitive
+that FO-CP's margin would be 6 to 9 times the RC's, and its nominal decision
+misses the ODE by 8 to 11. At α = 1 both are of the RC's size; there the
+gradient overstates small steps (kinks), which a kink-aware sensitivity
+would fix. **Open for JS: the network's α.** Three redraws only.

@@ -91,7 +91,7 @@ several outcomes' models gets one set over those outcomes' labels.
 `T(y)` is the training map, `ĥₖ(x; y)` the prediction of `T(y)`, `Cₖ` the
 stored cut models for constraint k, and `zₖ ∈ {0, 1}` whether k is protected.
 
-0. Compute the radius R once, before any cost vector (Radius, option (c)).
+0. Compute the radius R before the loop (Radius, option (c)).
 1. Set `Cₖ = ∅`. The first master solve is then the nominal problem.
 2. Master: `min cᵀx` s.t. `ĥₖ(x; ȳ) ≤ bₖ` for all k; `ĥ(x; θ) ≤ bₖ − τ`
    for every `θ ∈ Cₖ`, enforced only if `zₖ = 1` (big-M);
@@ -132,12 +132,13 @@ violated only if the noise leaves its set (`Wₖ > Rₖ` for the RC's radius,
 
 - Every fit starts from one fixed `θ₀` (the nominal fit), so `T` is a
   function of the labels.
-- sklearn `MLPRegressor(solver="lbfgs", tol=1e-7, max_iter=20000,
-  max_fun=50000)`. sklearn passes `tol` to L-BFGS-B as `gtol`, so training
-  stops when every component of the loss gradient is below 1e-7. scipy can
-  also stop on a small relative change in the loss, so the gradient is
-  checked after each fit; a fit above tolerance or at `max_iter` or
-  `max_fun` is discarded.
+- scipy L-BFGS-B on the exact sklearn objective (`probe_focp.py`), stopped
+  by the relative change in the loss (scipy's default ftol), not a gradient
+  tolerance: a ReLU network's minimizer sits on kinks, where max|grad|
+  stalls near 1e-3 while the loss is flat to 8 digits (F0, 2026-11-19). A
+  fit that hits the iteration cap (20,000) is discarded. The map is
+  deterministic, but not exact: on the repo's α = 0.01 network, retraining
+  on the same labels moves h(x*) by 0.04 flow units (0.002 at α = 1).
 - Labels are standardized with constants fixed from `ȳ`. The probe
   standardizes each label vector by its own mean and sd
   (`probe_rc_ridge.py:106`), which is not affine.
@@ -173,8 +174,7 @@ ablation of the separation (F1).
 
 Cost: starts × steps × (retraining + one linear solve), per protected
 constraint, per iteration. Separations depend on `xᵗ`, hence on the cost
-vector, so they are not shared across the 100 cost vectors; one radius
-serves them all. Each cut on the end-to-end network adds a ReLU embedding
+vector, so they are not shared across the 100 cost vectors. Each cut on the end-to-end network adds a ReLU embedding
 (64 binaries for the (32, 32) network) to a master whose single solve
 already takes 15 to 100 seconds. The F2 pilot measures this.
 
@@ -195,8 +195,12 @@ Radius (c): for N = 200 noise draws e′ (as for the RC), retrain on
 `ȳ + e′` and compute
 `W_c = max over x ∈ X of [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] / ‖s̃(x)‖`, with s̃ the
 linearized label sensitivity at θ̂ and X the whole domain. R is the
-⌈(N+1)(1−ε)⌉-th smallest W_c, computed once for every iteration and cost
-vector. Each W_c is replaced by Gurobi's upper bound from Dinkelbach
+⌈(N+1)(1−ε)⌉-th smallest W_c. R depends on the data through θ̂ and
+`s̃`, so with the noise redrawn per cost vector it is not one number for all
+100 runs (unlike the RC on fixed features). Decided 2026-11-19: compute R on
+the F2 pilot's 10 redraws; if its spread is small, reuse the largest value
+for every run, otherwise compute it per redraw. Within a run, one R serves
+every iteration. Each W_c is replaced by Gurobi's upper bound from Dinkelbach
 iterations, as in `solve_W` (`probe_rc_ridge.py:252`). On the end-to-end
 network each iteration is a mixed-integer cone program with two ReLU
 embeddings, with `s̃(x)` linearized exactly within each activation pattern.
@@ -211,7 +215,7 @@ F−1 to F2 decide whether FO-CP is worth building fully.
 | # | Question | Design | Decides |
 |---|---|---|---|
 | F−1 | Is radius (a) affordable? | `probe_rc_ridge.py --stage modelfree` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, 100 redraws | Done (job 29561590): no (Radius table) |
-| F0 | Is the machinery right? | (i) Affine models: one step gives `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against finite-difference retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's solution as τ → 0; record cuts | gate |
+| F0 | Is the machinery right? | (i) Affine models: one step gives `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's solution as τ → 0; record cuts | (i) passed; (ii) run in directional form; (iii) needs I13. Results below |
 | F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, multistart ascent, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | If ascent ≈ the linearized step, FO-CP reduces to one-step separation in the same loop. If cold restarts move ĥ as much, training randomness dominates label noise |
 | F2 | Does FO-CP deliver on SS1, and at what cost? | Radius (c), with (b) as a check where d_eff is small. Pilot: 10 cost vectors, SS1(ii); then 100 cost vectors, both arms. End-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for all). `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4 |
 
@@ -247,6 +251,40 @@ Bonferroni as a reported result (it stays in the theory); the
 width-at-the-optimum comparison with C-MICL.
 
 ## Results
+
+### Probe F0 (2026-11-19, local)
+
+`experiments/probe_focp.py`; outputs `results/paper_a/prelim/f0_*`. Redraws
+0 to 2, Ovalle et al.'s cost vectors 0 to 2, σ = 2, R = 3.59σ.
+
+- F0(i) passes. On cubic ridge and `net_frozen` the generic implicit
+  gradient equals `s(x)` (relative error ≤ 4e-14), one ascent step lowers h
+  by exactly `R σ ‖s(x)‖`, and no second step is accepted.
+- F0(ii) as written (per-row cosine ≥ 0.99 against finite differences) is
+  not measurable on the end-to-end network: one label of 1,000 moves h(x*)
+  by about 0.005 to 0.05, while retraining on the same labels moves it by up
+  to 0.09 (the training map's own drift). Central differences at different
+  steps disagree (cosine 0.15 to 0.8). The test was run instead along whole
+  directions, which is how the ascent uses the gradient:
+
+| | α = 0.01 (repo) | α = 1 |
+|---|---|---|
+| Drift of T at x* (same labels) | −0.02 to −0.09 | ≤ 0.002 |
+| Drop of h(x*) along −g at t = R | 5.5 to 8.2 | 1.4 to 2.3 |
+| Same, as a fraction of the linear prediction | 0.87 to 0.99 | 0.32 to 0.97 |
+| Drop along random directions at t = R | ≤ 1.5 | ≤ 0.08 |
+| Frozen-network RC margin at the same x | 0.84 to 0.92 | 0.95 to 1.38 |
+| ODE at the nominal x* (floor 50) | 39.3 to 42.3 | 48.6 to 50.1 |
+
+- The implicit gradient is a good ascent direction at both α. At α = 1 it
+  overstates the change at small steps, consistent with a minimizer on
+  ReLU kinks, which the smooth implicit-function formula ignores.
+- With α = 0.01 (the synthetic instance's CV pick, not a reactor choice)
+  the end-to-end network is so label-sensitive that one step at R lowers
+  h by 6 to 9 times the frozen network's RC margin, and its nominal decision
+  misses the ODE by 8 to 11. At α = 1 both are of the RC's size.
+- Open: the network's α (decision for JS); a kink-aware sensitivity if
+  α = 1.
 
 ### Results of job 29141177 (2026-11-14)
 
@@ -511,7 +549,7 @@ Dropped: classification, the ridge bias bound, counting K for forests.
 | I8 | WFP regression instance with OptiCL App. C.1's truth function | to build | E3 |
 | I9 | `r̂(x)` for any decision; the max-t fallback; `ε̂` from the stored W draws | to build | E2, Table 2 |
 | I10 | Probe P1 | done (`probe_p1_gastric.py`, job 29576766) | H3 |
-| I11 | FO-CP training map in sklearn; Hessian in numpy (1,281 weights), PyTorch only if too slow | to build | F0–F2 |
+| I11 | FO-CP training map; gradients and the Hessian (1,281 weights) by PyTorch autograd on the exact training objective, for correctness (decided 2026-11-19) | to build | F0–F2 |
 | I12 | FO-CP separation: implicit gradient, projected ascent, starts, a posteriori attack | to build | F0–F2 |
 | I13 | Master of about 200 lines on the probe's embedding, not `cp.py` (`embed_model` handles only sklearn types; `cp.py` carries anchors, rollback and eviction). Hidden layers embedded once when only the last layer changes; `zₖ` big-M | to build | F2 |
 | I14 | SS1's realizable truth (arm ii); SS2's generator | to build | F2, P2 |
@@ -534,8 +572,10 @@ arrays. The simulated radius at 200 draws is a cluster job.
 1. Done: F−1 (radius (a) impractical) and P1 (binomial σ certifies half
    the cohorts at ε = 0.1).
 2. The reactor's lead model, with DB.
-3. FO-CP gate: I11, I12, F0 (local), then F1 (go/no-go). Then I13 and the
-   F2 pilot; the full F2 after it. T7 and T8 alongside.
+3. FO-CP gate: I11, I12, F0(i) and F0(ii) (local), then F1 (go/no-go).
+   Then I13, F0(iii) (it needs the master), the F2 pilot (which also
+   measures how much radius (c) varies across redraws), and the full F2.
+   T7 and T8 alongside.
 4. RC on the reactor, in parallel on the cluster: I2 to I5, then E1. T1
    alongside. Draft Sections 2, 3, 6.1, 6.2.
 5. WFP: I8, then E3 with both methods.

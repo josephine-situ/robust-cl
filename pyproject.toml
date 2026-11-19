@@ -15,4 +15,15 @@ dependencies = [
     "seaborn>=0.12",
     "tqdm>=4.65",
     "shap>=0.52.0",
+    "torch>=2.15.0",
 ]
+
+# CPU-only PyTorch (FO-CP's autograd Hessian, paper_plan.md I11): the CPU index
+# keeps the cluster venv free of the CUDA wheels.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

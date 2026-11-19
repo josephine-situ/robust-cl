@@ -361,8 +361,10 @@ Kept to about four pages. Proofs in the appendix.
   version of the simulated radius: for noise draws e′, retrain on `ȳ + e′`
   and take the quantile of `W_c = max over x ∈ X of [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] /
   ‖s̃(x)‖` (s̃ the linearized sensitivity, X the whole domain), N = 200,
-  each maximum replaced by Gurobi's upper bound. R is computed once, before
-  the loop. Exact for affine models, where it is the
+  each maximum replaced by Gurobi's upper bound. R is computed before the
+  loop; it depends on the fitted network, so with redrawn noise it is
+  computed per dataset or, if F2's pilot finds it stable, reused at its
+  largest value. Exact for affine models, where it is the
   simulated radius; first order for networks. Separation is local, so stopping certifies nothing for
   a nonlinear model; the final decision gets an a posteriori attack.
 - **Remark: the true function.** The guarantee is against the clean-label
