@@ -2,7 +2,8 @@
 #SBATCH --job-name=focp-f1
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jositu@mit.edu
-#SBATCH --partition=mit_normal
+#SBATCH --partition=mit_preemptable
+#SBATCH --requeue
 #SBATCH --time=4:00:00
 #SBATCH --mem=8G
 #SBATCH --cpus-per-task=4
@@ -15,7 +16,8 @@
 # CV-chosen alpha (results/paper_a/prelim/cv_alpha.json), one redraw per task,
 # at the nominal decision and at one robust iterate: linearized step, multistart
 # ascent, random bank (B = 200), the true relabeling, cold restarts; d_eff.
-# Writes f1_r<k>_a<alpha>.json only; resumes per point.
+# Writes f1_r<k>_a<alpha>.json only; resumes per decision point after a
+# preemption (mit_preemptable, --requeue): at most one point is redone.
 
 set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
