@@ -607,6 +607,61 @@ def stage_f1(args):
     _save(tag + ".json", res)
 
 
+def stage_f0_loop(args):
+    """F0(iii): the cutting-plane loop on ridge with fixed features. Separation
+    is exact in one step there (F0(i)) and each cut is linear in phi(x), so as
+    tau -> 0 the loop's decision and objective must converge to the RC's own
+    cone solution at the same radius. Master: the nominal row h(x) >= 50 and
+    every cut h(x; theta_cut) >= 50 + tau (restriction); separation tests
+    against 50; cuts accumulate; at most 100 master solves."""
+    from probe_rc_ridge import base_model, solve_rc, _x_of
+    inst, md, sigma = setup()
+    k = args.redraw
+    ybar = noisy_labels(md, sigma, args.seed, k)
+    cost = cost_vectors("paper", k + 1, inst)[k]
+    R = args.R
+    out = []
+    for name in ("net_frozen", "cubic"):
+        cr = build(name, inst, md, sigma, frozen_labels(md, sigma))
+        model = RidgeModel(cr, md.X_train)
+        theta0, _ = model.train(ybar)
+        rc = solve_rc(cr, inst, (theta0[0], theta0[1:]), R * sigma, cost)
+        print(f"{name}: RC at R={R} sigma: obj {rc['obj']:.5f} status {rc['status']}", flush=True)
+        for tau_s in [0.5, 0.2, 0.05, 0.01, 0.001]:
+            tau = tau_s * sigma
+            cuts, it, t0 = [], 0, time.time()
+            while it < 100:
+                it += 1
+                m, u, xv, dphi, _ = base_model(cr, inst)
+                lin = lambda th: th[0] + gp.quicksum(float(th[1 + j]) * dphi[j] for j in range(cr.p))
+                m.addConstr(lin(theta0) >= PRODUCT_FLOOR)
+                for th in cuts:
+                    m.addConstr(lin(th) >= PRODUCT_FLOOR + tau)
+                m.setObjective(gp.quicksum(float(cost[i]) * xv[i] for i in range(cr.d)), GRB.MINIMIZE)
+                m.optimize()
+                if m.SolCount == 0:
+                    break
+                x = _x_of(cr, u)
+                best = ascend(model, x, ybar, sigma, R, theta0, [("zero", np.zeros(cr.n))],
+                              lam_rel=0.0)
+                worst = float(model.predict(x[None], best["theta"])[0])
+                if worst >= PRODUCT_FLOOR - 1e-9:
+                    break
+                cuts.append(best["theta"])
+            obj = float(cost @ x)
+            rc_slack = float(model.predict(x[None], theta0)[0] - R * sigma * cr.snorm(x)[0]) - PRODUCT_FLOOR
+            row = {"model": name, "redraw": k, "R_sigma": R, "tau_sigma": tau_s, "iters": it,
+                   "cuts": len(cuts), "obj": obj, "obj_rc": rc["obj"],
+                   "rel_obj_gap": (obj - rc["obj"]) / abs(rc["obj"]),
+                   "x_dist": float(np.linalg.norm((x - rc["x"]) / (inst.variable_ub - inst.variable_lb))),
+                   "rc_slack_at_x": rc_slack, "time_s": time.time() - t0}
+            out.append(row)
+            print(f"  tau {tau_s:g} sigma: {it} solves, {len(cuts)} cuts, obj {obj:.5f} "
+                  f"(gap {row['rel_obj_gap']:+.2e}), |x - x_RC| {row['x_dist']:.2e}, "
+                  f"RC slack at x {rc_slack:+.4f}", flush=True)
+    _save(f"f0_loop_r{k}.json", out)
+
+
 CV_ALPHAS = [1e-3, 1e-2, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0]
 
 
@@ -651,7 +706,7 @@ def _save(name, obj):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1"])
+    ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1", "f0_loop"])
     ap.add_argument("--alpha", type=float, default=None,
                     help="network L2 penalty (f1 default: the CV choice; else NET_ALPHA)")
     ap.add_argument("--threads", type=int, default=1, help="torch threads (f1)")
@@ -673,4 +728,4 @@ if __name__ == "__main__":
     if args.alpha is None:
         args.alpha = NET_ALPHA
     {"f0_affine": stage_f0_affine, "f0_grad": stage_f0_grad,
-     "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1}[args.stage](args)
+     "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1, "f0_loop": stage_f0_loop}[args.stage](args)

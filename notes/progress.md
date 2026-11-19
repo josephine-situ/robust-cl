@@ -792,3 +792,16 @@ that FO-CP's margin would be 6 to 9 times the RC's, and its nominal decision
 misses the ODE by 8 to 11. At α = 1 both are of the RC's size; there the
 gradient overstates small steps (kinks), which a kink-aware sensitivity
 would fix. **Open for JS: the network's α.** Three redraws only.
+
+## 2026-11-19: Network α by CV; F0(iii) passes; F1 submitted
+
+- **α = 1 by 5-fold CV** on the dataset's noisy labels (`cv_alpha.json`; CV MSE
+  4.37 against σ² = 4; the repo's 0.01 scores 8.97). JS chose CV. The end-to-end
+  network for F1 and F2 uses α = 1. R2 to R4's networks used α = 0.01.
+- **F0(iii) passes** (`f0_loop_r0.json`): on the frozen network and cubic ridge
+  the cutting-plane loop converges to the RC's own solution as τ → 0 (objective
+  gap +2.7% / +1.6% at τ = 0.5σ, +0.005% at τ = 0.001σ; 1 to 10 cuts), and each
+  loop decision satisfies the RC with slack about τ.
+- **F1 submitted**, job 29664832 (redraws 0 to 4). torch is installed (CPU) in
+  the cluster's `robcl_env`; jobs that import it need the env's `lib` first on
+  `LD_LIBRARY_PATH` (in `submit_f1.sh`).

@@ -215,7 +215,7 @@ F−1 to F2 decide whether FO-CP is worth building fully.
 | # | Question | Design | Decides |
 |---|---|---|---|
 | F−1 | Is radius (a) affordable? | `probe_rc_ridge.py --stage modelfree` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, 100 redraws | Done (job 29561590): no (Radius table) |
-| F0 | Is the machinery right? | (i) Affine models: one step gives `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's solution as τ → 0; record cuts | (i) passed; (ii) run in directional form; (iii) needs I13. Results below |
+| F0 | Is the machinery right? | (i) Affine models: one step gives `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's solution as τ → 0; record cuts | (i) passed; (ii) run in directional form; (iii) passed. Results below |
 | F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, multistart ascent, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | If ascent ≈ the linearized step, FO-CP reduces to one-step separation in the same loop. If cold restarts move ĥ as much, training randomness dominates label noise |
 | F2 | Does FO-CP deliver on SS1, and at what cost? | Radius (c), with (b) as a check where d_eff is small. Pilot: 10 cost vectors, SS1(ii); then 100 cost vectors, both arms. End-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for all). `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4 |
 
@@ -283,8 +283,17 @@ width-at-the-optimum comparison with C-MICL.
   the end-to-end network is so label-sensitive that one step at R lowers
   h by 6 to 9 times the frozen network's RC margin, and its nominal decision
   misses the ODE by 8 to 11. At α = 1 both are of the RC's size.
-- Open: the network's α (decision for JS); a kink-aware sensitivity if
-  α = 1.
+- F0(iii) passes (redraw 0, R = 3.59σ). On `net_frozen` and cubic ridge the
+  loop (cuts at 50 + τ, separation against 50) converges to the RC's cone
+  solution as τ → 0: objective gap +2.7% / +1.6% at τ = 0.5σ, +0.005% at
+  τ = 0.001σ, with 1 to 2 cuts (frozen) and 2 to 10 (cubic); every loop
+  decision is RC-feasible with slack about τ.
+- α chosen by 5-fold CV on the noisy labels (`cv_alpha.json`): α = 1, CV
+  MSE 4.37 against σ² = 4; α = 0.01 scores 8.97. F1 runs at α = 1 (job
+  29664832). The implicit gradient is the derivative of the current piece:
+  about 45 (row, unit) pre-activations sit within 1e-4 of a kink, so it
+  matters for radius (c)'s denominator, not for the ascent, which uses only
+  the direction.
 
 ### Results of job 29141177 (2026-11-14)
 
