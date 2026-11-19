@@ -249,8 +249,16 @@ class Sensitivity:
         Z = self.model.features_t(X)
         return torch.func.jacrev(lambda t: self.model.pred_t(Z, t))(th).numpy()
 
+    def auto_lam_rel(self):
+        """Twice the damping that makes H + lam I positive definite (H is
+        indefinite at a network's theta0), and at least 1e-8: F0's choice."""
+        return max(1e-8, -2.0 * self.w.min() / self.trace_p)
+
     def dh_dy(self, X, lam_rel):
-        """d h(x; T(y)) / dy for each row of X: n x m, at damping lam_rel."""
+        """d h(x; T(y)) / dy for each row of X: n x m, at damping lam_rel
+        (None: auto_lam_rel)."""
+        if lam_rel is None:
+            lam_rel = self.auto_lam_rel()
         lam = lam_rel * self.trace_p
         Gx = self.grad_h(X)                                    # m x p
         V = self.Q @ ((self.Q.T @ Gx.T) / (self.w + lam)[:, None])
@@ -273,6 +281,7 @@ def ascend(model, x, ybar, sigma, R, theta0, starts, lam_rel, sign=SIGN,
         val = sign * float(model.predict(X, theta)[0])
         path = [{"step": 0, "val": val, "norm_z": float(np.linalg.norm(z)),
                  "ok": info["ok"]}]
+        first_theta = theta
         for step in range(1, max_steps + 1):
             g = sign * sigma * Sensitivity(model, theta, ybar + sigma * z).dh_dy(X, lam_rel)[:, 0]
             d = g / np.linalg.norm(g)
@@ -288,12 +297,15 @@ def ascend(model, x, ybar, sigma, R, theta0, starts, lam_rel, sign=SIGN,
                 vn = sign * float(model.predict(X, tn)[0])
                 if vn >= val + min_gain * sigma:
                     z, theta, val, accepted = zn, tn, vn, True
+                    if step == 1:
+                        first_theta = theta
                     path.append({"step": step, "ell": float(ell), "val": val,
                                  "norm_z": float(np.linalg.norm(z))})
                     break
             if not accepted:
                 break
-        rec = {"start": name, "val": val, "z": z, "theta": theta, "path": path}
+        rec = {"start": name, "val": val, "z": z, "theta": theta, "path": path,
+               "first_theta": first_theta}
         if log is not None:
             log(rec)
         if best is None or val > best["val"]:
@@ -304,7 +316,9 @@ def ascend(model, x, ybar, sigma, R, theta0, starts, lam_rel, sign=SIGN,
 # --------------------------------------------------------------------------
 # The nominal problem with the end-to-end network embedded (part of I13)
 # --------------------------------------------------------------------------
-def solve_nominal(inst, model, theta, cost, shift=0.0):
+def solve_nominal(inst, model, theta, cost, shift=0.0, cuts=(), tau=0.0):
+    """min c'x s.t. h(x; theta) >= 50 + shift and, for each cut model,
+    h(x; theta_cut) >= 50 + tau (the reactor's floor, restricted by tau)."""
     m = gp.Model()
     m.Params.OutputFlag = 0
     m.Params.TimeLimit = TIME_LIMIT
@@ -317,6 +331,8 @@ def solve_nominal(inst, model, theta, cost, shift=0.0):
     for dc in inst.domain_constraints:
         m.addConstr(gp.quicksum(float(dc.coeffs[i]) * x[i] for i in range(d)) <= dc.rhs)
     m.addConstr(model.gurobi_out(m, u, theta) >= PRODUCT_FLOOR + shift)
+    for th in cuts:
+        m.addConstr(model.gurobi_out(m, u, th) >= PRODUCT_FLOOR + tau)
     m.setObjective(gp.quicksum(float(cost[i]) * x[i] for i in range(d)), GRB.MINIMIZE)
     m.optimize()
     if m.SolCount == 0:
@@ -481,6 +497,152 @@ def stage_f0_dir(args):
     _save(f"f0_dir_r{args.redraw}_a{args.alpha:g}.json", res)
 
 
+def chosen_alpha():
+    path = os.path.join(OUT_DIR, "cv_alpha.json")
+    if not os.path.exists(path):
+        raise SystemExit("run --stage cv_alpha first (the network's alpha is chosen by CV)")
+    return float(json.load(open(path))["chosen"])
+
+
+def stage_f1(args):
+    """F1: does ascent beyond the first step find worse relabelings?
+
+    End-to-end network at the CV-chosen alpha, one redraw, at the nominal
+    decision x0 and at one robust iterate x1 (the master with the cut from
+    x0's separation). At each point, the drop of h(x) in sigma units under:
+      linearized  one step from zero, z = R d (d from the implicit gradient)
+      ascent      I12 from zero + 4 random starts on the sphere
+      bank        the worst of B random relabelings on the sphere ||z|| = R
+      true        retraining on the clean labels, Delta y = -e (outside the
+                  ball: ||e||/sigma ~ sqrt(n)), the noise's actual effect
+      cold        sklearn cold fits with other seeds on the same labels:
+                  training randomness, against which the rest is read
+    plus d_eff, the numerical rank of the linearized sensitivities over the
+    domain. Resumable per point."""
+    inst, md, sigma = setup()
+    alpha = args.alpha if args.alpha_set else chosen_alpha()
+    torch.set_num_threads(args.threads)
+    k = args.redraw
+    ybar = noisy_labels(md, sigma, args.seed, k)
+    cost = cost_vectors("paper", k + 1, inst)[k]
+    model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, ybar, alpha=alpha)
+    theta0, info0 = model.cold_fit(ybar, seed=k)
+    tag = f"f1_r{k}_a{alpha:g}"
+    path = os.path.join(OUT_DIR, tag + ".json")
+    res = json.load(open(path)) if os.path.exists(path) else {"points": []}
+    res.update(redraw=k, alpha=alpha, R=args.R, B=args.bank, theta0=info0)
+    R, tau = args.R, 0.05 * sigma
+    rng = np.random.default_rng([args.seed, k, 7])
+
+    def drop(x, th):
+        return (float(model.predict(x[None], theta0)[0])
+                - float(model.predict(x[None], th)[0])) / sigma
+
+    x0, st0 = solve_nominal(inst, model, theta0, cost)
+    xs, best0 = [("x0", x0)], None
+    done = {p["name"] for p in res["points"]}
+    for name in ("x0", "x1"):
+        if name == "x1":
+            if best0 is None:      # x0 came from the file: redo its separation from zero
+                best0 = ascend(model, x0, ybar, sigma, R, theta0,
+                               [("zero", np.zeros(model.n))], args.lam_rel)
+                res["x1_cut_from"] = "zero start only (resumed run)"
+            x1, st1 = solve_nominal(inst, model, theta0, cost, cuts=[best0["theta"]], tau=tau)
+            if x1 is None:
+                res["x1_status"] = st1
+                break
+            xs.append(("x1", x1))
+        x = dict(xs)[name]
+        if name in done:
+            continue
+        t0 = time.time()
+        p = {"name": name, "x": x.tolist(), "h": float(model.predict(x[None], theta0)[0]),
+             "ode": ode_flow(inst, x)}
+        log = []
+        starts = [("zero", np.zeros(model.n))]
+        for j in range(args.n_random):
+            v = rng.standard_normal(model.n)
+            starts.append((f"random{j}", R * v / np.linalg.norm(v)))
+        best = ascend(model, x, ybar, sigma, R, theta0, starts, args.lam_rel, max_steps=args.max_steps,
+                      log=lambda r: log.append(r))
+        zero = next(r for r in log if r["start"] == "zero")
+        # from zero the first accepted step is always the jump z = R d0
+        p["linearized"] = drop(x, zero["first_theta"])
+        p["ascent"] = drop(x, best["theta"])
+        p["starts"] = [{"start": r["start"], "drop": drop(x, r["theta"]),
+                        "steps": len(r["path"]) - 1} for r in log]
+        if name == "x0":
+            best0 = best
+        bank = []
+        for _ in range(args.bank):
+            v = rng.standard_normal(model.n)
+            th, inf = model.train(ybar + sigma * R * v / np.linalg.norm(v), theta0)
+            if inf["ok"]:
+                bank.append(drop(x, th))
+        p["bank_max"] = float(np.max(bank))
+        p["bank_q"] = np.quantile(bank, [0.5, 0.9, 0.99]).tolist()
+        th_true, _ = model.train(md.y_true, theta0)
+        p["true"] = drop(x, th_true)
+        p["true_norm_sigma"] = float(np.linalg.norm(md.y_true - ybar) / sigma)
+        p["cold"] = []
+        for s in range(1, args.cold + 1):
+            th_c, _ = model.cold_fit(ybar, seed=k + 1000 * s)
+            p["cold"].append(drop(x, th_c))
+        p["time_s"] = time.time() - t0
+        res["points"].append(p)
+        print(f"{tag} {name}: h {p['h']:.2f} ODE {p['ode']:.2f} | drop/sigma: linearized "
+              f"{p['linearized']:.3f}, ascent {p['ascent']:.3f}, bank max {p['bank_max']:.3f}, "
+              f"true {p['true']:.3f}, cold {np.round(p['cold'], 3)} ({p['time_s']/60:.0f} min)",
+              flush=True)
+        _save(tag + ".json", res)
+    if "d_eff" not in res:
+        Xs = domain_sample(inst.variable_lb, inst.variable_ub, inst, 5000, seed=0)[:500]
+        S = Sensitivity(model, theta0, ybar).dh_dy(Xs, args.lam_rel)     # n x 500
+        sv = np.linalg.svd(S, compute_uv=False)
+        res["d_eff_rank"] = int((sv > 1e-6 * sv[0]).sum())
+        res["d_eff"] = float(sv.sum() ** 2 / (sv ** 2).sum())   # participation ratio
+        res["d_eff_90"] = int(np.searchsorted(np.cumsum(sv ** 2) / (sv ** 2).sum(), 0.9) + 1)
+        print(f"{tag}: d_eff rank {res['d_eff_rank']}, participation {res['d_eff']:.1f}, "
+              f"90% energy {res['d_eff_90']}", flush=True)
+    _save(tag + ".json", res)
+
+
+CV_ALPHAS = [1e-3, 1e-2, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0]
+
+
+def stage_cv_alpha(args):
+    """Choose the end-to-end network's L2 penalty once, before any robust run:
+    5-fold CV on the dataset's own noisy labels (md.y_train, not a redraw),
+    each fit by the training map's procedure (sklearn, then L-BFGS-B to loss
+    convergence), alpha = argmin held-out MSE. The error against the clean
+    labels is recorded as a diagnostic only; it plays no part in the choice."""
+    inst, md, sigma = setup()
+    n = len(md.y_train)
+    folds = np.array_split(np.random.default_rng(2026).permutation(n), 5)
+    rows = []
+    for a in CV_ALPHAS:
+        mse, clean, nits = [], [], []
+        for f, te in enumerate(folds):
+            tr = np.setdiff1d(np.arange(n), te)
+            m = MLPModel(md.X_train[tr], inst.variable_lb, inst.variable_ub,
+                         md.y_train[tr], alpha=a)
+            th, info = m.cold_fit(md.y_train[tr], seed=f)
+            pred = m.predict(md.X_train[te], th)
+            mse.append(float(np.mean((pred - md.y_train[te]) ** 2)))
+            clean.append(float(np.mean((pred - md.y_true[te]) ** 2)))
+            nits.append(info["nit"])
+        rows.append({"alpha": a, "cv_mse": float(np.mean(mse)),
+                     "cv_se": float(np.std(mse, ddof=1) / np.sqrt(len(mse))),
+                     "clean_mse_diag": float(np.mean(clean)), "fold_mse": mse,
+                     "mean_nit": float(np.mean(nits))})
+        print(f"alpha {a:7g}: CV MSE {rows[-1]['cv_mse']:.3f} (se {rows[-1]['cv_se']:.3f})  "
+              f"[diag: MSE vs clean {rows[-1]['clean_mse_diag']:.3f}]", flush=True)
+    best = min(rows, key=lambda r: r["cv_mse"])
+    print(f"chosen alpha = {best['alpha']:g} (noise variance sigma^2 = {sigma**2:g})")
+    _save("cv_alpha.json", {"rows": rows, "chosen": best["alpha"], "folds": 5,
+                            "labels": "md.y_train", "rule": "argmin CV MSE"})
+
+
 def _save(name, obj):
     os.makedirs(OUT_DIR, exist_ok=True)
     with open(os.path.join(OUT_DIR, name), "w") as fh:
@@ -489,8 +651,16 @@ def _save(name, obj):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir"])
-    ap.add_argument("--alpha", type=float, default=NET_ALPHA, help="network L2 penalty")
+    ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1"])
+    ap.add_argument("--alpha", type=float, default=None,
+                    help="network L2 penalty (f1 default: the CV choice; else NET_ALPHA)")
+    ap.add_argument("--threads", type=int, default=1, help="torch threads (f1)")
+    ap.add_argument("--n-random", type=int, default=4, help="f1: random ascent starts")
+    ap.add_argument("--bank", type=int, default=200, help="f1: random-bank size B")
+    ap.add_argument("--cold", type=int, default=5, help="f1: cold restarts")
+    ap.add_argument("--max-steps", type=int, default=20, help="f1: accepted steps per start")
+    ap.add_argument("--lam-rel", type=float, default=None,
+                    help="damping x tr(H)/p; default: auto (2x the smallest PD value)")
     ap.add_argument("--redraw", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--R", type=float, default=3.59, help="radius, sigma units")
@@ -499,5 +669,8 @@ if __name__ == "__main__":
     ap.add_argument("--tighten", type=float, default=2.0,
                     help="flow units added to the floor for the tightened point")
     args = ap.parse_args()
+    args.alpha_set = args.alpha is not None
+    if args.alpha is None:
+        args.alpha = NET_ALPHA
     {"f0_affine": stage_f0_affine, "f0_grad": stage_f0_grad,
-     "f0_dir": stage_f0_dir}[args.stage](args)
+     "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1}[args.stage](args)
