@@ -160,8 +160,11 @@ Checked 2026-11-14. Per-paper notes, quotes and how much of each was read:
   method with a local pessimizing oracle (Mutapcic and Boyd 2009; Bertsimas,
   Nohadani and Teo 2010). Closest in purpose: poisoning a predict-then-
   optimize decision (Kinsey et al. 2022) and influence of noisy points on
-  decisions (Zhang, Amin and Perakis 2026); both to read in full. **Not
-  claimed:** any of the parts. **Claimed (not found):** adversarially
+  decisions (Zhang, Amin and Perakis 2026); both read in full 2026-11-19:
+  in both the learned quantity is the objective over a known feasible set,
+  and neither robustifies a constraint (Kinsey et al. attack; Zhang et al.
+  reweight training points against a clean validation set and bound
+  regret). **Not claimed:** any of the parts. **Claimed (not found):** adversarially
   retrained models as cuts protecting a learned constraint. Protecting a
   fraction of the constraints is Gorissen et al.'s (2015) "K out of N";
   imposing sampled retrained models is scenario optimization (Campi,
@@ -242,19 +245,22 @@ Written so that a reader can implement the method from this section alone.
 ### 2.2 First-order cutting planes (added 2026-11-16) **[open]**
 
 For a model trained by a differentiable loss that is not affine in its
-labels. Specification, open choices and probes: `paper_plan.md`, "After the
-meeting with DB".
+labels. Specification, open choices and probes: `paper_plan.md`, "FO-CP".
 
 - **Robust constraint.** `ĥₖ(x; ȳₖ + Δyₖ) ≤ bₖ` for all
   `‖Σₖₖ^{-1/2}Δyₖ‖ ≤ R`, where `ĥₖ(·; y)` is the model **retrained** on
   labels `y` and `Δyₖ` has one entry per training row of outcome k: one
   ellipsoid per outcome, as in the RC.
 - **Loop.** At `x^t`, for each protected constraint, maximize the retrained
-  prediction `ĥₖ(x^t; ȳ + Δy)` over the set by gradient ascent (implicit
-  differentiation through training, one linear solve per step). If it
-  exceeds `bₖ + τ`, add the retrained model as a cut; re-solve; stop when no
-  cut is added. The guarantee is stated at `bₖ + τ`; the separation is
-  local, so the final decision is checked a posteriori by a stronger attack.
+  prediction `ĥₖ(x^t; ȳ + Δy)` over the set by projected gradient ascent,
+  a step accepted only if the retrained prediction increases (implicit
+  differentiation through training, one linear solve per step; settings in
+  the plan). If it
+  exceeds `bₖ`, add the retrained model as a cut, enforced at `bₖ − τ`;
+  cuts accumulate and are never removed; re-solve; stop when no cut is
+  added. With exact separation this certifies robust feasibility at `bₖ`
+  (restriction of the right-hand side); the separation is local, so the
+  final decision is checked a posteriori by a stronger attack.
 - **Which constraints are protected.** Binary `zₖ` chosen by the master,
   `Σ zₖ ≥ ⌈pK⌉`; the alternative is the certified fallback (largest feasible
   R).
@@ -354,8 +360,9 @@ Kept to about four pages. Proofs in the appendix.
   subspace (first order); or **the chosen one (2026-11-19)**, a sampled
   version of the simulated radius: for noise draws e′, retrain on `ȳ + e′`
   and take the quantile of `W_c = max over x ∈ X of [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] /
-  ‖s̃(x)‖` (s̃ the linearized sensitivity, X the whole domain). R is
-  computed once, before the loop. Exact for affine models, where it is the
+  ‖s̃(x)‖` (s̃ the linearized sensitivity, X the whole domain), N = 200,
+  each maximum replaced by Gurobi's upper bound. R is computed once, before
+  the loop. Exact for affine models, where it is the
   simulated radius; first order for networks. Separation is local, so stopping certifies nothing for
   a nonlinear model; the final decision gets an a posteriori attack.
 - **Remark: the true function.** The guarantee is against the clean-label
@@ -380,9 +387,13 @@ Kept to about four pages. Proofs in the appendix.
 - **FO-CP's separation (added 2026-11-16).** Gradient ascent on `Δy`, with
   the gradient of the retrained prediction by implicit differentiation, run
   from several starts. Each candidate is checked by full retraining before it
-  becomes a cut. With continuous decisions the cuts converge only in the
-  limit (Kelley-type), so the loop stops at tolerance τ or an iteration cap;
-  the finite bound of the tree case does not apply. The random bank comes
+  becomes a cut. Each cut is a retrained model, so the loop discretizes the
+  uncertainty set (Blankenship and Falk 1976), not Kelley's linearizations.
+  Cuts accumulate; the master enforces them at `b − τ` and the separation
+  tests against `b` (restriction of the right-hand side, Mitsos 2011), so
+  with exact separation it stops after finitely many cuts at a decision
+  feasible at `b`; an iteration cap bounds the run. The tree case's bound
+  of K iterations does not apply. The random bank comes
   back here only as an ablation: the same master with sampled rather than
   optimized relabelings.
 - **Certifying any decision.** One evaluation of `r̂(x)` (Section 3) gives the

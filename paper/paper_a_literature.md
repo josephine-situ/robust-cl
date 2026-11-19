@@ -251,10 +251,15 @@ Crossref or on the publisher's page unless marked †. "Read" says how much.
 | Worst-case relabeling in a norm ball, by gradient through retraining, at a fixed decision | **Not new as a technique** | Label/data poisoning as a bilevel problem: Biggio et al. 2012; Mei and Zhu 2015; Muñoz-González et al. 2017; Jagielski et al. 2018; Koh and Liang 2017 (targeted at one test point); Xiao et al. 2012 (label flips) |
 | The retrained model on `ȳ + Δy*` added as a cut in a MIP | **Partly new** | Cutting sets with approximate oracles (Mutapcic and Boyd 2009; Bertsimas, Nohadani and Teo 2010); several retrained models embedded together is the OptiCL wrapper. Choosing them adversarially, as cuts: not found |
 | First linearized step = influence / leverage margin | **Known argument** | Koh and Liang 2017; ridge prediction `αᵀy` with `α = X(XᵀX+λI)⁻¹h(x)` in Rosenfeld et al. 2020 |
-| The combination as RO for constraint learning | **Not found** | Closest: Kinsey et al. 2022 (poisoning a predict-then-optimize pipeline's decision); Johnson-Yu et al. 2023 (robust predict-then-optimize against label drift, in training); Zhang, Amin and Perakis 2026 (influence of noisy points on LP decisions) |
+| The combination as RO for constraint learning | **Not found** (checked against both closest papers in full, 2026-11-19) | Closest: Kinsey et al. 2022 (poisoning a predict-then-optimize pipeline's decision); Johnson-Yu et al. 2023 (robust predict-then-optimize against label drift, in training); Zhang, Amin and Perakis 2026 (influence of noisy points on LP decisions) |
 
-**Read Kinsey et al. 2022 and Zhang, Amin and Perakis 2026 in full before
-claiming the combination.** Both were read at abstract level only.
+**Kinsey et al. 2022 and Zhang, Amin and Perakis 2026 read in full
+(2026-11-19).** Neither has the combination. In both, the learned quantity is
+the **objective** (cost vector) of a problem whose feasible set is known; no
+learned constraint, no robust counterpart, no cuts, no feasibility guarantee.
+Kinsey et al. attack (no defense); Zhang et al. defend by reweighting training
+points with a clean validation set, and bound regret, not violation. Entries
+below.
 
 ### Poisoning, influence, implicit differentiation
 
@@ -281,13 +286,70 @@ claiming the combination.** Both were read at abstract level only.
   decision) against label flips, using ridge on a fixed feature map, the RC's
   `s(x)`.
 - **Kinsey, Tuck, Sinha and Nguyen 2022**, GameSec, LNCS 13727, pp. 231–252,
-  doi:10.1007/978-3-031-26369-9_12. Read: abstract. Meta-gradient poisoning
-  of a predict-then-optimize decision; targets the objective, no robust
-  constraint.
+  doi:10.1007/978-3-031-26369-9_12. Zotero FDKL8KS9 (no PDF; Springer).
+  Read: in full, as Ch. III of Kinsey's 2024 Oregon PhD thesis
+  (cs.uoregon.edu/Reports/PHD-202411-Kinsey.pdf, pp. 60–84, 148–150),
+  "adapted from" the GameSec paper; check the Springer text before quoting.
+  - Setting: a network predicts objective coefficients θ; the decision is
+    `max f(x, θ̂)` over a known `Ax ≤ b` (convex QP). Learners attacked:
+    two-stage, decision-focused, and a network outputting x directly.
+  - Attack: box perturbation of training **features** `uᵢ ∈ [lb, ub]`
+    (labels "can be extended" in a footnote; the portfolio case perturbs raw
+    prices, hence features and labels). Goal: a bad decision at one target
+    test point. Three-level problem (adversary, decision argmax, training
+    argmin), solved by projected gradient descent.
+  - Gradient: through training by **unrolled** gradient descent (Higher),
+    each retraining **from a random initialization** with restarts, keeping
+    the best; through the decision by the implicit function theorem on the
+    QP's KKT system (qpth).
+  - Findings: attacks on the two-stage learner transfer to decision-focused
+    ones; attacking decision-focused learners directly is expensive and
+    unreliable; **larger budgets often gave weaker attacks** (local optima);
+    MetaPoison does not carry over. Future work asks what guarantees a
+    defense could give: open.
+  - For FO-CP: cite as "worst-case training perturbations against a
+    predict-then-optimize decision, as an attack, with learned objective
+    coefficients and a known feasible set; no defense". Their
+    non-monotone-in-budget attacks are evidence for the local-separation risk
+    (multi-start, a posteriori attack). Their random-start retraining is the
+    ill-defined training map our fixed `θ₀` avoids.
 - **Johnson-Yu, Finocchiaro, Wang et al. 2023**, GameSec (earlier at AAMAS
   2023). Read: abstract; author list and DOI not verified.
-- **Zhang, Amin and Perakis 2026**, NeurIPS (OpenReview CiBySOXzK9). Read:
-  abstract. Influence functions with LP geometry to reweight noisy points.
+- **Zhang, Amin and Perakis 2026**, "Reduced Cost Influence Functions for
+  Predict-then-Optimize under Noisy Data", NeurIPS (OpenReview CiBySOXzK9),
+  all three at MIT ORC. Zotero 8QJEQ4QN. Code:
+  github.com/william-zhang64/Reduced-Cost-Influence-Functions. Read: in full
+  (38 pp. with appendix).
+  - Setting: a model `f_θ(z)` predicts the **cost vector** of a
+    nondegenerate LP `min cᵀx, Ax = b, x ≥ 0`; noisy training set (a fraction
+    β of labels corrupted) plus a small **clean validation set**.
+  - Method: RCIF = influence of upweighting training point j (Koh and Liang)
+    on a reduced cost `δ(B,k)ᵀ f_θ(z_v)` at a validation point, i.e. on its
+    distance to the optimality-cone boundary. Scores sum RCIFs over
+    validation points (signed by whether the predicted basis is correct;
+    "directed" variant picks the facet the true cost violates); weights
+    `∝ exp(λΨ)`, refit, iterate (λ = 0.05, τ = 5).
+  - Theory (linear model, squared loss): for OLS, `RCIF = −δᵀ rⱼ κ(z_v, zⱼ)`
+    with `κ = z_vᵀ Σ̂⁻¹ zⱼ`, which is n times the RC's `sⱼ(x)` for OLS; a
+    corrupted point's score drops w.h.p. under directional corruption (D4);
+    regret **upper bounds** beat unweighted and validation-only ERM for a
+    middle range of validation size. No feasibility statement (the feasible
+    set is known).
+  - Experiments: random LP, PyEPO shortest path (linear and a small tanh
+    network), misspecification; gains are small but significant. Iterating
+    hurts with the network (influence error compounds; they cite Basu et al.
+    2020 on fragile influence in deep nets). Against minimum-norm
+    cone-flipping corruption no first-order method helps (App. B.5): "the
+    influence of a training point scales with its perturbation magnitude".
+  - For FO-CP: closest in machinery (influence through the trained model to
+    a decision-relevant linear functional), different in everything else:
+    learned objective not constraint, reweighting not robust counterpart,
+    clean validation data required, regret not violation. Two warnings for
+    F0/F1: influence on networks is fragile, so the implicit gradient must be
+    checked against retraining (F0(ii)) and each candidate confirmed by
+    retraining (already planned); and first-order signals miss small,
+    decision-targeted perturbations. Cite Basu et al. 2020 beside Koh and
+    Liang. Possibly worth mentioning to DB (MIT ORC colleagues).
 - Not cited unless needed: Meyer, Albarghouthi and D'Antoni 2022
   (arXiv:2206.03575, certifying linear regression against label bias;
   perturbation set not confirmed); Bertsimas and Boucher 2025
@@ -368,5 +430,10 @@ found for these two:
 - Liu (2010), the chapters on polynomial and nonlinear bands.
 - Hüllen et al. (2020): what its uncertainty set is. Until it is read, the
   paper cites it only as "RO on surrogate parameters".
-- Kinsey et al. (2022) and Zhang, Amin and Perakis (2026), in full: the two
-  closest to FO-CP's combination (added 2026-11-18).
+- Blankenship and Falk (1976, JOTA, discretization for semi-infinite
+  programs) and Mitsos (2011, restriction of the right-hand side): FO-CP's
+  stopping rule and T7 now rest on them; both cited from memory
+  (added 2026-11-19).
+- Kinsey et al. (2022): the Springer text, to confirm the thesis chapter
+  matches before quoting (read in full from the thesis 2026-11-19; Zhang,
+  Amin and Perakis read in full the same day).

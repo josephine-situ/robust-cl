@@ -1,319 +1,310 @@
 # Paper A plan
 
-Revised 2026-11-18. Outline: `paper_outline.md` (version 4). Proofs:
-`paper_a_guarantee.md` (its Sections 5 and 6 are superseded by this file).
-Results so far: the go/no-go probe (job 29141177, summarized below; full
-write-up in `notes/progress.md`, 2026-11-14) and the local checks under
-"Results so far". No baseline has been run on the paper's design.
+Revised 2026-11-19. Method reference: `paper_outline.md` (v4). Proofs:
+`paper_a_guarantee.md` (its Sections 5 and 6 are superseded here). Literature:
+`paper_a_literature.md`. Dated results: `notes/progress.md`. No baseline has
+been run on the paper's design.
 
-## After the meeting with DB (2026-11-16), revised after review (2026-11-18)
+## Decisions
 
-**Decisions.**
+Since the meeting with DB (2026-11-16):
 
-- Exploratory: edit the outline and this plan, not `paper.tex` (DB).
-- The RC stays. DB also wants a non-parametric method: cutting planes whose
-  separation is solved by first-order methods (FO-CP; his sketch is
-  `c:\Users\jsitu\Downloads\robust-cl-cp.jpeg`). **One paper, two methods.**
-  In the paper FO-CP is "for any model trained by a differentiable loss",
-  not "non-parametric": it needs a differentiable training map. The RC
-  shares its constraint form, not its radius argument (see Radius).
-- Semi-synthetic data first, real data later (DB). Instances come from those
-  widely used in the optimization literature, not from new constraints on
-  the reactor. **WFP as regression, with its closed-form truth, is the
-  second instance.** Semi-synthetic chemotherapy (SS2) and the infeasibility
-  probe move to the RC track. Workload dispatching (48 learned constraints)
-  is optional. Classification comes after regression.
-- The objective stays nominal; a robust objective (epigraph) is a deferred
-  variant.
-- Literature: `paper_a_literature.md`, "FO-CP, robust-optimization machinery
-  and instances". Every building block of FO-CP is prior work (bilevel label
-  poisoning, influence functions, cutting sets with local oracles); the
-  combination was not found. **Read Kinsey et al. 2022 and Zhang, Amin and
-  Perakis 2026 in full before claiming it.**
+- Exploratory: edit the outline and this plan, not `paper.tex`.
+- One paper, two methods. The RC covers models affine in their labels. FO-CP
+  (cutting planes with first-order separation; DB's sketch is
+  `c:\Users\jsitu\Downloads\robust-cl-cp.jpeg`) covers any model trained by a
+  differentiable loss. The paper does not call FO-CP non-parametric, since it
+  needs a differentiable training map. The two methods share the constraint
+  form, not the radius argument.
+- Semi-synthetic instances first, real data last, taken from instances used
+  in the optimization literature rather than new constraints on the reactor.
+  Order: reactor (SS1); WFP as regression with its closed-form truth; SS2,
+  semi-synthetic chemotherapy (RC only); real chemotherapy. Workload
+  dispatching is optional. Classification comes after regression.
+- The objective stays nominal; a robust objective (epigraph) is deferred.
+- Every part of FO-CP is prior work (bilevel label poisoning, influence
+  functions, cutting sets with local oracles); the combination was not found
+  (`paper_a_literature.md`, "FO-CP, robust-optimization machinery and
+  instances"). The two closest papers, Kinsey et al. 2022 and Zhang, Amin and
+  Perakis 2026, were read in full on 2026-11-19: both learn the objective over
+  a known feasible set, with no robust constraint.
 
-**FO-CP.**
+From 2026-11-14 and earlier, still in force:
 
-- **Uncertainty set: one ellipsoid per outcome**, as in the RC:
-  `‖Σₖₖ^{-1/2}Δyₖ‖ ≤ Rₖ`, `Δyₖ` one entry per training row of outcome k,
-  `σᵢₖ²` on the diagonal (Ben-Tal, El Ghaoui and Nemirovski 2009, Sec. 1.2:
-  the RC is constraint-wise). At equal R it gives the same robust
-  constraints as one ellipsoid over all outcomes; the model-free radius is
-  smaller (Radius). A constraint containing several outcomes' models gets
-  one set over those outcomes' labels.
-- **Loop.** Solve the nominal problem for `x⁰`. At `x^t`, for each protected
-  constraint k, maximize the retrained prediction `ĥₖ(x^t; ȳ + Δy)` over
-  its set. If the maximum exceeds `bₖ + τ`, add the model retrained on
-  `ȳ + Δy*` as a cut on k. Re-solve; stop when no cut is added, or at a
-  fixed iteration cap. (DB's weighted ReLU sum, split by constraint:
-  per-constraint cuts are deeper and have no zero gradient.)
-- **Stopping and τ.** The guarantee is stated for `bₖ + τ` (or b is
-  tightened by τ in the loop). Separation is local, so stopping certifies
-  nothing by itself (Mutapcic and Boyd 2009). The final decision is checked
-  a posteriori with a stronger attack (more starts, more steps), and the gap
-  is reported.
-- **Weights are binary, chosen by the master** (Gorissen et al. 2015,
-  "K out of N"; ours adds the nominal rows): `zₖ ∈ {0, 1}`,
-  `Σₖ zₖ ≥ ⌈pK⌉`, k's robust cuts enforced only if `zₖ = 1` (big-M). The
-  guarantee covers the protected set: a protected constraint is violated
-  only if the noise leaves its set (for the RC's radius, `Wₖ > Rₖ`; for the
-  model-free radius, `‖Σₖₖ^{-1/2}eₖ‖ > Rₖ`), whichever constraints the
-  master chose **[to prove: short]**.
-- **Training map** (the review found it ill-defined; fixed here):
-  - every retraining starts from one fixed `θ₀` (the nominal fit), never
-    from the previous ascent step, so the map is a function of the labels;
-  - lbfgs to a gradient tolerance, not an iteration cap;
-  - label standardization uses constants fixed from `ȳ` (the probe
-    standardizes by each label vector's own mean and sd,
-    `probe_rc_ridge.py:106`, which is not affine);
-  - damped Hessian `H + λI` for the implicit gradient (dead ReLUs make H
-    singular), checked against finite-difference retraining;
-  - the clean-label reference is the same map on `y*`; the cold-start fit
-    on `y*` (what R1 to R4 used) is reported beside it.
-- **Ascent.** Gradient by implicit differentiation,
-  `∇_Δy ĥ(x^t) = J (H + λI)⁻¹ ∇_θ f(x^t; θ)`, one linear solve. In whitened
-  coordinates step to `z = R g̃/‖g̃‖`, or a projected step if that
-  oscillates. Starts: zero, the linearized direction, random. The best
-  candidate is confirmed by retraining before it becomes a cut.
-- **Relation to the RC and the old CP.** For a model affine in its labels
-  the gradient is `s(x)` and one step gives `R s(x)/‖s(x)‖`, the RC's cut.
-  On a network the first step is the RC on the linearized network (Koh and
-  Liang's influence). The random bank becomes an ablation of the
-  separation. Retraining the whole network avoids the honest-fitting
-  problem that broke the last-layer RC under standard fitting (R3: 0.76
-  against a 0.90 target).
-- **Cost.** Per separation: starts × steps × (retraining + one solve), per
-  violated constraint, per iteration. Separations depend on `x^t`, hence on
-  the cost vector, so they are not shared across the 100 cost vectors
-  (one RC radius serves all of them). Each cut on an end-to-end network
-  adds a full ReLU embedding (64 binaries for the (32, 32) network) to a
-  master whose single solve already takes 15 to 100 seconds. F2 is piloted
-  on 10 cost vectors to measure this.
+- Experiments lead, at about 40% of the paper. Theory is one section, with
+  proofs in the appendix.
+- The paper stands alone; C-MICL is one of three baselines, not the frame.
+- Each problem's model (class, architecture, hyperparameters) is fixed before
+  the pipeline runs, as Ovalle et al. do.
+- Ovalle et al.'s 100 cost vectors, with the noise redrawn for each. Their
+  feasibility rate is over cost vectors, our probability over the noise.
+- One model per comparison: each baseline embeds the same model as the
+  method it is compared with.
+- The guarantee is against the clean-label model. The paper says so in a
+  remark, measures the gap to the truth, and gives a Lipschitz margin in an
+  appendix if T5 is proved.
+- The RC's headline radius is the simulated one (T1).
+- Means with standard errors, no formal tests. Feasibility is over solved
+  runs, with the fraction solved beside it.
 
-**Radius.** Theorem 1 does not carry over. The RC's simulated radius (3.6σ
-on cubic ridge) is not the radius of a ball containing the noise
-(`‖e‖ ≈ 32σ`); it works because an affine model sees the noise only through
-`s(x)ᵀe`, and W is the largest normalized error over the domain. FO-CP has
-no `s(x)`.
+Open: the reactor's lead model, cubic ridge or the network (Results of job
+29141177).
+
+## What the paper has to show
+
+H1 to H3 are the RC's, H4 is FO-CP's. The last column is our own go/no-go
+and does not appear in the paper.
+
+| # | Claim | Experiment | No-go |
+|---|---|---|---|
+| H1 | At its simulated radius for ε = 0.1, the RC reaches 0.9 ground-truth feasibility with no tuning, where the nominal decision does not | E1 | nominal already near 0.9, or the RC below it |
+| H2 | At equal ground-truth feasibility, the RC has the best objective among the constant margin, the wrapper and C-MICL | E1 | another method is cheaper at 0.9 |
+| H3 | With five learned toxicity constraints, the RC certifies a regimen at the target level for more cohorts than any baseline, gives every other cohort its best-certified regimen (or protects a fraction of the constraints), and names the cohorts no regimen can be certified for. SS2 first (P2), then real data (E2) | P2, E2 | a baseline certifies at least as well at the same level |
+| H4 | For a model trained end to end, FO-CP reaches the target feasibility against the clean-label model, where the last-layer RC under standard fitting does not (R3: 0.76), at a cost comparable to the baselines' | F2 | radius (c) cannot be computed, or ascent adds nothing beyond the linearized step (F1) |
+
+How the margins differ:
+
+| Method | Varies with `x` | Source of the margin | Models embedded | Rows used to fit |
+|---|---|---|---|---|
+| Constant margin | no | chosen by the user | 1 | all |
+| Wrapper | implicitly | disagreement of P bootstrapped models | P | all (resampled) |
+| C-MICL | yes | a second model fitted to the first one's residuals, scaled by a conformal quantile | 2 | 80% |
+| RC | yes | computed from the fitted model and training inputs | 1 | all |
+
+C-MICL's margin also varies with x. Ours is computed rather than learned,
+holds at `x*`, and needs one model. C-MICL's width can pick up model misfit,
+which `‖s(x)‖` cannot.
+
+## FO-CP
+
+### Uncertainty set
+
+One ellipsoid per outcome, as in the RC: `‖Σₖₖ^{-1/2}Δyₖ‖ ≤ Rₖ`, with one
+entry of `Δyₖ` per training row of outcome k and `σᵢₖ²` on the diagonal (the
+RC is constraint-wise: Ben-Tal, El Ghaoui and Nemirovski 2009, Sec. 1.2). At
+equal R this gives the same robust constraints as one ellipsoid over all
+outcomes, and the model-free radius is smaller. A constraint containing
+several outcomes' models gets one set over those outcomes' labels.
+
+### Algorithm (settled 2026-11-19)
+
+`T(y)` is the training map, `ĥₖ(x; y)` the prediction of `T(y)`, `Cₖ` the
+stored cut models for constraint k, and `zₖ ∈ {0, 1}` whether k is protected.
+
+0. Compute the radius R once, before any cost vector (Radius, option (c)).
+1. Set `Cₖ = ∅`. The first master solve is then the nominal problem.
+2. Master: `min cᵀx` s.t. `ĥₖ(x; ȳ) ≤ bₖ` for all k; `ĥ(x; θ) ≤ bₖ − τ`
+   for every `θ ∈ Cₖ`, enforced only if `zₖ = 1` (big-M);
+   `Σₖ zₖ ≥ ⌈pK⌉`; `x ∈ X`.
+3. Separation at `xᵗ`, for each k with `zₖ = 1`: maximize `ĥₖ(xᵗ; ȳ + Δy)`
+   over `‖Σₖₖ^{-1/2}Δy‖ ≤ R` by projected gradient ascent (Separation). If
+   the maximum exceeds `bₖ`, add `T(ȳ + Δy*)` to `Cₖ`, at most one cut per
+   constraint per iteration. Cuts are per constraint rather than DB's
+   weighted ReLU sum, because per-constraint cuts are deeper and have no zero
+   gradient.
+4. Cuts accumulate and are never removed. A constraint the master stops
+   protecting keeps its cuts, switched off by big-M. Removing cuts would
+   allow cycling, and the convergence argument for discretization
+   (Blankenship and Falk 1976; to check) needs a growing cut set. The master
+   grows by one embedded network per cut.
+5. Stop when an iteration adds no cut, or after 20 master solves (reported
+   as not converged). Then attack the final decision a posteriori.
+
+τ uses restriction of the right-hand side (Mitsos 2011; to check): cuts are
+enforced at `bₖ − τ` and separation tests against `bₖ`, so exact separation
+would certify robust feasibility at `bₖ` after finitely many cuts, given a
+point strictly feasible by τ. τ = 0.05σ to start; F0(iii) takes τ → 0. τ
+must exceed the noise in evaluating a retrained prediction (F0 measures it);
+Gurobi's tolerances are far smaller. The separation is local, so stopping
+certifies nothing by itself (Mutapcic and Boyd 2009).
+
+The a posteriori attack uses the zero start plus 20 random starts, up to 50
+accepted steps each, with the step length halved down to R/256. It reports,
+in σ units, the violation gap `(max ĥₖ − bₖ)/σ` and the separation gap (the
+attack's maximum minus the loop's last maximum at the same x).
+
+Protected set (Gorissen et al. 2015, "K out of N", plus the nominal rows):
+whichever constraints the master protects, a protected constraint is
+violated only if the noise leaves its set (`Wₖ > Rₖ` for the RC's radius,
+`‖Σₖₖ^{-1/2}eₖ‖ > Rₖ` for the model-free one). [to prove: short]
+
+### Training map
+
+- Every fit starts from one fixed `θ₀` (the nominal fit), so `T` is a
+  function of the labels.
+- sklearn `MLPRegressor(solver="lbfgs", tol=1e-7, max_iter=20000,
+  max_fun=50000)`. sklearn passes `tol` to L-BFGS-B as `gtol`, so training
+  stops when every component of the loss gradient is below 1e-7. scipy can
+  also stop on a small relative change in the loss, so the gradient is
+  checked after each fit; a fit above tolerance or at `max_iter` or
+  `max_fun` is discarded.
+- Labels are standardized with constants fixed from `ȳ`. The probe
+  standardizes each label vector by its own mean and sd
+  (`probe_rc_ridge.py:106`), which is not affine.
+- The clean-label reference is `T(y*)`; the cold-start fit on `y*` used in
+  R1 to R4 is reported beside it.
+
+### Separation
+
+- Gradient by implicit differentiation,
+  `∇_Δy ĥ(xᵗ) = J (H + λI)⁻¹ ∇_θ f(xᵗ; θ)`, one linear solve. Dead ReLUs
+  make H singular, hence the damping: start at `λ = 10⁻⁴ tr(H)/p`
+  (p weights); F0(ii) keeps the smallest λ in `{10⁻⁶, …, 10⁻³} × tr(H)/p`
+  at which the implicit and finite-difference gradients agree (cosine
+  ≥ 0.99, norms within 5%).
+- Whitened coordinates `z = Σₖₖ^{-1/2}Δy` turn the set into the ball
+  `‖z‖ ≤ R`, with gradient `g̃ = Σₖₖ^{1/2} g`.
+- Step: try `z′ = Proj_R(z + ℓ g̃/‖g̃‖)` with ℓ = ∞ (the jump to
+  `R g̃/‖g̃‖`), then ℓ = R, R/2, …, R/32. Accept the first z′ whose retrained
+  prediction exceeds the current one by at least 0.001σ; if none does, the
+  start ends. At most 20 accepted steps per start.
+- Starts: zero, whose first step is the linearized direction; the stored
+  relabeling of k's tightest cut at `xᵗ`, if `Cₖ` is not empty; four random
+  points on the sphere `‖z‖ = R`.
+- Every iterate is a retrained model, so the cut candidate needs no separate
+  confirmation.
+
+For a model affine in its labels the gradient is `s(x)` and the first step
+gives `R s(x)/‖s(x)‖`, the RC's cut. On a network the first step is the RC
+on the linearized network (Koh and Liang's influence). Retraining the whole
+network avoids the honest-fitting problem that broke the last-layer RC under
+standard fitting (R3: 0.76 against 0.90). The old random bank becomes an
+ablation of the separation (F1).
+
+Cost: starts × steps × (retraining + one linear solve), per protected
+constraint, per iteration. Separations depend on `xᵗ`, hence on the cost
+vector, so they are not shared across the 100 cost vectors; one radius
+serves them all. Each cut on the end-to-end network adds a ReLU embedding
+(64 binaries for the (32, 32) network) to a master whose single solve
+already takes 15 to 100 seconds. The F2 pilot measures this.
+
+### Radius
+
+Theorem 1 does not carry over. The RC's simulated radius (3.6σ on cubic
+ridge) is far smaller than a ball containing the noise (`‖e‖ ≈ 32σ`). It
+works because an affine model sees the noise only through `s(x)ᵀe`, and
+FO-CP has no `s(x)`.
 
 | Option | Radius | Guarantee | Status |
 |---|---|---|---|
-| (a) Model-free ball | `√χ²(n, 1−ε/K)` per outcome, whitened (union bound) | Exact for any model, if separation were exact | **F−1 (job 29561590): impractical.** 32.5σ at n = 1,000. Infeasible on cubic ridge in 100 of 100 redraws; on the frozen network feasible, 1.00 against the ODE, but +15.7% of the objective range against +2.2% at the simulated radius. Stays as the exact but conservative reference |
-| (b) Linearized subspace | `√χ²(d_eff, 1−ε)`, `Δy` in the linearized map's span | Exact for affine maps only | If F1 finds d_eff ≈ n, (b) ≈ (a) |
-| **(c) Sampled W (chosen 2026-11-19)** | For N sampled noise draws e′, retrain on `ȳ + e′` and compute `W_c = max over x ∈ X of [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] / ‖s̃(x)‖`, with s̃ the linearized sensitivity at θ̂ and X the whole decision domain (fixed, label-free); R is the ⌈(N+1)(1−ε)⌉-th smallest. **Computed once, before the loop**; one R for every iteration and every cost vector; the ascent searches the ball of that radius | Exact for affine models: the numerator is `s(x)ᵀe′`, so this is Theorem 1's simulated radius. For networks, first order (a parametric bootstrap; s̃ depends on the fitted weights) | F2's radius. Scenario optimization (imposing about 361 retrained models) is not pursued |
+| (a) Model-free ball | `√χ²(n, 1−ε/K)` per outcome, whitened (union bound) | exact for any model, given exact separation | F−1 (job 29561590): 32.5σ at n = 1,000. Infeasible on cubic ridge in 100 of 100 redraws; on the frozen network 1.00 against the ODE at +15.7% of the objective range (simulated radius: +2.2%). Kept as the conservative reference |
+| (b) Linearized subspace | `√χ²(d_eff, 1−ε)`, `Δy` in the linearized map's span | exact for affine maps only | closed-form check in F2 where d_eff is small; ≈ (a) if d_eff ≈ n |
+| (c) Sampled W (chosen 2026-11-19) | below | exact for affine models, where it is Theorem 1's simulated radius; first order for networks (a parametric bootstrap) | F2's radius |
 
-**Instances.**
+Radius (c): for N = 200 noise draws e′ (as for the RC), retrain on
+`ȳ + e′` and compute
+`W_c = max over x ∈ X of [ĥ(x; ȳ+e′) − ĥ(x; ȳ)] / ‖s̃(x)‖`, with s̃ the
+linearized label sensitivity at θ̂ and X the whole domain. R is the
+⌈(N+1)(1−ε)⌉-th smallest W_c, computed once for every iteration and cost
+vector. Each W_c is replaced by Gurobi's upper bound from Dinkelbach
+iterations, as in `solve_W` (`probe_rc_ridge.py:252`). On the end-to-end
+network each iteration is a mixed-integer cone program with two ReLU
+embeddings, with `s̃(x)` linearized exactly within each activation pattern.
+Enumeration or multistart gradient on x only warm-starts it, since alone
+they understate R. The cost per draw is unmeasured (F2 pilot). Scenario
+optimization, imposing about 361 retrained models, is not pursued.
 
-| # | Instance | Truth | Role |
-|---|---|---|---|
-| SS1 | Reactor, Ovalle et al.'s 100 cost vectors, σ = 2 | Two arms, each with labels generated by its own truth: (i) the ODE; (ii) a (32, 32) network fitted to noise-free ODE labels | (ii) has (nearly) no model bias, so it tests label-noise protection alone; report the gap `ĥ(y*) − truth` |
-| WFP | Palatable diet, regression (OptiCL; the most reused case in constraint learning) | OptiCL App. C.1's closed-form palatability function; its constants are not published: recover them from the public 5,000-row data or ask the authors | Second instance, for both methods |
-| SS2 | Chemotherapy, real covariates, five toxicity constraints | a fixed fitted model per outcome; binomial noise from arm sizes | RC track: several constraints against a known truth, infeasibility handling (P2) |
-| — | Workload dispatching (48 constraints; EML, OptiCL, SurrogateLIB) | thermal simulator, apparently not public | Optional |
-| — | Student enrollment (JANOS, OptiCL) | fixed logistic model | Later, with classification |
+### Probes
 
-**Probes.** F−1 to F2 decide whether FO-CP is worth building fully.
+F−1 to F2 decide whether FO-CP is worth building fully.
 
 | # | Question | Design | Decides |
 |---|---|---|---|
-| F−1 | Is the model-free radius (a) affordable? | Existing code: `probe_rc_ridge.py --stage modelfree` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, the 100 redraws | **Done (job 29561590): no.** Cubic infeasible in all 100; network +15.7% against +2.2% (simulated). (a) is out as a practical radius; (c) must be defined |
-| F0 | Is the machinery right? | (i) Affine models: one step equals `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against finite-difference retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's cone solution as τ → 0; record cuts | Code correct; gate |
-| F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and at one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, FO multi-start, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | If FO ≈ linearized, FO-CP reduces to one-step separation in the same loop. If cold restarts move ĥ as much, training randomness dominates label noise |
-| F2 | Does FO-CP deliver on SS1, at what cost? | Radius (c), with (b) as a closed-form check where d_eff is small. Pilot: 10 cost vectors, SS1(ii). Then 100 cost vectors, both arms. On the end-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for every method); on `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4; the radius |
+| F−1 | Is radius (a) affordable? | `probe_rc_ridge.py --stage modelfree` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, 100 redraws | Done (job 29561590): no (Radius table) |
+| F0 | Is the machinery right? | (i) Affine models: one step gives `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against finite-difference retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's solution as τ → 0; record cuts | gate |
+| F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, multistart ascent, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | If ascent ≈ the linearized step, FO-CP reduces to one-step separation in the same loop. If cold restarts move ĥ as much, training randomness dominates label noise |
+| F2 | Does FO-CP deliver on SS1, and at what cost? | Radius (c), with (b) as a check where d_eff is small. Pilot: 10 cost vectors, SS1(ii); then 100 cost vectors, both arms. End-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for all). `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4 |
 
-**Tasks.**
+## Instances
 
-- **T7.** What stopping shows: with exact separation and τ > 0, robust
-  feasibility at `b + τ` after finitely many cuts; with continuous decisions
-  cuts converge only in the limit (Kelley-type; T3's K-iteration bound is
-  for trees). With local separation, nothing beyond the a posteriori check.
-  The protected-set guarantee for both radius events.
-- **T8.** Radius (c): exact for affine models (reduces to T1); a
-  first-order argument for networks. (a) is short and kept as the
-  conservative reference.
-- **I11.** The training map in sklearn (lbfgs, `warm_start` from the fixed
-  `θ₀`) and the Hessian in numpy (1,281 weights). PyTorch only if that is too
-  slow.
-- **I12.** The separation: implicit gradient, normalized step, starts,
-  retraining check, a posteriori attack.
-- **I13.** A slim master (about 200 lines) on the probe's own embedding, not
-  `cp.py` (`embed_model` handles only sklearn types; `cp.py` carries anchors,
-  rollback and eviction). Hidden layers embedded once when only the last
-  layer changes; `zₖ` big-M.
-- **I14.** SS1's realizable truth; the WFP regression instance (recover the
-  truth function); SS2's generator.
+| # | Instance | Truth | Role |
+|---|---|---|---|
+| SS1 | Reactor, Ovalle et al.'s 100 cost vectors, σ = 2 | two arms, labels generated by (i) the ODE; (ii) a (32, 32) network fitted to noise-free ODE labels | arm (ii) has almost no model bias, so it tests label-noise protection alone; report the gap `ĥ(y*) − truth` |
+| WFP | Palatable diet, regression (OptiCL; the most reused case in constraint learning) | OptiCL App. C.1's closed-form palatability function; its constants are unpublished, so recover them from the public 5,000 rows or ask the authors | second instance, both methods |
+| SS2 | Chemotherapy, real covariates, five toxicity constraints | a fixed fitted model per outcome; binomial noise from arm sizes | RC: several constraints against a known truth, infeasibility (P2) |
+| — | Workload dispatching (48 constraints; EML, OptiCL, SurrogateLIB) | thermal simulator, apparently not public | optional |
+| — | Student enrollment (JANOS, OptiCL) | fixed logistic model | later, with classification |
 
-**Risks.**
+## Experiments
 
-- Local separation gives no certificate; the a posteriori attack measures
-  the gap but does not close it.
-- Radius (a) may be too large to use (F−1), and (c) guarantees only against
-  a resampled model.
-- FO-CP sees label noise, not bias: on the end-to-end network it may miss
-  against the ODE as the network RC did. SS1(ii) separates the two.
-- The master grows by one embedded network per cut, and separations are not
-  shared across cost vectors.
-- Referees will ask: convergence and what is certified at stopping (T7);
-  a scenario-optimization baseline; links to adversarial training (min-max);
-  runtime against n and cuts, against the RC; the separation gap;
-  robustness to training randomness; why an ℓ₂ label ball (it contains
-  coherent shifts independent noise does not produce).
+The number of displays is fixed once F−1 to F2 have run.
 
-**Open:** the reactor's lead model (network or cubic ridge; below).
+| # | Experiment | Problem | Design | Output | Section |
+|---|---|---|---|---|---|
+| E1 | Feasibility, cost and the radius | reactor (SS1) | RC on the lead model and FO-CP on the end-to-end network; 100 cost vectors, noise redrawn for each. RC at the pointwise, simulated and closed-form radii for ε ∈ {0.05, 0.1, 0.2} and on a radius grid. Constant margin, wrapper and C-MICL on the same model as the method compared, at their prescribed settings and over their ranges. Nominal | Table 1, Figures 2–3 | 6.1, 6.2 |
+| E3 | Second instance | WFP, regression | as E1, one ε, both methods | Table 3 | 6.4 |
+| P2 | Several constraints, known truth | SS2 | RC; certified fallback against protecting a fraction p of the constraints | appendix or 6.3 | 6.3 |
+| E2 | Real data | chemotherapy | Maragno et al.'s protocol. RC with the joint radius over the test cohorts' treatment slices, certified fallback where infeasible; margin, wrapper, C-MICL and nominal on the same fixed models, each decision given its certified level | Table 2 | 6.3 |
 
-## Results of job 29141177 and the lead-model proposal (2026-11-14)
+Appendix, one table each, on the reactor: A1, standard against honest
+fitting for a forest; A2, non-Gaussian noise (Student-t, uniform); A3, cubic
+ridge, where the theorem holds with no caveat (unless it becomes the lead
+model).
 
-Reactor, Ovalle et al.'s 100 cost vectors, noise redrawn per run, ε = 0.1,
-σ = 2 known, `experiments/probe_rc_ridge.py`. The network is (32, 32): R2
-freezes its hidden layers on an independent noise draw (the theorem holds
-exactly), R4 fits them on half the rows and the last layer on the other half,
-R3 fits everything on the same labels (standard fitting). Feasibility against
-the clean-label model / the ODE; cost as % of the objective range. Outputs:
+Cut: baselines on two model classes; forest runs on the reactor other than
+A1; sample-size, heteroscedastic-noise and cross-validated-ridge checks;
+Bonferroni as a reported result (it stays in the theory); the
+width-at-the-optimum comparison with C-MICL.
+
+## Results
+
+### Results of job 29141177 (2026-11-14)
+
+Reactor, 100 cost vectors, noise redrawn per run, ε = 0.1, σ = 2 known,
+`experiments/probe_rc_ridge.py`. Network (32, 32): R2 freezes its hidden
+layers on an independent noise draw (the theorem holds exactly), R4 fits
+them on half the rows and the last layer on the other half, R3 fits
+everything on the same labels (standard fitting). Feasibility against the
+clean-label model / the ODE; cost as % of the objective range. Outputs:
 `results/paper_a/prelim/redraw_*_paper_eps0.1_*.json`.
 
 | Run | Nominal, ODE | Pointwise | Simulated | Closed-form | Cost, simulated / closed-form |
 |---|---|---|---|---|---|
-| R1 cubic ridge | 0.66 | 0.90 / 0.80 | **1.00 / 0.95** | 1.00 / 1.00 | 4.2% / 8.6% |
+| R1 cubic ridge | 0.66 | 0.90 / 0.80 | 1.00 / 0.95 | 1.00 / 1.00 | 4.2% / 8.6% |
 | R2 network, frozen | 0.18 | 0.91 / 0.22 | 1.00 / 0.52 | 1.00 / 0.79 | 2.2% / 3.3% |
 | R4 network, sample-split | 0.25 | 0.92 / 0.28 | 1.00 / 0.42 | 1.00 / 0.61 | 3.1% / 5.2% |
 | R3 network, standard | 0.23 | 0.42 / 0.29 | 0.76 / 0.33 | 0.98 / 0.45 | 1.9% / 3.6% |
 
-- **Cubic ridge works**: nominal fails (0.66), the RC delivers 0.95.
-- **The network fails against the ODE because of bias**: at the nominal
+- Cubic ridge: nominal reaches 0.66 against the ODE, the RC 0.95.
+- The network misses against the ODE because of bias. At the nominal
   optimum its clean-label model overstates the ODE in 80 to 90% of runs, so
-  the optimizer selects on misfit that a label-noise margin cannot see.
-- **Standard fitting breaks the guarantee** (R3: 0.76 against a 0.90 target).
-- **No selection effect at ε = 0.1**: the pointwise radius already meets the
-  target against the clean-label model (also at ε = 0.05 and 0.2, jobs
+  the optimizer selects on misfit a label-noise margin cannot see.
+- Standard fitting breaks the guarantee (R3: 0.76 against 0.90).
+- No selection effect at ε = 0.1: the pointwise radius already meets the
+  target against the clean-label model, also at ε = 0.05 and 0.2 (jobs
   29142767-8). The simulated radius's extra margin pays for bias spread.
-- **The solver-certified radius is needed**: enumeration understates `W` by
-  0.10 to 0.24σ on the network.
+- Enumeration understates W by 0.10 to 0.24σ on the network, so the radius
+  must come from the solver.
 
-**Proposed for DB, not adopted** (still open after 2026-11-16):
+Proposed to DB, not adopted (open since 2026-11-16):
 
-- Cubic ridge leads on the reactor; the network becomes the example of where
-  a label-noise margin is not enough. E1's baselines on cubic ridge, plus
-  C-MICL as published on the network.
+- Cubic ridge leads on the reactor, and the network becomes the example
+  where a label-noise margin is not enough. E1's baselines on cubic ridge,
+  plus C-MICL as published on the network.
 - The bias margin `B(x)` may need to be more than a remark.
-- Try Ovalle et al.'s own surrogate families (`regression.py`): LinearDT
-  (depth 5), random forest and gradient boosting (15 trees, depth 5) and the
-  (32, 32) MLP. The tree families are affine in the labels with splits fixed;
-  LinearDT is at the noise floor here (calibration MAE 2.08 at σ = 2) and is
-  the candidate lead. Needs `linear-tree` and the leaf-vector code (I6).
+- Try Ovalle et al.'s surrogate families (`regression.py`): LinearDT
+  (depth 5), random forest and gradient boosting (15 trees, depth 5), and
+  the (32, 32) MLP. The tree families are affine in the labels once splits
+  are fixed. LinearDT is at the noise floor (calibration MAE 2.08 at σ = 2)
+  and is the candidate lead. Needs `linear-tree` and the leaf-vector code
+  (I6).
 
-## What the paper has to show
+### Cubic ridge at a fixed cost (2026-11-14, local)
 
-The paper is a practical method with a guarantee behind it. H1 to H3 are the
-RC's; H4 is FO-CP's (added 2026-11-18).
+Cubic ridge (56 features, fixed penalty, train R² 0.957), the fixed balanced
+cost, σ = 2. Outputs in `results/paper_a/prelim/`.
 
-| # | Point | Experiment | Our own go or no-go |
-|---|---|---|---|
-| H1 | **It delivers.** At its simulated radius for ε = 0.1, the robust counterpart (RC) reaches 0.9 ground-truth feasibility with no tuning, where the nominal decision does not. | E1 | nominal already near 0.9, or the RC under it |
-| H2 | **It is cheaper.** At the same ground-truth feasibility, the RC has the best objective among the constant margin, the wrapper and C-MICL. | E1 | another method is cheaper at 0.9 |
-| H3 | **It certifies more of what it prescribes.** With five learned toxicity constraints, the RC certifies a regimen at the target level for more cohorts than any baseline, gives every other cohort the regimen with the best certified level (or protects a fraction of the constraints), and says which cohorts no regimen can be certified for. Tested first on SS2 (known truth, P2), then on real data (E2). | P2, E2 | a baseline's decisions certify at least as well as the RC's at the same level |
-| H4 | **FO-CP extends it.** For a model trained end to end, FO-CP reaches the target feasibility against the clean-label model where the last-layer RC under standard fitting does not (R3: 0.76), at a cost comparable to the baselines'. (Added 2026-11-18.) | F2 | radius (a) unaffordable (F−1) and (c) undefinable; or ascent finds nothing beyond the linearized step (F1) |
+- Gurobi solves the RC (nonconvex, one second-order cone) to proven
+  optimality in about 1 s, about 0.1 cheaper than enumeration over 42,000
+  sampled points at every radius.
+- The solver's simulated radius takes about 43 s per draw (four or five
+  global solves), with bounds on W agreeing to 0.001. Enumeration over 1,000
+  draws gives 3.59σ at ε = 0.1 (3.84σ at 0.05, 3.37σ at 0.2). On 10 solver
+  draws W was 0.03 to 0.15σ above enumeration, and above 0.1σ in six
+  (`radius.json`), so adding 0.1σ to an enumerated radius does not cover the
+  gap. Closed form 8.36σ, pointwise 1.28σ.
 
-The last column is for us. The paper reports means with standard errors and
-makes no formal tests. Feasibility is over solved runs, with the fraction
-solved beside it.
-
-How our margin differs from each baseline's:
-
-| Method | Margin varies with `x`? | Where the margin comes from | Models embedded | Rows used to fit |
-|---|---|---|---|---|
-| Constant margin | no | chosen by the user | 1 | all |
-| Wrapper | yes, implicitly | disagreement of P bootstrapped models | P | all (resampled) |
-| C-MICL | yes | a second model trained on the first one's residuals, scaled by a conformal quantile | 2 | 80% (20% held out) |
-| RC (ours) | yes | computed exactly from the fitted model and training inputs | 1 | all |
-
-C-MICL's margin is also decision-dependent, so that is not our advantage over
-it. The differences are that our width is computed, not learned, that the
-guarantee holds at `x*`, and that one model is trained and embedded. C-MICL's
-width has one advantage over ours: it can pick up model misfit, which `‖s(x)‖`
-does not see.
-
-## Why the earlier approaches are not the paper's method
-
-The work up to September compared cutting planes over a random bank, the
-wrapper, a right-hand-side margin and C-MICL, each tuned on its own parameter
-(the dial sweep). Two of those stay as baselines. None is the method. Numbers
-below are from the reactor dial cell (balanced cost, 10 folds, ODE test stage
-of 2026-09-07) and the gastric cell (2026-09-08).
-
-| Earlier approach | What it did | Why it is not the method | In the paper |
-|---|---|---|---|
-| Cutting planes over a random bank | Drew 200 relabelings from an ellipsoid of radius rho, retrained the model on each, cut the worst one at `x*`, stopped at tolerance tau. With several constraints, a cut that left a protected cohort infeasible was rolled back and rejected. | No guarantee: the bank is a finite sample of the set, so stopping shows `x*` is feasible for the drawn models only. Two parameters (rho, tau) with no rule tying either to a violation level; both were set against the ground truth, and the rho that works had to be re-measured per instance (rho = 1 never passed 0.30, rho = 2 delivered). The result also depends on the bank's seed. For a model affine in its labels the worst relabeling has a closed form, `R s(x)/‖s(x)‖`, so sampling is unnecessary. The rollback kept the master feasible by giving up robustness wherever it was unaffordable, so what was delivered had no stated level. | Out as a method. One sentence in Section 4: random-draw cuts carry no guarantee. **2026-11-16:** the cutting-plane loop returns with first-order separation (FO-CP, top of this file), and the random bank becomes its separation ablation. The rollback's role (prescribing when full robustness is infeasible) passes to the certified fallback; see "Infeasibility on chemotherapy". |
-| Right-hand-side margin | Tightened the constraint by a constant `m` | The margin is the same at every `x`, and nothing says how large to make it: `m* = 4.0` was found only with the oracle. At 0.9 feasibility it was the most expensive of the three tuned methods (6.043, against 5.816 for cutting planes and 5.885 for the wrapper). On gastric a large `m` makes the problem infeasible instead of conservative (`m = 0.75` solved 20% of contexts). | Baseline. |
-| Wrapper | Embedded 20 bootstrapped models and required a fraction to hold | The fraction is not tied to a violation level. At its strictest setting it reached 0.00 and 0.10 on the two rho columns where cutting planes operated, and it embeds 20 models. On gastric it solved 64 to 68% of contexts. | Baseline. |
-| Robust regression | Trained a label-robust model and embedded it nominally | It acts on the learner, not the embedding. | Out. Paper B. |
-| The dial sweep as the protocol | Tuned each method's parameter against an oracle and compared the tuned points | The paper's claim is that no tuning is needed, so a protocol built on tuning cannot test it. It also had one cost vector and 10 folds, so feasibility moved in steps of 0.1. | Its design survives as the equal-feasibility comparison (Figure 2), on 100 redraws. |
-| Analytic synthetic instance | Known `f_true` | The reactor gives an exact truth on an instance from the literature. | Out. |
-
-What the earlier work contributes to the paper: the failure itself (nominal
-ODE-feasible in 0 of 10), and the finding that every tuned safeguard reached
-0.9 only with ground truth to tune against. That is the motivation in
-Section 1.
-
-Since 2026-11-16 the cutting-plane loop is back as FO-CP: it retrains the
-whole model on each relabeling, as the old method did, but finds the
-relabeling by gradient ascent instead of sampling it, and takes its radius
-from ε instead of tuning rho. The random bank appears only as FO-CP's
-separation ablation (F1), not as a baseline.
-
-## Scope (narrowed 2026-11-14, revised 2026-11-18)
-
-Two methods; semi-synthetic instances first, real data last. The number of
-displays is to be fixed once F−1 to F2 have run.
-
-| # | Experiment | Problem | Design | Output | Paper |
-|---|---|---|---|---|---|
-| E1 | **Feasibility, cost and the radius** | reactor (SS1) | RC on the lead model (open: network or cubic ridge) and FO-CP on the end-to-end network. Ovalle et al.'s 100 cost vectors, noise redrawn for each. RC at the pointwise, simulated and closed-form radii for ε ∈ {0.05, 0.1, 0.2}, and on a radius grid. Constant margin, wrapper and C-MICL on the same model as the method they are compared with, at their prescribed settings and over their ranges. Nominal. | Table 1, Figure 2, Figure 3 | 6.1, 6.2 |
-| E3 | **Second instance** | WFP, regression, closed-form truth | as E1, one ε, both methods | Table 3 | 6.4 |
-| P2 | **Several constraints, known truth** | chemotherapy, semi-synthetic (SS2) | RC; certified fallback against protecting a fraction p of the constraints | appendix or 6.3 | 6.3 |
-| E2 | **Real data** | chemotherapy | Maragno et al.'s protocol. RC with the joint radius over the test cohorts' treatment slices, certified fallback where infeasible; margin, wrapper, C-MICL, nominal on the same fixed models, each decision given its certified level | Table 2 | 6.3 |
-
-Appendix, one table each, on the reactor:
-
-- A1. Standard against honest fitting for a forest.
-- A2. Non-Gaussian noise (Student-t, uniform).
-- A3. Cubic ridge, the case where the theorem holds with no caveat (unless it
-  becomes the lead model).
-
-Cut from the paper:
-
-- Baselines on two model classes (one model per comparison).
-- Forest runs on the reactor other than A1.
-- Sample-size, heteroscedastic-noise and cross-validated-ridge checks.
-- Bonferroni as a reported result (it stays in the theory).
-- The width-at-the-optimum comparison with C-MICL.
-- Classification (after regression; student enrollment is the candidate).
-- New constraints on the reactor.
-- The analytic synthetic instance, the dial sweep, and the random bank as a
-  method (it is FO-CP's separation ablation).
-
-The several-constraints result is tested against a known truth on SS2 (P2);
-workload dispatching (48 constraints) is the optional literature instance.
-
-## Results so far (2026-11-14, local)
-
-Script: `experiments/probe_rc_ridge.py`. Outputs: `results/paper_a/prelim/`.
-All on the reactor with **cubic ridge** (56 features, fixed penalty, train R²
-0.957), fixed balanced cost, σ = 2 known. This is not the paper's lead model.
-
-**The solver works.** The RC is a nonconvex problem with one second-order
-cone. Gurobi solves it to proven optimality in about 1 second, and finds
-decisions about 0.1 cheaper in cost than enumeration over 42,000 sampled
-points at every radius.
-
-**The simulated radius works through the solver but is slow.** About 43
-seconds per noise draw (four or five global solves), with upper and lower
-bounds on `W` agreeing to 0.001. By enumeration over 1,000 draws the radius is
-3.59σ at ε = 0.1 (3.84σ at 0.05, 3.37σ at 0.2). On 10 solver draws the
-solver's `W` was 0.03 to 0.15σ above enumeration, and above 0.1σ in six of the
-ten (`radius.json`). So the 0.1σ added to an enumerated radius does not cover
-the gap, and the gap has not been measured for the network at all. The
-closed-form radius is 8.36σ and the pointwise value 1.28σ.
-
-**100 noise redraws, ε = 0.1, every run solved:**
+100 noise redraws, ε = 0.1, every run solved:
 
 | Radius | R | Feasible vs clean-label model | Feasible vs ODE | Mean cost | Mean margin at `x*` |
 |---|---|---|---|---|---|
@@ -322,347 +313,305 @@ closed-form radius is 8.36σ and the pointwise value 1.28σ.
 | Simulated (3.7σ) | 7.40 | 1.00 | 1.00 | 5.902 | 1.91 |
 | Closed-form | 16.72 | 1.00 | 1.00 | 6.039 | 4.14 |
 
-What it says:
+- Against the clean-label model: pointwise 0.87 against 0.90, the direction
+  selection predicts but within one standard error (0.03); the simulated
+  radius had no violations, so it is conservative here.
+- Against the ODE nothing fails: the cubic's bias at the optimum is on the
+  safe side (about 1.8 flow units on the first draw) and larger than the
+  noise effect.
+- Cost over nominal: 1.9% at the simulated radius, 4.3% at the closed form.
 
-- Against the clean-label model the theory behaves as expected. Nominal is
-  feasible in 30% of redraws. The pointwise radius gets 0.87 against a target
-  of 0.90, the direction selection predicts, but within one standard error
-  (0.03). The simulated radius had no violations, so it is conservative here.
-- Against the ODE there is no failure to fix: the cubic's bias at the optimum
-  is on the safe side (about 1.8 flow units on the first draw) and larger than
-  the noise effect. This is why cubic ridge is not the lead model.
-- The simulated radius costs 1.9% over nominal; the closed-form radius 4.3%.
+### Earlier measurements on the network
 
-From the old harness (embedded network, one fixed balanced cost, 10 folds, ODE
-judge): nominal feasible in 0 of 10; C-MICL at alpha = 0.1 in 3 of 10; a tuned
-margin and a tuned wrapper reach 0.9 only with ground truth to tune against.
-So the failure exists for the network on one cost direction.
-
-On Ovalle et al.'s cost draw there is already one measurement, from the C-MICL
-width-model probe (`notes/progress.md`, 2026-09-23; 100 cost vectors, one
-dataset, the repo's embedded network, ODE judge): nominal is feasible in 0.00
-of runs and C-MICL at alpha = 0.1 in 0.81 (0.83 on the randomized balanced
-draw). Two consequences. The premise very likely holds on their costs; what E1
-still has to establish is that it holds with the (32, 32) network and the noise
-redrawn. And C-MICL's as-prescribed number to beat is about 0.8, not 0.3, so
-the gap to a 0.9 target is two to three standard errors at 100 runs.
-
-## Decisions
-
-- **Practical results lead.** Experiments are about 40% of the paper. The
-  theory is one section; proofs go to the appendix.
-- **The paper stands alone.** C-MICL is one of three baselines, not the frame.
-- **The reactor's lead model is open** (network or cubic ridge). The network's
-  last-layer RC reaches only 0.42 to 0.52 against the ODE, cubic ridge 0.95;
-  see "Results of job 29141177" for the proposal to switch.
-- **Models are fixed before the pipeline runs**, as Ovalle et al. do: class,
-  architecture and hyperparameters per problem.
-- **Cost vectors follow Ovalle et al.** (100 draws, their distribution), with
-  the noise redrawn for each. Their feasibility rate is over cost vectors on
-  one dataset and our theorem's probability is over the noise; redrawing both
-  covers both.
-- **One model per comparison**: every baseline embeds the same model as the
-  method it is compared with.
-- **The guarantee is against the clean-label model.** Going further needs an
-  assumption on the true function. The paper says this in a remark, measures
-  the gap against the truth, and puts the Lipschitz margin in an appendix if
-  it gets proved.
-- **The RC's headline radius is the simulated one.** Its finite-sample
-  statement is an order statistic of the simulated draws (T1). FO-CP's radius
-  is open (top of this file).
-- **Semi-synthetic first** (DB, 2026-11-16): reactor, WFP with its
-  closed-form truth, semi-synthetic chemotherapy; real chemotherapy last.
-- **Classification after regression.**
-- **No formal hypothesis tests.** Means with standard errors.
-- Everything decided from 2026-11-16 on is at the top of this file.
+- Old harness (one balanced cost, 10 folds, ODE judge): nominal feasible in
+  0 of 10, C-MICL at alpha = 0.1 in 3 of 10; a tuned margin and a tuned
+  wrapper reach 0.9 only when tuned against the truth.
+- C-MICL width-model probe (`notes/progress.md`, 2026-09-23; Ovalle et al.'s
+  100 cost vectors, one dataset, the repo's network, ODE judge): nominal
+  0.00, C-MICL at alpha = 0.1 0.81 (0.83 on the randomized balanced draw).
+  The premise likely holds on their costs; E1 has to confirm it with the
+  (32, 32) network and redrawn noise. C-MICL's number to beat is about 0.8,
+  two to three standard errors below a 0.9 target at 100 runs.
 
 ## Open design points from the 2026-11-14 review
 
-1. **Where the hidden layers come from.** E1 as written trains them on a
-   second noise draw of the same inputs, which a practitioner does not have.
-   That makes "uses every training row" and the rows-used column against
-   C-MICL unfair to C-MICL. R4 tests the one-dataset alternative (sample
-   split). Until R4 is read, the abstract's "uses every training row" and the
-   80%-against-all row in the comparison table are provisional.
-2. **Is 100 redraws enough?** C-MICL as prescribed was at 0.81 on their costs
-   (2026-09-23 probe). At 100 runs the standard error near 0.85 is 0.036, so
-   a 0.9 against 0.81 difference is about two standard errors. Decide after R2
-   to R4: if the RC lands within 0.05 of C-MICL, raise E1 to 300 redraws for
-   the as-prescribed rows (Table 1) and keep 100 for the sweep (Figure 2).
-3. **C-MICL as published.** Running C-MICL on our shared network (frozen
-   hidden layers, ridge last layer, sklearn) is not their setting. Add one row
-   with C-MICL fitted end to end as they fit it (their network trained in
-   full, their width model at batch 32), so the baseline cannot be called
-   handicapped. The shared-model rows stay the comparison of margins.
-4. **Pointwise radius.** The Gaussian value `σ z(1−ε)` (1.28σ at ε = 0.1) is
-   the one used everywhere. `paper_a_guarantee.md`'s table had the
-   sub-Gaussian `√(2 ln(1/ε))`; it is now marked as such.
-5. **Novelty against simultaneous bands and post-selection inference:
-   checked 2026-11-14** (`paper_a_literature.md`; outline Section 1.2). Two of
-   the three claimed novelties were not new. Bands restricted to a region with
-   a constant simulated by optimizing over it are Liu et al. (2005) for linear
-   models over a box. Validity at the selected point is the PoSI / inference-
-   on-winners projection argument. The uniform "mean + β·sd" constraint is
-   safe Bayesian optimization; Fiedler et al. (2021) has our noise term for
-   kernel ridge. What survives: the clean-label target (no function-norm
-   bound in the radius), the mixed-integer region with each supremum a global
-   MIP, one form for ridge, last-layer networks and forests, and the band
-   embedded as a constraint. The contribution is now argued from those. Two
-   things follow for the method. The simulated radius must use the solver's
-   bound on each `W`, as I4 already plans. And a referee will ask why not
-   Fiedler et al.'s radius. Its noise part bounds the whole noise vector
-   (about σ√n), which is already looser than our closed-form σ√χ²(d) with
-   d ≪ n, so one sentence answers it.
+1. Hidden layers. E1 trains them on a second noise draw, which a
+   practitioner does not have; that makes "uses every training row" and the
+   rows-used column unfair to C-MICL. R4 (sample split) is the one-dataset
+   alternative. Both claims stay provisional until the lead model is
+   settled.
+2. Number of redraws. At 100 runs the standard error near 0.85 is 0.036, so
+   0.9 against C-MICL's 0.81 is about two standard errors. If the RC lands
+   within 0.05 of C-MICL, use 300 redraws for the as-prescribed rows
+   (Table 1) and 100 for the sweep (Figure 2).
+3. C-MICL as published. Add one row with C-MICL fitted end to end as they
+   fit it (their network, width model at batch 32). The shared-model rows
+   remain the comparison of margins.
+4. Pointwise radius. The Gaussian `σ z(1−ε)` (1.28σ at ε = 0.1) is used
+   throughout; `paper_a_guarantee.md`'s sub-Gaussian `√(2 ln(1/ε))` is
+   marked as such.
+5. Novelty (checked 2026-11-14; outline Section 1.2). Not new: bands over a
+   region with a constant simulated by optimizing over it (Liu et al. 2005,
+   linear models over a box); validity at the selected point (PoSI,
+   inference on winners); the uniform mean + β·sd constraint (safe Bayesian
+   optimization; Fiedler et al. 2021 has our noise term for kernel ridge).
+   What remains: the clean-label target, with no function-norm bound in the
+   radius; a mixed-integer region with each supremum a global MIP; one form
+   for ridge, last-layer networks and forests; the band embedded as a
+   constraint. Hence the simulated radius uses the solver's bound on each W
+   (I4). Fiedler et al.'s noise term bounds the whole noise vector (about
+   σ√n), looser than our closed form σ√χ²(d) with d ≪ n; one sentence in
+   the paper.
 
 ## Honest fitting
 
-Not required by the method. It is a condition of the theorem for models whose
-structure is learned from the labels.
+A condition of the theorem for models whose structure is learned from the
+labels, not of the method. The theorem needs `s(x)` independent of the
+noise; structure chosen on the noisy labels chases the noise, so the margin
+understates the error.
 
-| Model | Structure learned from labels? | Theorem holds with standard fitting? |
+| Model | Structure learned from labels | Theorem holds with standard fitting |
 |---|---|---|
-| Ridge (features and penalty fixed in advance) | no | yes, exactly |
+| Ridge, features and penalty fixed in advance | no | yes |
 | Last-layer network | hidden layers | only with the hidden layers fitted on separate rows |
 | Tree, forest | splits | only with honest fitting |
 
-What goes wrong without it: the theorem needs `s(x)` to be independent of the
-noise. Structure chosen on the noisy labels already chases the noise, so the
-margin understates the error.
+- Reactor: R2 and R4 meet the theorem against the clean-label model (job
+  29141177). If the lead model stays a network, the RC uses one of them, and
+  the end-to-end network goes to FO-CP, which needs no honest fitting.
+- Chemotherapy: the RC runs on the fitted models with their structure
+  frozen, under standard fitting, and the paper calls the guarantee
+  empirical there. A1 measures what standard fitting costs in violations
+  and honest fitting in accuracy.
 
-How the paper handles it:
+## Chemotherapy
 
-- **Reactor (E1):** R2 (hidden layers frozen on an independent draw) and R4
-  (sample split) both met the theorem against the clean-label model but
-  reached only 0.52 and 0.42 against the ODE (job 29141177). If the lead
-  model stays a network, the RC uses R2 or R4; a network trained end to end
-  goes to FO-CP, which needs no honest fitting. Tied to the open lead-model
-  decision.
-- **Chemotherapy (E2):** the RC is applied to the fitted models with their
-  structure frozen, with standard fitting. The paper says the guarantee is then
-  empirical. A1 measures on the reactor what standard fitting costs in
-  violations and what honest fitting costs in accuracy.
+### Protocol and models
 
-## Chemotherapy on real data
+Maragno et al.'s protocol, already in the repo: fit on the training arms,
+prescribe for the 96 held-out arms, judge with the ensemble fitted on all
+416 arms, repeat over subsamples of the training rows and report the mean
+and the worst.
 
-The protocol is Maragno et al.'s, which the repo already implements:
-
-- Fit on the training arms, prescribe for the 96 held-out arms.
-- Judge with the ensemble fitted on all 416 arms.
-- Repeat over subsamples of the training rows; report the mean and the worst.
-
-What changes for the RC:
-
-- **Models.** Fixed before any robust run: a forest for the four outcomes
+- Models are fixed before any robust run: a forest for the four outcomes
   where the existing selection picked XGBoost, ridge for the two where it
-  picked elastic net. Every baseline uses the same models. The accuracy given
-  up against the existing picks is reported, and the paper states that the
-  choice used the labels. This departs from step 0 of the recipe (fix the
-  model before looking at the labels); the outline says so in Section 6.3.
-- **σ per arm, binomial, for the main result** (decided 2026-11-14):
-  `σᵢ = √(pᵢ(1−pᵢ)/n_armᵢ)`, with the weighted norm. It is the label noise the
-  theorem is about: the sampling error of an arm's toxicity rate. It uses the
-  noisy `p`, so T2 has to cover the plug-in. The out-of-fold residual sd is a
-  second row only. It mixes misfit into σ, which the theorem does not ask for,
-  and it is likely to make the RC infeasible the way C-MICL is.
-- **Objective.** Survival is a learned objective. The default is no margin on
-  it, as for the other methods. A robust objective (epigraph form) is a
-  deferred variant.
-- **What it can show.** The certified level of each method's prescriptions
-  (the main measure), the fraction prescribed, toxicity limits met under the
-  judge, and survival. The judge is itself fitted, so this experiment does not
-  test the theorem. E1 does.
+  picked elastic net, the same for every baseline. The paper reports the
+  accuracy given up against the existing picks and states that the choice
+  used the labels, a departure from fixing the model first (outline
+  Section 6.3).
+- σ per arm, binomial, for the main result (2026-11-14):
+  `σᵢ = √(pᵢ(1−pᵢ)/n_armᵢ)`, with the weighted norm. It is the sampling
+  error of an arm's toxicity rate, the noise the theorem is about. It uses
+  the noisy `p`, so T2 must cover the plug-in. The out-of-fold residual sd
+  is a second row only, since it mixes misfit into σ.
+- Survival is a learned objective with no margin, as for the other methods.
+- Measures: the certified level of each method's prescriptions (main), the
+  fraction prescribed, toxicity limits met under the judge, survival. The
+  judge is itself fitted, so this experiment does not test the theorem; E1
+  does.
 
-## Infeasibility on chemotherapy (decided 2026-11-14)
+### Infeasibility on chemotherapy (2026-11-14)
 
 The instance has little headroom: nominal already scores 0.89 to 0.96, and
-C-MICL at alpha = 0.1 prescribes for about 6% of cohorts. Five simultaneous
-margins may leave the RC infeasible for many cohorts too. This section is how
-the paper handles that. Nothing in it has been run.
+C-MICL at alpha = 0.1 prescribes for about 6% of cohorts. C-MICL's width is
+a prediction interval for a new outcome, covering noise and misfit, and
+does not shrink with n. The RC's margin `R σ‖s(x)‖` is a confidence band on
+the fitted model and shrinks with n (`‖s(x)‖` ≈ √leverage for ridge,
+1/√n_leaf for a tree). A label-noise margin does not see misfit, so the RC
+may prescribe often and still miss against the judge; Table 2 reports both.
+The random-bank rollback is not carried over (Why the earlier approaches
+are not the paper's method).
 
-**CP's rollback is not carried over.** With several constraints, the
-random-bank cutting planes kept the master feasible by rolling back any cut
-that left a protected cohort infeasible (`presentations/method.tex`, "Cutting
-Planes: coverage"). That gives up robustness wherever robustness is
-unaffordable, so what was delivered has no stated level. It stays in the
-thesis.
+Three layers, in order:
 
-**The RC may be much less infeasible than C-MICL.**
-- C-MICL's width is a prediction interval for a new outcome. It covers noise
-  plus misfit and does not shrink with n.
-- The RC's margin `R σ‖s(x)‖` is a confidence band on the fitted model.
-  `‖s(x)‖` is about √(leverage) for ridge and 1/√(n_leaf) for a tree, so it
-  shrinks with n.
-- Which of the two the chemo RC resembles is decided by the choice of σ (see
-  "σ per arm" above). With the binomial σ the margin should be well below
-  C-MICL's. This is a guess, not a measurement; probe P1 below measures it.
-- The tension, which the reactor result (job 29141177) makes concrete: a
-  label-noise margin does not see misfit. Under the binomial σ the RC may
-  prescribe often and still miss against the judge where the models misfit.
-  So Table 2 reports both the certified level and the judge's verdict.
+1. Shrink the radius, keeping the guarantee:
+   - the joint simulated radius instead of Bonferroni (T1);
+   - W's supremum over the treatment slices of the cohorts prescribed for,
+     not the whole box. Over the union of the 96 test cohorts' slices the
+     radius holds for all of them at once, at about one MIP per draw (a
+     selection variable picks the cohort). Per cohort it is smaller but
+     costs 96 times the solves. The main result uses the union;
+   - the per-arm weighted norm;
+   - an unequal split of ε across the five constraints if one dominates
+     (weighted Bonferroni, or the joint radius with per-constraint scaling).
+2. The certified fallback. For any decision x,
+   `r̂(x) = minⱼ (bⱼ − f̂ⱼ(x)) / ‖Σⱼ^½ sⱼ(x)‖`, with `Σⱼ` the diagonal of
+   outcome j's per-arm noise variances. Theorem 1's proof gives violation ⇒
+   `W > r̂(x*)`, so `P(violation and r̂(x*) ≥ r) ≤ P(W > r)` for every r,
+   however `x*` was chosen, including by maximizing `r̂` (T6). When no
+   regimen meets the target radius, solve `max t` s.t.
+   `f̂ⱼ(x) + t‖Σⱼ^½ sⱼ(x)‖ ≤ bⱼ` for all j by bisection on t (each step is
+   the RC at radius t), prescribe the result and report `ε̂ = P(W > r̂)` from
+   the stored draws of W. Every prescription carries its own level. The
+   statement is joint, not conditional on reaching `r̂`, and must be worded
+   that way.
+3. Abstention. A cohort with no regimen certifiable at a useful level is
+   reported as such. C-MICL's 94% non-prescription is read the same way.
 
-**Three layers, in order.**
+Table 2 puts every method on one scale, since `r̂(x)` applies to any
+decision. Columns: fraction of cohorts certified at ε ∈ {0.05, 0.1, 0.2};
+fraction prescribed; toxicity limits met under the judge; predicted
+survival; the worst subsample beside each mean. The certified level does not
+depend on the judge, whose separation is weak; the judge's verdict stays
+beside it as the check against misfit.
 
-1. **Shrink the radius, keeping the guarantee.**
-   - The joint simulated radius instead of Bonferroni (T1).
-   - Take W's supremum over the decision slices actually prescribed for, not
-     the whole box. A cohort's context is fixed, so its decision space is the
-     treatment slice. Over the union of the 96 test cohorts' slices, the
-     radius holds for all cohorts at once and costs about one MIP per draw
-     (a selection variable picks the cohort). Per cohort it is smaller still,
-     but costs 96 times the solves. Use the union for the main result.
-   - The per-arm weighted norm (above).
-   - An unequal split of ε across the five constraints if one dominates.
-     This is still a guarantee (weighted Bonferroni, or the joint radius with
-     per-constraint scaling).
-2. **The certified fallback.** For any decision `x` define the certified
-   radius `r̂(x) = minⱼ (bⱼ − f̂ⱼ(x)) / ‖Σⱼ^½ sⱼ(x)‖`, in each constraint's
-   standardized units. `Σⱼ` is the diagonal of the per-arm noise variances
-   for outcome j; with a single σⱼ the denominator is `σⱼ‖sⱼ(x)‖`. Theorem 1's proof gives violation ⇒ `W > r̂(x*)`, so
-   `P(violation and r̂(x*) ≥ r) ≤ P(W > r)` for every r, however `x*` was
-   chosen, including by maximizing `r̂` (T6). When no regimen meets the target
-   radius for a cohort:
-   - solve `max t` s.t. `f̂ⱼ(x) + t·‖Σⱼ^½ sⱼ(x)‖ ≤ bⱼ` for all j, by
-     bisection on t over feasibility problems (each is the RC at radius t);
-   - prescribe the result and report `ε̂ = P(W > r̂)`, read off the simulated
-     draws of W that the radius already needs.
+### Probe P1 (job 29576766, 2026-11-19)
 
-   Robustness degrades gracefully, as CP's rollback did, but every
-   prescription carries its own level. The statement is joint, not
-   conditional on reaching `r̂`, and the paper must word it that way.
-3. **Abstention as an outcome.** A cohort with no certifiable regimen at any
-   useful level is reported as such: the data cannot support a safe regimen
-   there. C-MICL's 94% non-prescription is read the same way.
+`experiments/probe_p1_gastric.py`. Ridge (fixed penalty) on the five
+toxicity percentile labels. For each of the 96 test cohorts, r̂ by
+Dinkelbach over its regimens (domain constraint and trust region); the joint
+radius by enumeration over 96 contexts × 282 training regimens, 1,000
+draws.
 
-**Table 2 changes.** `r̂(x)` can be computed for any method's decision, so
-every method is put on one scale. Columns:
-- the fraction of cohorts certified at ε ∈ {0.05, 0.1, 0.2};
-- the fraction prescribed at all;
-- toxicity limits met under the judge;
-- predicted survival;
-- the worst subsample beside each mean.
-
-This also sidesteps the judge's weak separation: the certified level does not
-depend on the judge. The judge's verdict stays beside it as the check against
-misfit.
-
-**Probe P1: done (job 29576766, 2026-11-19).** `experiments/probe_p1_gastric.py`.
-Ridge (fixed penalty) on the five toxicity percentile labels; for each of the
-96 test cohorts the certified radius r̂ by Dinkelbach over its regimens
-(domain constraint and trust region); joint radius by enumeration over 96
-contexts × 282 training regimens, 1,000 draws.
-
-| σ | σ median (percentile scale) | Joint radius, ε = 0.1 | Certified at ε = 0.05 / 0.1 / 0.2 | Median r̂ | Median level |
+| σ | Median σ (percentile scale) | Joint radius, ε = 0.1 | Certified at ε = 0.05 / 0.1 / 0.2 | Median r̂ | Median level |
 |---|---|---|---|---|---|
-| Binomial per arm (delta method) | 0.10–0.26 by outcome | 4.29 | 0.43 / **0.50** / 0.61 | 4.31 | 0.09 |
+| Binomial per arm (delta method) | 0.10–0.26 by outcome | 4.29 | 0.43 / 0.50 / 0.61 | 4.31 | 0.09 |
 | Out-of-fold residual sd | 0.31–0.33 | 4.19 | 0.00 / 0.00 / 0.00 | 2.73 | 1.00 |
 
-Every cohort is nominally feasible. Ridge fits poorly (training R² 0.37–0.48).
+Every cohort is nominally feasible. Ridge fits poorly (training R² 0.37 to
+0.48).
 
-- **Under the binomial σ, H3 stays viable**: half the cohorts are certified
-  at ε = 0.1. But the median r̂ sits on the radius, so the fraction is
-  sensitive to it: 0.47 / 0.43 / 0.22 if the radius is 0.1 / 0.2 / 0.5σ
-  larger (enumeration understated the solver's W by 0.10–0.24σ on the
-  reactor network). E2 needs the solver-certified radius.
-- **Under the out-of-fold σ, nothing is certified** at any level (best level
-  0.53): residual sd 0.31 against a label sd of about 0.29, i.e. σ is mostly
-  misfit, as predicted. The binomial σ stays the main result; the
-  out-of-fold row shows what misfit does.
-- Not yet measured: the baselines' certified levels, and the plan's forests
-  in place of ridge.
+- Binomial σ: half the cohorts are certified at ε = 0.1, so H3 stays
+  viable. The median r̂ sits on the radius, so the fraction is sensitive to
+  it: 0.47 / 0.43 / 0.22 if the radius is 0.1 / 0.2 / 0.5σ larger. E2 needs
+  the solver's radius.
+- Out-of-fold σ: nothing is certified at any level (best level 0.53). The
+  residual sd (0.31) exceeds the label sd (about 0.29), so σ is mostly
+  misfit. The binomial σ stays the main result.
+- Not yet measured: the baselines' certified levels, and forests in place of
+  ridge.
 
 ## Theory tasks
 
 | # | Task | Status | Needed for |
 |---|---|---|---|
-| T1 | Simulated radius: the ⌈(N+1)(1−ε)⌉-th smallest of N simulated `W` gives level ε by exchangeability, with each `W` replaced by the solver's upper bound; joint version for several constraints | drafted 2026-11-15 (Prop. simulated radius; the joint version is held in paper_a_guarantee_held.tex until P1); not checked by JS | E1, E2 |
-| T2 | Estimated σ: upper confidence bound and its effect on ε; unequal known `σᵢ`; the binomial plug-in `σᵢ` from noisy `pᵢ`. Alternative route: simulate `σ̂/σ` jointly with the noise, as Liu et al. (2005) do for their critical constant | to prove | the recipe in Section 2; E2 |
-| T3 | Directed cuts terminate in at most K iterations | drafted 2026-11-15 (paper Sec. 4, proof in appendix); not checked by JS | Section 4; E2 |
-| T4 | Sub-Gaussian version of the subspace radius | to prove | appendix |
+| T1 | Simulated radius: the ⌈(N+1)(1−ε)⌉-th smallest of N simulated W gives level ε by exchangeability, with each W replaced by the solver's upper bound; joint version for several constraints | drafted 2026-11-15 (the joint version held in `paper_a_guarantee_held.tex`); not checked by JS | E1, E2 |
+| T2 | Estimated σ: an upper confidence bound and its effect on ε; unequal known `σᵢ`; the binomial plug-in. Alternative: simulate `σ̂/σ` jointly with the noise, as Liu et al. (2005) do | to prove | Section 2; E2 |
+| T3 | Directed cuts terminate in at most K iterations | drafted 2026-11-15; not checked by JS | Section 4; E2 |
+| T4 | Sub-Gaussian subspace radius | to prove | appendix |
 | T5 | Lipschitz bias margin | to prove | appendix, optional |
-| T6 | Certified level of any decision: `P(violation and r̂(x*) ≥ r) ≤ P(W > r)` for all r, `x*` chosen in any way; the joint version over several constraints | drafted 2026-11-15, held until P1 in paper_a_guarantee_held.tex; not checked by JS | Section 3; E2 fallback and Table 2 |
-| T7 | FO-CP: what stopping certifies (exact separation, τ > 0, continuous decisions converge in the limit); the protected-set guarantee for both radius events | to prove | FO-CP, P2 |
-| T8 | FO-CP's radius (c): exact for affine models (reduces to T1), first order for networks; (a) as the reference | to prove | F2 |
+| T6 | Certified level of any decision, `P(violation and r̂(x*) ≥ r) ≤ P(W > r)` for all r and any choice of `x*`; joint version | drafted 2026-11-15, held in `paper_a_guarantee_held.tex`; not checked by JS | Section 3; E2, Table 2 |
+| T7 | FO-CP stopping: with exact separation and the master at `b − τ`, feasibility at `b` after finitely many cuts (Mitsos 2011; cuts discretize the set as in Blankenship and Falk 1976, not Kelley's linearizations); with local separation, only the a posteriori check. The protected-set guarantee for both radius events | to prove | FO-CP, P2 |
+| T8 | Radius (c): exact for affine models (reduces to T1), first order for networks; (a) as the reference | to prove | F2 |
 
-Theorem 1 and the finite, subspace and Bonferroni corollaries are proved.
-Dropped from this paper: classification, the ridge bias bound, counting K for
-forests.
+Proved: Theorem 1 and its finite, subspace and Bonferroni corollaries.
+Dropped: classification, the ridge bias bound, counting K for forests.
 
 ## Implementation tasks
 
 | # | Task | Status | Needed for |
 |---|---|---|---|
-| I1 | RC for ridge: second-order cone on `‖s(x)‖`, polynomial features | done as a probe (`probe_rc_ridge.py`) | A3 |
-| I2 | RC for a last-layer network: train and freeze the hidden layers, refit the last layer by ridge, ReLU embedding plus one cone | to build | E1 |
-| I3 | Redraw harness: draw a cost vector and noise, refit, solve, judge against the clean-label model and the ODE | probe version exists for fixed cost | E1 |
-| I4 | Simulated radius, single and joint, each maximization solved to a bound; start the iterations from the enumeration value to cut solves | probe version exists; slow | E1, E2 |
+| I1 | RC for ridge: cone on `‖s(x)‖`, polynomial features | done as a probe (`probe_rc_ridge.py`) | A3 |
+| I2 | RC for a last-layer network: hidden layers frozen, last layer refit by ridge, ReLU embedding plus one cone | to build | E1 |
+| I3 | Redraw harness: cost vector and noise drawn, refit, solve, judge against the clean-label model and the ODE | probe version for a fixed cost | E1 |
+| I4 | Simulated radius, single and joint, each maximum solved to a bound, warm-started from enumeration | probe version; slow | E1, E2 |
 | I5 | Baselines on the shared network with frozen hidden layers | to check against the existing methods | E1 |
 | I6 | Forest with leaf vectors; RC by directed cuts; honest variant | to build | E2, A1 |
 | I7 | RC in the chemotherapy runner; per-outcome σ; fixed models | to build | E2 |
-| I8 | WFP instance, regression, with OptiCL App. C.1's truth function (constants recovered from the public data or from the authors) | to build | E3 |
-| I9 | Certified radius `r̂(x)` for any decision; the max-t fallback by bisection; `ε̂` from the stored W draws | to build | E2, Table 2 |
-| I10 | Probe P1: ridge on the gastric training arms, max-t per test cohort, two choices of σ | done (`probe_p1_gastric.py`, job 29576766) | H3 go/no-go |
-| I11–I14 | FO-CP: training map, separation, slim master, SS1 truth / WFP / SS2 | to build (top of this file) | F0–F2, E3, P2 |
+| I8 | WFP regression instance with OptiCL App. C.1's truth function | to build | E3 |
+| I9 | `r̂(x)` for any decision; the max-t fallback; `ε̂` from the stored W draws | to build | E2, Table 2 |
+| I10 | Probe P1 | done (`probe_p1_gastric.py`, job 29576766) | H3 |
+| I11 | FO-CP training map in sklearn; Hessian in numpy (1,281 weights), PyTorch only if too slow | to build | F0–F2 |
+| I12 | FO-CP separation: implicit gradient, projected ascent, starts, a posteriori attack | to build | F0–F2 |
+| I13 | Master of about 200 lines on the probe's embedding, not `cp.py` (`embed_model` handles only sklearn types; `cp.py` carries anchors, rollback and eviction). Hidden layers embedded once when only the last layer changes; `zₖ` big-M | to build | F2 |
+| I14 | SS1's realizable truth (arm ii); SS2's generator | to build | F2, P2 |
 
-Everything beyond a probe goes through `sbatch`. E1 is many short solves and
-fits `mit_quicktest` or `mit_normal` arrays split by method and cost vector.
-The simulated radius at 200 draws is a cluster job.
+Everything beyond a probe goes through `sbatch`. E1 is many short solves,
+split by method and cost vector into `mit_quicktest` or `mit_normal`
+arrays. The simulated radius at 200 draws is a cluster job.
 
-## Data and what it supports
+## Data
 
 | Problem | Have | Enough for |
 |---|---|---|
-| Reactor | ODE oracle; generator for any n and σ; 1,000 cached designs; all baselines implemented; Ovalle et al.'s cost draw reproduced in an earlier probe | E1 once I2 to I5 exist |
-| Chemotherapy | 416 real trial arms, six outcomes, arm sizes, judge ensemble, subsampling protocol, all baselines implemented | E2 once I6, I7 exist. No ground truth: supports practical claims, not the theorem |
+| Reactor | ODE oracle; generator for any n and σ; 1,000 cached designs; all baselines; Ovalle et al.'s cost draw | E1 once I2 to I5 exist |
+| Chemotherapy | 416 real arms, six outcomes, arm sizes, judge ensemble, subsampling protocol, all baselines | E2 once I6 and I7 exist; no ground truth, so practical claims only |
 | WFP | nothing in the repo; OptiCL's public data (5,000 baskets) | E3 once I8 recovers the truth function |
-| Chemotherapy, semi-synthetic (SS2) | the real arms' covariates and arm sizes; a fitted model per outcome as truth | P2 once I14 builds the generator |
+| SS2 | the real arms' covariates and sizes; a fitted model per outcome as truth | P2 once I14 builds the generator |
 
 ## Sequence
 
-Revised 2026-11-18. Step 1 of the old sequence and a small version of
-step 2 were job 29141177.
-
-1. **Cheap checks: done.** F−1 (job 29561590): radius (a) is impractical.
-   P1 (job 29576766): binomial σ certifies half the cohorts at ε = 0.1,
-   out-of-fold σ none; H3 stays, conditional on the binomial σ.
-2. **The reactor's lead model**, with DB, from R1 to R4 and F−1.
-3. **FO-CP gate.** I11, I12, F0 (local), then F1 (go or no-go: does ascent
-   add anything over the linearized step?). Then I13 and the F2 pilot
-   (10 cost vectors, SS1(ii)); the full F2 after it. T7, T8 alongside.
-4. **RC on the reactor** (can run in parallel on the cluster): I2 to I5, then
-   E1. T1 alongside. Draft Sections 2, 3, 6.1, 6.2.
-5. **WFP.** I8, then E3 with both methods.
-6. **Several constraints, known truth.** I14 (SS2 generator), then P2 on the
-   RC track. T2, T3, T6.
-7. **Real chemotherapy.** I6, I7, I9, then E2. Draft Sections 4 and 6.3.
-8. **Appendix tables A1 to A3.**
+1. Done: F−1 (radius (a) impractical) and P1 (binomial σ certifies half
+   the cohorts at ε = 0.1).
+2. The reactor's lead model, with DB.
+3. FO-CP gate: I11, I12, F0 (local), then F1 (go/no-go). Then I13 and the
+   F2 pilot; the full F2 after it. T7 and T8 alongside.
+4. RC on the reactor, in parallel on the cluster: I2 to I5, then E1. T1
+   alongside. Draft Sections 2, 3, 6.1, 6.2.
+5. WFP: I8, then E3 with both methods.
+6. Several constraints, known truth: I14, then P2. T2, T3, T6.
+7. Real chemotherapy: I6, I7, I9, then E2. Draft Sections 4 and 6.3.
+8. Appendix tables A1 to A3.
 
 ## Risks
 
-- **The nominal decision does not fail on the paper's design.** It did not on
-  cubic ridge. Step 1 tests this for the network.
-- **The gap between the clean-label model and the truth is large.** Then
-  feasibility against the ODE is decided by bias, in either direction, and not
-  by the margin. On cubic ridge the gap (about 1.8) was as large as the
-  simulated margin (1.9).
-- **The radius overshoots.** The simulated radius gave no violations in 100
-  redraws at ε = 0.1. Then the result is the margin's shape at matched
-  feasibility (H2), and the guarantee is described as conservative.
-- **The last-layer RC covers only noise that enters through the last layer.**
-  If most of the network's error comes from the hidden layers, the margin is
+RC and the reactor:
+
+- The nominal decision may not fail. It did not on cubic ridge at the fixed
+  cost (0.96 against the ODE); on Ovalle et al.'s costs it did (0.66 cubic,
+  0.18 to 0.25 network; job 29141177).
+- The gap between the clean-label model and the truth may dominate, so that
+  feasibility against the ODE is decided by bias in either direction. On
+  cubic ridge the gap (about 1.8) matched the simulated margin (1.9).
+- The radius may overshoot: no violations in 100 redraws at ε = 0.1. The
+  result is then the margin's shape at matched feasibility (H2), and the
+  guarantee is described as conservative.
+- The last-layer RC covers only noise entering through the last layer. If
+  most of the network's error comes from the hidden layers, the margin is
   too small against the ODE even though the theorem holds.
-- **The RC is not the cheapest at matched feasibility.** `‖s(x)‖` sees label
-  noise but not model misfit, which C-MICL's width model can pick up.
-- **The simulated radius is expensive to certify.** 43 seconds per draw on
-  cubic ridge.
-- **Five margins make the RC infeasible on chemotherapy.** Mitigated by the
-  binomial σ, the radius over the prescribed slices and the certified
-  fallback ("Infeasibility on chemotherapy"); P1 measures how much is left.
-- **Under the binomial σ the RC prescribes but misses against the judge**
-  where the models misfit, as the network did against the ODE. Report the
-  judge's verdict beside the certified level.
-- **The chemotherapy judge cannot separate methods.** The audit put the 0.9
-  target inside the judge's uncertainty band for most cells. Report orderings
-  and the fraction prescribed there, and keep feasibility levels to the reactor.
-- **WFP's truth function has unpublished constants.** If they cannot be
-  recovered from the public data, ask OptiCL's authors.
-- **FO-CP's own risks** are listed in its section at the top.
+- The RC may not be cheapest at matched feasibility, since `‖s(x)‖` misses
+  model misfit that C-MICL's width model can pick up.
+- The solver's radius is slow: 43 s per draw on cubic ridge; FO-CP's W_c is
+  unmeasured.
+
+Chemotherapy:
+
+- Five margins may leave the RC infeasible for many cohorts. Mitigations:
+  the binomial σ, the radius over prescribed slices, the certified fallback.
+- Under the binomial σ the RC may prescribe and still miss against the judge
+  where the models misfit; the judge's verdict is reported beside the
+  certified level.
+- The judge cannot separate methods: the audit put the 0.9 target inside its
+  uncertainty band for most cells. Report orderings and the fraction
+  prescribed there, and keep feasibility levels to the reactor.
+
+FO-CP:
+
+- Local separation gives no certificate; the a posteriori attack measures
+  the gap but does not close it.
+- Radius (c) is first order for networks and guarantees only against a
+  resampled model (T8).
+- FO-CP sees label noise, not bias, so on the end-to-end network it may miss
+  against the ODE as the network RC did. SS1(ii) separates the two.
+- The master grows by one embedded network per cut, and separations are not
+  shared across cost vectors.
+- Referees will ask about convergence and what stopping certifies (T7); a
+  scenario-optimization baseline; links to adversarial training (min-max);
+  runtime against n and the number of cuts, and against the RC; the
+  separation gap; robustness to training randomness; and why an ℓ₂ label
+  ball, which contains coherent shifts independent noise does not produce.
+
+WFP:
+
+- Its truth function has unpublished constants. If the public data does not
+  recover them, ask OptiCL's authors.
+
+## Why the earlier approaches are not the paper's method
+
+Up to September we compared cutting planes over a random bank, the wrapper,
+a right-hand-side margin and C-MICL, each tuned on its own parameter (the
+dial sweep). Numbers are from the reactor dial cell (balanced cost, 10
+folds, ODE test stage of 2026-09-07) and the gastric cell (2026-09-08).
+
+| Approach | What it did | Why it is not the method | In the paper |
+|---|---|---|---|
+| Cutting planes over a random bank | Drew 200 relabelings from an ellipsoid of radius rho, retrained on each, cut the worst at `x*`, stopped at tolerance tau. With several constraints, a cut that left a protected cohort infeasible was rolled back | The bank is a finite sample of the set, so stopping shows feasibility for the drawn models only. rho and tau were tied to no violation level and were set against the ground truth; the working rho had to be re-measured per instance (rho = 1 never passed 0.30, rho = 2 delivered), and results depended on the bank's seed. For affine models the worst relabeling has a closed form, `R s(x)/‖s(x)‖`. The rollback gave up robustness wherever it was unaffordable, with no stated level | Out as a method; one sentence in Section 4. FO-CP brings the loop back with optimized separation and a radius set by ε; the bank is its ablation (F1). The rollback's role passes to the certified fallback |
+| Right-hand-side margin | Tightened the constraint by a constant m | Same at every x, with no rule for its size: `m* = 4.0` was found only with the oracle. At 0.9 feasibility the most expensive tuned method (6.043, against 5.816 for cutting planes and 5.885 for the wrapper). On gastric a large m makes the problem infeasible (m = 0.75 solved 20% of contexts) | Baseline |
+| Wrapper | Embedded 20 bootstrapped models and required a fraction to hold | The fraction is tied to no violation level. At its strictest it reached 0.00 and 0.10 on the two rho columns where cutting planes operated; it embeds 20 models; on gastric it solved 64 to 68% of contexts | Baseline |
+| Robust regression | Trained a label-robust model and embedded it nominally | Acts on the learner, not the embedding | Out; Paper B |
+| The dial sweep | Tuned each method's parameter against an oracle and compared the tuned points | The paper claims no tuning is needed, which a tuned protocol cannot test. One cost vector and 10 folds, so feasibility moved in steps of 0.1 | Survives as the equal-feasibility comparison (Figure 2), on 100 redraws |
+| Analytic synthetic instance | Known `f_true` | The reactor gives an exact truth on an instance from the literature | Out |
+
+The earlier work supplies the motivation in Section 1: nominal was
+ODE-feasible in 0 of 10, and every tuned safeguard reached 0.9 only when
+tuned against the truth.

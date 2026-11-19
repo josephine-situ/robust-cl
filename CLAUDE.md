@@ -17,7 +17,7 @@ the true constraint. The standing thesis plan (Papers A–C) is `notes/research_
 | file | role |
 |---|---|
 | `paper_outline.md` | **the method reference**: problem, methods, guarantee, experiments (v4) |
-| `paper_plan.md` | decisions, probes (F−1–F2, P1, P2, R*), theory tasks (T*), implementation tasks (I*), risks, questions for DB. Newest section first |
+| `paper_plan.md` | decisions, probes (F−1–F2, P1, P2, R*), theory tasks (T*), implementation tasks (I*), risks, questions for DB. Organized by topic, decisions first |
 | `paper_a_guarantee.md` | proof notes (its Sections 5–6 are superseded by the plan) |
 | `paper.tex` + `paper_a_guarantee.tex`, `paper_a_proofs.tex` | the draft; `paper_a_guarantee_held.tex` is NOT input, waiting on probe P1 |
 | `paper_a_literature.md`, `paper_a.bib` | literature check and bib (also in Zotero) |
