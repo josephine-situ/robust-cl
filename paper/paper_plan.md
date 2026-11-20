@@ -216,7 +216,7 @@ F−1 to F2 decide whether FO-CP is worth building fully.
 |---|---|---|---|
 | F−1 | Is radius (a) affordable? | `probe_rc_ridge.py --stage modelfree` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, 100 redraws | Done (job 29561590): no (Radius table) |
 | F0 | Is the machinery right? | (i) Affine models: one step gives `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's solution as τ → 0; record cuts | (i) passed; (ii) run in directional form; (iii) passed. Results below |
-| F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, multistart ascent, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | If ascent ≈ the linearized step, FO-CP reduces to one-step separation in the same loop. If cold restarts move ĥ as much, training randomness dominates label noise |
+| F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, multistart ascent, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | Done (job 29667805): ascent adds about 20% over the linearized step; the random bank finds a tenth of either; cold restarts move ĥ about half as much as the worst case. Results below |
 | F2 | Does FO-CP deliver on SS1, and at what cost? | Radius (c), with (b) as a check where d_eff is small. Pilot: 10 cost vectors, SS1(ii); then 100 cost vectors, both arms. End-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for all). `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4 |
 
 ## Instances
@@ -294,6 +294,43 @@ width-at-the-optimum comparison with C-MICL.
   about 45 (row, unit) pre-activations sit within 1e-4 of a kink, so it
   matters for radius (c)'s denominator, not for the ascent, which uses only
   the direction.
+
+### Probe F1 (job 29667805, 2026-11-19)
+
+End-to-end (32, 32) network at α = 1, redraws 0 to 4, Ovalle et al.'s cost
+vectors 0 to 4, R = 3.59σ; at the nominal decision x0 and at x1, the master
+with one cut. Drop of h(x) in σ units (`f1_r*_a1.json`):
+
+| | Mean | Range |
+|---|---|---|
+| Linearized step | 1.03 | 0.60 to 1.65 |
+| Multistart ascent (zero + 4 random starts) | 1.25 | 0.65 to 1.98 |
+| Ascent / linearized | 1.20 (median) | 1.02 to 1.88 |
+| Random bank, worst of B = 200 | 0.13 | 0.06 to 0.18 |
+| True relabeling (retrain on clean labels; ‖e‖ ≈ 32σ, outside the ball) | 0.27 | −0.57 to 1.01 |
+| Cold restarts, largest of 5 seeds (abs.) | 0.68 | 0.30 to 1.50 |
+
+- Ascent beyond the first step finds about 20% worse relabelings, so FO-CP
+  does not reduce to one-step separation; a one-step variant would capture
+  about 83% of the worst case at a fraction of the cost. Accepted steps per
+  start: 1 to 7. The best start was the zero start at 4 of 10 points.
+- Random relabelings find a tenth of what ascent finds: the random-bank
+  cutting planes of the earlier work could not have found the worst case.
+- Training randomness is large. Cold restarts on the same labels move h by
+  about half the label-noise worst case, and more than retraining on the
+  clean labels does. The guarantee is stated against `T(y*)` from the fixed
+  θ₀, which removes seed randomness by definition; the cold-start spread is
+  the caveat to report beside it.
+- At one point of ten (redraw 4, x1) retraining on the clean labels lowers h
+  more than the worst case found in the ball (0.76 against 0.65σ). Whether
+  R covers the real noise is radius (c)'s question (F2).
+- d_eff: rank 161 to 283, participation ratio 67 to 87, 90% of the energy in
+  44 to 57 directions; radius (b) would be about 8 to 18σ.
+- ODE at x0: 45.7 to 50.0 (4 of 5 below 50); at x1 46.0 to 50.8. One cut
+  does not fix ODE feasibility, as expected from bias and a single cut.
+- Cost: 44 to 117 minutes per point with the bank and cold restarts, 2 on
+  redraw 0. The split between separation and the extras was not recorded;
+  F2's pilot must time the separation alone.
 
 ### Results of job 29141177 (2026-11-14)
 

@@ -805,3 +805,26 @@ would fix. **Open for JS: the network's α.** Three redraws only.
 - **F1 submitted**, job 29664832 (redraws 0 to 4). torch is installed (CPU) in
   the cluster's `robcl_env`; jobs that import it need the env's `lib` first on
   `LD_LIBRARY_PATH` (in `submit_f1.sh`).
+
+## 2026-11-19: Probe F1: ascent adds about 20% over the linearized step
+
+Job 29667805; end-to-end network at α = 1, redraws 0 to 4, R = 3.59σ, at the
+nominal decision and one robust iterate (`results/paper_a/prelim/f1_r*_a1.json`).
+Drop of the prediction, σ units, mean over 10 points:
+
+| linearized step | multistart ascent | random bank (B = 200) | true relabeling | cold restarts (5 seeds, max abs.) |
+|---|---|---|---|---|
+| 1.03 | 1.25 (median 1.20× linearized) | 0.13 | 0.27 | 0.68 |
+
+- **Go for FO-CP's multistep separation**, though the gain over one step is
+  modest (2% to 88%, median 20%).
+- **The random bank finds a tenth** of the worst case: the old random-bank
+  cutting planes could not have found it.
+- **Training randomness is half the label-noise worst case**, and larger than
+  the effect of retraining on the clean labels. The guarantee is against the
+  fixed-θ₀ map on clean labels; the seed spread must be reported beside it.
+- At 1 of 10 points the clean-label retrain lowers the prediction more than the
+  worst case in the ball: radius (c)'s question, for F2.
+- d_eff ≈ 45 to 57 directions for 90% of the energy, so radius (b) ≈ 8 to 18σ.
+- 44 to 117 min per point including the bank and restarts; F2 must time the
+  separation alone.
