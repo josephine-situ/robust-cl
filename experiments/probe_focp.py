@@ -824,6 +824,32 @@ def stage_radius_refine(args):
     print(f"{tag}: R enum {R_enum:.4f} -> refined {R_ref:.4f} (gap {R_ref - R_enum:+.4f} sigma)", flush=True)
 
 
+def stage_timing(args):
+    """Fixed separation workload (arm ode, redraw 0): one Sensitivity (Hessian
+    + mixed derivative), 10 retrains at the radius, one 3-step ascent from zero.
+    Run at the thread count given by --threads; prints wall seconds per piece."""
+    import socket
+    inst, md, sigma = setup()
+    torch.set_num_threads(args.threads)
+    ystar, _ = arm_truth("ode", inst, md)
+    ybar = ystar + sigma * np.random.default_rng([0, 0]).standard_normal(len(ystar))
+    model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, ybar, alpha=chosen_alpha())
+    theta0, _ = model.cold_fit(ybar, seed=0)
+    x, _ = solve_nominal(inst, model, theta0, cost_vectors("paper", 1, inst)[0])
+    t0 = time.time(); Sensitivity(model, theta0, ybar); t_sens = time.time() - t0
+    t0 = time.time()
+    for j in range(10):
+        g = np.random.default_rng([5, j]).standard_normal(model.n)
+        model.train(ybar + sigma * 4.65 * g / np.linalg.norm(g), theta0)
+    t_ret = (time.time() - t0) / 10
+    t0 = time.time()
+    ascend(model, x, ybar, sigma, 4.65, theta0, [("zero", np.zeros(model.n))], None, max_steps=3)
+    t_asc = time.time() - t0
+    print(f"TIMING host {socket.gethostname()} threads {args.threads} torch {torch.get_num_threads()} "
+          f"OMP {os.environ.get('OMP_NUM_THREADS')}: sensitivity {t_sens:.1f}s, retrain {t_ret:.2f}s, "
+          f"ascent(3 steps) {t_asc:.1f}s", flush=True)
+
+
 def radius_for(arm, k, alpha):
     path = os.path.join(OUT_DIR, f"radius_c_{arm}_r{k}_a{alpha:g}.json")
     if not os.path.exists(path):
@@ -985,7 +1011,7 @@ def _save(name, obj):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1", "f0_loop",
-                             "truth_net", "radius_c", "f2", "radius_refine"])
+                             "truth_net", "radius_c", "f2", "radius_refine", "timing"])
     ap.add_argument("--alpha", type=float, default=None,
                     help="network L2 penalty (f1 default: the CV choice; else NET_ALPHA)")
     ap.add_argument("--threads", type=int, default=1, help="torch threads (f1)")
@@ -1020,4 +1046,4 @@ if __name__ == "__main__":
     {"f0_affine": stage_f0_affine, "f0_grad": stage_f0_grad,
      "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1, "f0_loop": stage_f0_loop,
      "truth_net": stage_truth_net, "radius_c": stage_radius_c, "f2": stage_f2,
-     "radius_refine": stage_radius_refine}[args.stage](args)
+     "radius_refine": stage_radius_refine, "timing": stage_timing}[args.stage](args)
