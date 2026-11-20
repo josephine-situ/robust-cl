@@ -662,6 +662,98 @@ def stage_f0_loop(args):
     _save(f"f0_loop_r{k}.json", out)
 
 
+TRUTH_NET = os.path.join(OUT_DIR, "ss1_truth_net.npz")
+TRUTH_SEED = 12345
+
+
+class TruthNet:
+    """SS1 arm (ii)'s truth: a (32, 32) network fitted once to the noise-free
+    ODE labels, at the model's alpha, so the model class contains the truth."""
+
+    def __init__(self, inst, md):
+        z = np.load(TRUTH_NET)
+        self.model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, md.y_true,
+                              alpha=float(z["alpha"]))
+        self.model.mu, self.model.sd = float(z["mu"]), float(z["sd"])
+        self.theta = z["theta"]
+
+    def __call__(self, X):
+        return self.model.predict(np.atleast_2d(X), self.theta)
+
+
+def stage_truth_net(args):
+    """I14 (SS1 arm ii): fit and save the truth network."""
+    inst, md, sigma = setup()
+    alpha = chosen_alpha()
+    m = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, md.y_true, alpha=alpha)
+    theta, info = m.cold_fit(md.y_true, seed=TRUTH_SEED)
+    pred = m.predict(md.X_train, theta)
+    os.makedirs(OUT_DIR, exist_ok=True)
+    np.savez(TRUTH_NET, theta=theta, mu=m.mu, sd=m.sd, alpha=alpha, seed=TRUTH_SEED)
+    Xs = domain_sample(inst.variable_lb, inst.variable_ub, inst, 2000, seed=0)
+    ode = np.array([ode_flow(inst, x) for x in Xs[:300]])
+    print(f"truth net (alpha {alpha:g}): train RMSE vs ODE {np.sqrt(np.mean((pred - md.y_true)**2)):.3f}, "
+          f"domain RMSE vs ODE (300 pts) {np.sqrt(np.mean((m.predict(Xs[:300], theta) - ode)**2)):.3f}, "
+          f"{info['msg']}", flush=True)
+
+
+def arm_truth(arm, inst, md):
+    """(clean training labels y*, truth function x -> flow) for SS1's arm."""
+    if arm == "ode":
+        return md.y_true, lambda x: ode_flow(inst, x)
+    t = TruthNet(inst, md)
+    return t(md.X_train), lambda x: float(t(x)[0])
+
+
+def stage_radius_c(args):
+    """Radius (c) by ENUMERATION (a lower bound on each draw's maximum).
+
+    For N noise draws e' ~ N(0, sigma^2 I): retrain on ybar + e' from theta0 and
+    W = max over a domain sample of [h(x; T(ybar + e')) - h(x; theta0)] / ||s(x)||,
+    s(x) = sigma * d h(x) / dy at theta0 (whitened linearized sensitivity). R is
+    the ceil((N+1)(1-eps))-th smallest W. The sign is "noisy minus clean": the
+    direction in which an RC-feasible decision violates the clean-label model of
+    a lower-bound constraint. Resumable per draw; the Gurobi bound on a few
+    draws (enumeration gap) is a separate stage."""
+    inst, md, sigma = setup()
+    alpha = chosen_alpha()
+    torch.set_num_threads(args.threads)
+    k = args.redraw
+    ystar, _ = arm_truth(args.arm, inst, md)
+    ybar = ystar + sigma * np.random.default_rng([args.seed, k]).standard_normal(len(ystar))
+    model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, ybar, alpha=alpha)
+    theta0, info0 = model.cold_fit(ybar, seed=k)
+    Xs = domain_sample(inst.variable_lb, inst.variable_ub, inst, args.n_sample, seed=0)
+    sens = Sensitivity(model, theta0, ybar)
+    snorm = np.concatenate([sigma * np.linalg.norm(sens.dh_dy(Xs[i:i + 2000], args.lam_rel), axis=0)
+                            for i in range(0, len(Xs), 2000)])
+    h0 = model.predict(Xs, theta0)
+    tag = f"radius_c_{args.arm}_r{k}_a{alpha:g}"
+    path = os.path.join(OUT_DIR, tag + ".json")
+    res = json.load(open(path)) if os.path.exists(path) else {"W": [], "argmax": [], "fit": []}
+    res.update(arm=args.arm, redraw=k, alpha=alpha, n_sample=len(Xs), eps=args.eps,
+               snorm_median=float(np.median(snorm)), snorm_max=float(snorm.max()),
+               lam_rel=sens.auto_lam_rel() if args.lam_rel is None else args.lam_rel)
+    t0 = time.time()
+    for i in range(len(res["W"]), args.n_draws):
+        e = sigma * np.random.default_rng([args.seed, k, 11, i]).standard_normal(model.n)
+        th, info = model.train(ybar + e, theta0)
+        ratio = (model.predict(Xs, th) - h0) / snorm
+        j = int(np.argmax(ratio))
+        res["W"].append(float(ratio[j]))
+        res["argmax"].append(Xs[j].tolist())
+        res["fit"].append({"nit": info["nit"], "ok": info["ok"], "time": info["time"]})
+        if (i + 1) % 10 == 0 or i + 1 == args.n_draws:
+            _save(tag + ".json", res)
+            print(f"{tag}: {i+1}/{args.n_draws} draws, {(time.time()-t0)/60:.1f} min", flush=True)
+    W = np.sort(res["W"])
+    kk = int(np.ceil((len(W) + 1) * (1 - args.eps)))
+    res["R"] = float(W[min(kk, len(W)) - 1])
+    _save(tag + ".json", res)
+    print(f"{tag}: R = {res['R']:.3f} sigma from {len(W)} draws (median W {np.median(W):.3f}); "
+          f"||s|| median {res['snorm_median']:.3f}", flush=True)
+
+
 CV_ALPHAS = [1e-3, 1e-2, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0]
 
 
@@ -706,7 +798,8 @@ def _save(name, obj):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1", "f0_loop"])
+    ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1", "f0_loop",
+                             "truth_net", "radius_c"])
     ap.add_argument("--alpha", type=float, default=None,
                     help="network L2 penalty (f1 default: the CV choice; else NET_ALPHA)")
     ap.add_argument("--threads", type=int, default=1, help="torch threads (f1)")
@@ -714,6 +807,10 @@ if __name__ == "__main__":
     ap.add_argument("--bank", type=int, default=200, help="f1: random-bank size B")
     ap.add_argument("--cold", type=int, default=5, help="f1: cold restarts")
     ap.add_argument("--max-steps", type=int, default=20, help="f1: accepted steps per start")
+    ap.add_argument("--arm", choices=["ode", "net"], default="ode", help="SS1 arm: truth = ODE or truth net")
+    ap.add_argument("--n-draws", type=int, default=200, help="radius_c: noise draws N")
+    ap.add_argument("--n-sample", type=int, default=20000, help="radius_c: domain points")
+    ap.add_argument("--eps", type=float, default=0.1)
     ap.add_argument("--lam-rel", type=float, default=None,
                     help="damping x tr(H)/p; default: auto (2x the smallest PD value)")
     ap.add_argument("--redraw", type=int, default=0)
@@ -728,4 +825,5 @@ if __name__ == "__main__":
     if args.alpha is None:
         args.alpha = NET_ALPHA
     {"f0_affine": stage_f0_affine, "f0_grad": stage_f0_grad,
-     "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1, "f0_loop": stage_f0_loop}[args.stage](args)
+     "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1, "f0_loop": stage_f0_loop,
+     "truth_net": stage_truth_net, "radius_c": stage_radius_c}[args.stage](args)
