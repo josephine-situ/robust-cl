@@ -754,6 +754,76 @@ def stage_radius_c(args):
           f"||s|| median {res['snorm_median']:.3f}", flush=True)
 
 
+def stage_radius_refine(args):
+    """How much does enumeration understate radius (c)? For the draws ranked
+    highest by enumeration (the order statistic R is their 20th largest at
+    N = 200, eps = 0.1), retrain on the same noise and maximize the ratio over
+    x by local search (SLSQP on the scaled design with the domain constraints,
+    from the 10 best enumerated points), then recompute R. A better LOWER
+    bound, not a certificate: it measures the gap enumeration leaves."""
+    from scipy.optimize import minimize as sp_min
+    inst, md, sigma = setup()
+    alpha = chosen_alpha()
+    torch.set_num_threads(args.threads)
+    k = args.redraw
+    tag = f"radius_c_{args.arm}_r{k}_a{alpha:g}"
+    rad = json.load(open(os.path.join(OUT_DIR, tag + ".json")))
+    ystar, _ = arm_truth(args.arm, inst, md)
+    ybar = ystar + sigma * np.random.default_rng([args.seed, k]).standard_normal(len(ystar))
+    model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, ybar, alpha=alpha)
+    theta0, _ = model.cold_fit(ybar, seed=k)
+    sens = Sensitivity(model, theta0, ybar)
+    lam = (sens.auto_lam_rel() if args.lam_rel is None else args.lam_rel) * sens.trace_p
+    # whitened sensitivity s(x) = sigma * A grad_theta h(x), A = -L_ty' (H + lam I)^-1
+    A = -sigma * (sens.Lty.T @ sens.Q) / (sens.w + lam)[None, :] @ sens.Q.T     # n x p
+    lb, ub = inst.variable_lb, inst.variable_ub
+    th0_t = torch.tensor(theta0)
+    cons = [{"type": "ineq", "fun": (lambda u, dc=dc: dc.rhs - dc.coeffs @ (lb + 0.5 * (ub - lb) * (u + 1)))}
+            for dc in inst.domain_constraints]
+    Xs = domain_sample(lb, ub, inst, rad["n_sample"], seed=0)
+    h0 = model.predict(Xs, theta0)
+    snorm_all = np.concatenate([sigma * np.linalg.norm(sens.dh_dy(Xs[i:i + 2000], args.lam_rel), axis=0)
+                                for i in range(0, len(Xs), 2000)])
+
+    def ratio_fn(theta_e):
+        the_t = torch.tensor(theta_e)
+
+        def f(u):
+            x = lb + 0.5 * (ub - lb) * (np.clip(u, -1, 1) + 1)
+            Z = model.features_t(x[None])
+            num = float(model.pred_t(Z, the_t)[0] - model.pred_t(Z, th0_t)[0])
+            g = torch.func.jacrev(lambda t: model.pred_t(Z, t))(th0_t).numpy()[0]
+            return -num / np.linalg.norm(A @ g)
+        return f
+
+    W = np.array(rad["W"])
+    top = np.argsort(-W)[:args.refine_top]
+    refined = W.copy()
+    rows = []
+    for i in top:
+        e = sigma * np.random.default_rng([args.seed, k, 11, int(i)]).standard_normal(model.n)
+        th, _ = model.train(ybar + e, theta0)
+        r_all = (model.predict(Xs, th) - h0) / snorm_all
+        f = ratio_fn(th)
+        best = -np.inf
+        for j in np.argsort(-r_all)[:10]:
+            u0 = scale(Xs[j], lb, ub)[0]
+            out = sp_min(f, u0, method="SLSQP", bounds=[(-1, 1)] * len(lb), constraints=cons,
+                         options={"maxiter": 200, "ftol": 1e-10})
+            best = max(best, -out.fun if out.success or np.isfinite(out.fun) else -np.inf)
+        refined[i] = max(W[i], best)
+        rows.append({"draw": int(i), "W_enum": float(W[i]), "W_refined": float(refined[i]),
+                     "W_enum_recomputed": float(r_all.max())})
+        print(f"{tag} draw {i}: enum {W[i]:.4f} (recomputed {r_all.max():.4f}) -> refined {refined[i]:.4f}",
+              flush=True)
+    kk = int(np.ceil((len(W) + 1) * (1 - args.eps)))
+    R_enum, R_ref = float(np.sort(W)[kk - 1]), float(np.sort(refined)[kk - 1])
+    out = {"arm": args.arm, "redraw": k, "R_enum": R_enum, "R_refined": R_ref,
+           "gap": R_ref - R_enum, "top": args.refine_top, "rows": rows}
+    _save(f"radius_refine_{args.arm}_r{k}_a{alpha:g}.json", out)
+    print(f"{tag}: R enum {R_enum:.4f} -> refined {R_ref:.4f} (gap {R_ref - R_enum:+.4f} sigma)", flush=True)
+
+
 def radius_for(arm, k, alpha):
     path = os.path.join(OUT_DIR, f"radius_c_{arm}_r{k}_a{alpha:g}.json")
     if not os.path.exists(path):
@@ -915,7 +985,7 @@ def _save(name, obj):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1", "f0_loop",
-                             "truth_net", "radius_c", "f2"])
+                             "truth_net", "radius_c", "f2", "radius_refine"])
     ap.add_argument("--alpha", type=float, default=None,
                     help="network L2 penalty (f1 default: the CV choice; else NET_ALPHA)")
     ap.add_argument("--threads", type=int, default=1, help="torch threads (f1)")
@@ -927,6 +997,7 @@ if __name__ == "__main__":
     ap.add_argument("--n-draws", type=int, default=200, help="radius_c: noise draws N")
     ap.add_argument("--n-sample", type=int, default=20000, help="radius_c: domain points")
     ap.add_argument("--eps", type=float, default=0.1)
+    ap.add_argument("--refine-top", type=int, default=40, help="radius_refine: draws refined")
     ap.add_argument("--max-iter", type=int, default=20, help="f2: master solves")
     ap.add_argument("--attack-starts", type=int, default=20, help="f2: random starts of the a posteriori attack")
     ap.add_argument("--attack-steps", type=int, default=50, help="f2: steps per attack start")
@@ -948,4 +1019,5 @@ if __name__ == "__main__":
         args.alpha = NET_ALPHA
     {"f0_affine": stage_f0_affine, "f0_grad": stage_f0_grad,
      "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1, "f0_loop": stage_f0_loop,
-     "truth_net": stage_truth_net, "radius_c": stage_radius_c, "f2": stage_f2}[args.stage](args)
+     "truth_net": stage_truth_net, "radius_c": stage_radius_c, "f2": stage_f2,
+     "radius_refine": stage_radius_refine}[args.stage](args)
