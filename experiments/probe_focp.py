@@ -754,6 +754,122 @@ def stage_radius_c(args):
           f"||s|| median {res['snorm_median']:.3f}", flush=True)
 
 
+def radius_for(arm, k, alpha):
+    path = os.path.join(OUT_DIR, f"radius_c_{arm}_r{k}_a{alpha:g}.json")
+    if not os.path.exists(path):
+        raise SystemExit(f"no radius for arm {arm} redraw {k}: run --stage radius_c first")
+    r = json.load(open(path))
+    if "R" not in r:
+        raise SystemExit(f"{path} is incomplete ({len(r['W'])} draws)")
+    return float(r["R"])
+
+
+def stage_f2(args):
+    """F2 (pilot): the FO-CP loop on SS1 with the end-to-end network.
+
+    Per (arm, redraw): radius (c) from radius_c (per redraw, enumeration),
+    tau = 0.05 sigma, cuts enforced at 50 + tau and separation against 50
+    (restriction of the right-hand side), cuts cumulative, at most 20 master
+    solves, then the a posteriori attack (zero + 20 random starts, 50 steps,
+    step down to R/256). Two separations: "multi" (zero, warm start from the
+    tightest cut's relabeling, 4 random starts) and "one" (the linearized step
+    alone). The final decision and the nominal one are judged against
+    the clean-label model T(y*) from theta0 (the guarantee's reference), a
+    cold-start clean fit (training randomness), and the arm's truth.
+    Checkpointed per iteration (cuts saved), for mit_preemptable --requeue."""
+    inst, md, sigma = setup()
+    alpha = chosen_alpha()
+    torch.set_num_threads(args.threads)
+    k, arm = args.redraw, args.arm
+    R = args.R if args.R_set else radius_for(arm, k, alpha)
+    tau = 0.05 * sigma
+    ystar, truth = arm_truth(arm, inst, md)
+    ybar = ystar + sigma * np.random.default_rng([args.seed, k]).standard_normal(len(ystar))
+    cost = cost_vectors("paper", k + 1, inst)[k]
+    obj_range = float(np.abs(cost) @ (inst.variable_ub - inst.variable_lb))
+    model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, ybar, alpha=alpha)
+    theta0, info0 = model.cold_fit(ybar, seed=k)
+    th_clean, _ = model.train(ystar, theta0)            # the guarantee's reference
+    th_cold, _ = model.cold_fit(ystar, seed=k + 500)    # beside it: a cold-start clean fit
+    tag = f"f2_{arm}_r{k}_a{alpha:g}"
+    path = os.path.join(OUT_DIR, tag + ".json")
+    res = json.load(open(path)) if os.path.exists(path) else {"variants": {}}
+    res.update(arm=arm, redraw=k, alpha=alpha, R=R, tau=tau, obj_range=obj_range)
+
+    def judge(x):
+        return {"x": x.tolist(), "obj": float(cost @ x),
+                "h": float(model.predict(x[None], theta0)[0]),
+                "clean": float(model.predict(x[None], th_clean)[0]),
+                "clean_cold": float(model.predict(x[None], th_cold)[0]),
+                "truth": float(truth(x))}
+
+    x_nom, st = solve_nominal(inst, model, theta0, cost)
+    res["nominal"] = judge(x_nom)
+    rng = np.random.default_rng([args.seed, k, 13])
+    for variant in ("one", "multi"):
+        v = res["variants"].get(variant, {"iters": [], "done": False})
+        if v["done"]:
+            continue
+        ck = os.path.join(OUT_DIR, f"{tag}_{variant}_cuts.npz")
+        cuts, zs = [], []
+        if os.path.exists(ck) and v["iters"]:
+            z_ = np.load(ck)
+            cuts, zs = list(z_["cuts"]), list(z_["zs"])
+        while len(v["iters"]) < args.max_iter:
+            t0 = time.time()
+            x, st = solve_nominal(inst, model, theta0, cost, cuts=cuts, tau=tau)
+            t_master = time.time() - t0
+            if x is None:
+                v["iters"].append({"status": st, "infeasible": True})
+                break
+            starts = [("zero", np.zeros(model.n))]
+            if variant == "multi":
+                if cuts:
+                    hs = [float(model.predict(x[None], th)[0]) for th in cuts]
+                    starts.append(("warm", zs[int(np.argmin(hs))]))
+                for j in range(4):
+                    g = rng.standard_normal(model.n)
+                    starts.append((f"random{j}", R * g / np.linalg.norm(g)))
+            t1 = time.time()
+            best = ascend(model, x, ybar, sigma, R, theta0, starts, args.lam_rel,
+                          max_steps=1 if variant == "one" else 20)
+            worst = float(model.predict(x[None], best["theta"])[0])
+            it = {"master_s": t_master, "sep_s": time.time() - t1, "obj": float(cost @ x),
+                  "h": float(model.predict(x[None], theta0)[0]), "worst": worst,
+                  "best_start": best["start"], "n_cuts": len(cuts)}
+            v["iters"].append(it)
+            print(f"{tag} {variant} iter {len(v['iters'])}: obj {it['obj']:.4f} h {it['h']:.3f} "
+                  f"worst {worst:.3f} (master {t_master:.0f}s, sep {it['sep_s']:.0f}s)", flush=True)
+            if worst >= PRODUCT_FLOOR:
+                v["converged"] = True
+                break
+            cuts.append(best["theta"])
+            zs.append(best["z"])
+            np.savez(ck, cuts=np.array(cuts), zs=np.array(zs))
+            res["variants"][variant] = v
+            _save(tag + ".json", res)
+        v.setdefault("converged", False)
+        if x is not None:
+            v["final"] = judge(x)
+            t2 = time.time()
+            starts = [("zero", np.zeros(model.n))]
+            for j in range(args.attack_starts):
+                g = rng.standard_normal(model.n)
+                starts.append((f"random{j}", R * g / np.linalg.norm(g)))
+            att = ascend(model, x, ybar, sigma, R, theta0, starts, args.lam_rel,
+                         max_steps=args.attack_steps, halvings=8)
+            a_worst = float(model.predict(x[None], att["theta"])[0])
+            last = v["iters"][-1]["worst"] if v["iters"] else np.nan
+            v["attack"] = {"worst": a_worst, "violation_gap": (PRODUCT_FLOOR - a_worst) / sigma,
+                           "separation_gap": (last - a_worst) / sigma, "time_s": time.time() - t2}
+            print(f"{tag} {variant}: final obj {v['final']['obj']:.4f}, clean {v['final']['clean']:.3f}, "
+                  f"truth {v['final']['truth']:.3f}; attack worst {a_worst:.3f} "
+                  f"({v['attack']['time_s']/60:.0f} min)", flush=True)
+        v["done"] = True
+        res["variants"][variant] = v
+        _save(tag + ".json", res)
+
+
 CV_ALPHAS = [1e-3, 1e-2, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0]
 
 
@@ -799,7 +915,7 @@ def _save(name, obj):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1", "f0_loop",
-                             "truth_net", "radius_c"])
+                             "truth_net", "radius_c", "f2"])
     ap.add_argument("--alpha", type=float, default=None,
                     help="network L2 penalty (f1 default: the CV choice; else NET_ALPHA)")
     ap.add_argument("--threads", type=int, default=1, help="torch threads (f1)")
@@ -811,19 +927,25 @@ if __name__ == "__main__":
     ap.add_argument("--n-draws", type=int, default=200, help="radius_c: noise draws N")
     ap.add_argument("--n-sample", type=int, default=20000, help="radius_c: domain points")
     ap.add_argument("--eps", type=float, default=0.1)
+    ap.add_argument("--max-iter", type=int, default=20, help="f2: master solves")
+    ap.add_argument("--attack-starts", type=int, default=20, help="f2: random starts of the a posteriori attack")
+    ap.add_argument("--attack-steps", type=int, default=50, help="f2: steps per attack start")
     ap.add_argument("--lam-rel", type=float, default=None,
                     help="damping x tr(H)/p; default: auto (2x the smallest PD value)")
     ap.add_argument("--redraw", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--R", type=float, default=3.59, help="radius, sigma units")
+    ap.add_argument("--R", type=float, default=None, help="radius, sigma units (f2 default: radius_c)")
     ap.add_argument("--h", type=float, default=0.5, help="FD step, flow units")
     ap.add_argument("--fd-rows", type=int, default=1000)
     ap.add_argument("--tighten", type=float, default=2.0,
                     help="flow units added to the floor for the tightened point")
     args = ap.parse_args()
     args.alpha_set = args.alpha is not None
+    args.R_set = args.R is not None
+    if args.R is None:
+        args.R = 3.59
     if args.alpha is None:
         args.alpha = NET_ALPHA
     {"f0_affine": stage_f0_affine, "f0_grad": stage_f0_grad,
      "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1, "f0_loop": stage_f0_loop,
-     "truth_net": stage_truth_net, "radius_c": stage_radius_c}[args.stage](args)
+     "truth_net": stage_truth_net, "radius_c": stage_radius_c, "f2": stage_f2}[args.stage](args)
