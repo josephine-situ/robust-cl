@@ -828,3 +828,21 @@ Drop of the prediction, σ units, mean over 10 points:
 - d_eff ≈ 45 to 57 directions for 90% of the energy, so radius (b) ≈ 8 to 18σ.
 - 44 to 117 min per point including the bank and restarts; F2 must time the
   separation alone.
+
+## 2026-11-19: Radius (c) pilot: enumeration understates it, and retraining is chaotic
+
+Jobs 29707708, 29708663, 29709194 (enumeration, 10 redraws × 2 SS1 arms, N = 200)
+and 29710101 (local refinement on 5 redraws); `results/paper_a/prelim/radius_*`.
+
+- **R ≈ 3.5 to 5.5σ by enumeration**, but the margin it imposes (R × median
+  ‖s(x)‖) is steadier: about 2 flow units, coefficient of variation 0.06 to 0.09.
+- **Enumeration misses the maximum.** Local search on the same retrained model
+  raises a draw's W by a median 1.0 to 1.6σ (up to 3.6σ); R rises 10 to 17%.
+  The ratio peaks where the linearized sensitivity is small.
+- **Retraining is chaotic for full-size noise.** A 1e-10 change to the labels
+  moves the retrained prediction by up to 0.8 flow units; so does the thread
+  count, and another cluster node reproduced W for only 18 of 125 draws. The
+  clean-label reference T(y*) is a relabeling of the same size, so fixing θ₀
+  does not make it deterministic.
+- **Open for JS:** how to define radius (c) and the clean-label reference for a
+  network. F2 pilot (job 29709201) is running with the enumerated radii.

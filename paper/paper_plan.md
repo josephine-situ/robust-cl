@@ -295,6 +295,32 @@ width-at-the-optimum comparison with C-MICL.
   matters for radius (c)'s denominator, not for the ascent, which uses only
   the direction.
 
+### Radius (c) pilot (jobs 29707708, 29708663, 29709194, 29710101; 2026-11-19)
+
+Enumeration over 20,000 domain points, N = 200 draws, end-to-end network at
+α = 1, redraws 0 to 9 on both SS1 arms (`radius_c_*`, `radius_refine_*`).
+
+- R by enumeration: 3.47 to 5.48σ (mean 4.44) on arm (i), 3.75 to 4.63σ
+  (mean 4.22) on arm (ii). Its product with the median `‖s(x)‖`, the margin
+  actually imposed, is steadier: 1.90 to 2.59 flow units (coefficient of
+  variation 0.09) and 1.93 to 2.29 (0.06). Per-redraw R is used (F2 pilot).
+- Enumeration understates W badly. Local maximization (SLSQP from the 10
+  best sampled points) on the same retrained model raises a draw's W by a
+  median 1.0 to 1.6σ, up to 3.6σ; R rises by 0.45 to 0.89σ on the five
+  redraws checked (10 to 17%). The maximum sits in narrow regions where the
+  linearized sensitivity `‖s(x)‖` is small, which a sample misses, and the
+  refined value is still only a lower bound.
+- The training map is chaotic for full-size noise draws (‖e′‖ ≈ 32σ):
+  retraining after a 1e-10 change to the labels moves the prediction by up
+  to 0.8 flow units and one draw's W from 2.19 to 3.48; a change of thread
+  count does the same, and recomputing on another cluster node reproduced W
+  exactly for only 18 of 125 draws. Small relabelings (F0's drift, 0.002)
+  are stable; long L-BFGS paths on a flat landscape end in different nearby
+  minima. This applies to the clean-label reference `T(y*)` too
+  (‖y* − ȳ‖ ≈ 32σ), so the fixed θ₀ does not make it deterministic.
+- Open (for JS): radius (c)'s ratio form and the clean-label reference for
+  a network.
+
 ### Probe F1 (job 29667805, 2026-11-19)
 
 End-to-end (32, 32) network at α = 1, redraws 0 to 4, Ovalle et al.'s cost
