@@ -217,7 +217,7 @@ F−1 to F2 decide whether FO-CP is worth building fully.
 | F−1 | Is radius (a) affordable? | `probe_rc_ridge.py --stage modelfree` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, 100 redraws | Done (job 29561590): no (Radius table) |
 | F0 | Is the machinery right? | (i) Affine models: one step gives `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's solution as τ → 0; record cuts | (i) passed; (ii) run in directional form; (iii) passed. Results below |
 | F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, multistart ascent, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | Done (job 29667805): ascent adds about 20% over the linearized step; the random bank finds a tenth of either; cold restarts move ĥ about half as much as the worst case. Results below |
-| F2 | Does FO-CP deliver on SS1, and at what cost? | Radius (c), with (b) as a check where d_eff is small. Pilot: 10 cost vectors, SS1(ii); then 100 cost vectors, both arms. End-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for all). `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4 |
+| F2 | Does FO-CP deliver on SS1, and at what cost? | Radius (c), with (b) as a check where d_eff is small. Pilot: 10 cost vectors, SS1(ii); then 100 cost vectors, both arms. End-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for all). `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4. Pilot done (job 29709201): results below |
 
 ## Instances
 
@@ -294,6 +294,39 @@ width-at-the-optimum comparison with C-MICL.
   about 45 (row, unit) pre-activations sit within 1e-4 of a kink, so it
   matters for radius (c)'s denominator, not for the ascent, which uses only
   the direction.
+
+### F2 pilot (job 29709201, 2026-11-19)
+
+Ten cost vectors (redraws 0 to 9) on both SS1 arms; end-to-end network at
+α = 1; radius (c) per redraw by enumeration (3.5 to 5.5σ; understated, see
+below); τ = 0.05σ; cap 20 master solves. `f2_*_a1.json`. Feasibility of the
+final decision against the clean-label model `T(y*)` from θ₀, a cold-start
+clean fit, and the arm's truth; cost as % of the objective range over the
+nominal decision.
+
+| Arm, separation | Converged | Iterations | Clean | Cold | Truth | Nominal: clean / truth | Cost | Attack below 50 | Separation per iteration |
+|---|---|---|---|---|---|---|---|---|---|
+| (ii) truth net, multistart | 10/10 | 4.2 (1 to 7) | 0.90 | 1.00 | 0.90 | 0.30 / 0.30 | +3.5% | 3/10, gap 0.04σ | 6 min |
+| (ii) truth net, one step | 10/10 | 3.1 | 0.90 | 0.80 | 0.80 | | +2.8% | 9/10, gap 0.38σ | 13 s |
+| (i) ODE, multistart | 10/10 | 7.4 (1 to 19) | 1.00 | 1.00 | 0.90 | 0.30 / 0.20 | +3.5% | 3/10, gap 0.06σ | 16 min |
+| (i) ODE, one step | 10/10 | 3.6 | 0.90 | 0.90 | 0.90 | | +2.3% | 9/10, gap 0.54σ | 49 s |
+
+- On ten cost vectors FO-CP with multistart separation reaches the 0.9
+  target against both the clean-label model and the truth, on both arms,
+  where nominal reaches 0.2 to 0.3, at +3.5% of the objective range
+  (cubic-ridge RC: +4.2%; frozen-network RC: +2.2%, job 29141177). The
+  standard error at n = 10 is about 0.1.
+- The ODE arm has no bias problem at α = 1: the end-to-end network's
+  decisions meet the ODE as often as the clean-label model.
+- One-step separation is cheaper and stops earlier, but the a posteriori
+  attack still finds a violation at 9 of 10 final decisions (multistart: 3
+  of 10, by 0.04 to 0.06σ). Multistart is the method; one step is an
+  ablation.
+- Every run converged within the cap, but the ODE arm needed up to 19
+  master solves; wall time per task 6 minutes to 7.6 hours.
+- The full F2 (100 cost vectors × 2 arms, plus the baselines on the
+  end-to-end network) is about 200 tasks of 1 to 8 hours on
+  mit_preemptable.
 
 ### Radius (c) pilot (jobs 29707708, 29708663, 29709194, 29710101; 2026-11-19)
 

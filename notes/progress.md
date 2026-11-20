@@ -846,3 +846,21 @@ and 29710101 (local refinement on 5 redraws); `results/paper_a/prelim/radius_*`.
   does not make it deterministic.
 - **Open for JS:** how to define radius (c) and the clean-label reference for a
   network. F2 pilot (job 29709201) is running with the enumerated radii.
+
+## 2026-11-20: F2 pilot: FO-CP reaches the target on both SS1 arms
+
+Job 29709201; 10 cost vectors per arm, end-to-end network at α = 1, radius (c) per
+redraw by enumeration, τ = 0.05σ (`results/paper_a/prelim/f2_*_a1.json`).
+
+| arm | feasible vs clean-label model | vs truth | nominal (clean / truth) | cost over nominal |
+|---|---|---|---|---|
+| (ii) truth = network | 0.90 | 0.90 | 0.30 / 0.30 | +3.5% |
+| (i) truth = ODE | 1.00 | 0.90 | 0.30 / 0.20 | +3.5% |
+
+- Multistart separation; every run converged within 20 master solves (mean 4.2
+  and 7.4 iterations). The a posteriori attack finds a residual violation at 3 of
+  10 decisions, by 0.04 to 0.06σ.
+- One-step separation reaches 0.8 to 0.9 at +2.3 to 2.8%, but the attack finds a
+  violation at 9 of 10 of its decisions: an ablation, not the method.
+- n = 10, so the standard error is about 0.1; the radius is understated by
+  enumeration and the clean-label reference is noisy (2026-11-19 entry).
