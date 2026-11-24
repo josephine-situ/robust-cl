@@ -33,11 +33,12 @@ outline Section 6 is a result until a probe says so.
   labels, `f(x; θ(y)) = s(x)ᵀy + c(x)` (ridge on a feature map, last-layer network,
   trees with fixed splits). Theorem 1 holds at any RC-feasible `x*`. The current
   implementation is `experiments/probe_rc_ridge.py`; there is no `src/methods/rc.py` yet.
-- **FO-CP (new, not built)**: cutting planes whose separation retrains the model on
-  `ȳ + Δy` and ascends by first-order methods. On affine models its cut is the
-  RC's (probe F0 checks this); the RC's radius does not carry over, and F−1
-  tests the model-free one. Guarantee open. sklearn + numpy first, PyTorch only
-  if too slow (I11).
+- **FO-CP**: cutting planes whose separation retrains the model on `ȳ + Δy` and
+  ascends by first-order methods. Built as `experiments/probe_focp.py` (training
+  map, implicit gradient by torch autograd, projected ascent, loop, radius (c));
+  the end-to-end (32, 32) network uses α = 1 (CV). F0 and F1 done, F2 pilot
+  passed; status and open questions in `paper_plan.md`. Guarantee open.
+  Cluster jobs importing torch: see the submit scripts (1 thread, conda lib path).
 - **Baselines**: constant margin, split conformal, the wrapper, C-MICL (as published,
   and on the same model). `src/methods/` still holds the legacy implementations.
 - **Not in the paper**: random-bank CP (`src/methods/cp.py`) and the dial/rho sweeps.
