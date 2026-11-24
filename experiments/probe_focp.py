@@ -877,6 +877,10 @@ def stage_f2(args):
     alpha = chosen_alpha()
     torch.set_num_threads(args.threads)
     k, arm = args.redraw, args.arm
+    if not args.R_set:
+        rpath = os.path.join(OUT_DIR, f"radius_c_{arm}_r{k}_a{alpha:g}.json")
+        if not os.path.exists(rpath) or "R" not in json.load(open(rpath)):
+            stage_radius_c(args)     # resumable; N = --n-draws, enumeration
     R = args.R if args.R_set else radius_for(arm, k, alpha)
     tau = 0.05 * sigma
     ystar, truth = arm_truth(arm, inst, md)
