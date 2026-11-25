@@ -705,6 +705,27 @@ def arm_truth(arm, inst, md):
     return t(md.X_train), lambda x: float(t(x)[0])
 
 
+def fits_for(model, arm, k, ybar, ystar):
+    """theta0 = cold fit on ybar, the clean-label reference T(y*) from theta0 and a
+    cold-start clean fit, computed once per (arm, redraw) and stored. The cold fit
+    is not reproducible across cluster nodes (BLAS kernels; chaotic L-BFGS-B
+    paths), so a restarted task, or a later stage on the same redraw, must reload
+    them rather than refit: job 30384811 refit theta0 after preemption and 10
+    runs mixed two nominal networks."""
+    path = os.path.join(OUT_DIR, f"fits_{arm}_r{k}_a{model.alpha:g}.npz")
+    if os.path.exists(path):
+        z = np.load(path)
+        return z["theta0"], z["th_clean"], z["th_cold"]
+    import socket
+    theta0, _ = model.cold_fit(ybar, seed=k)
+    th_clean, _ = model.train(ystar, theta0)            # the guarantee's reference
+    th_cold, _ = model.cold_fit(ystar, seed=k + 500)    # beside it: a cold-start clean fit
+    os.makedirs(OUT_DIR, exist_ok=True)
+    np.savez(path, theta0=theta0, th_clean=th_clean, th_cold=th_cold,
+             host=socket.gethostname(), job=os.environ.get("SLURM_JOB_ID", "local"))
+    return theta0, th_clean, th_cold
+
+
 def stage_radius_c(args):
     """Radius (c) by ENUMERATION (a lower bound on each draw's maximum).
 
@@ -722,7 +743,7 @@ def stage_radius_c(args):
     ystar, _ = arm_truth(args.arm, inst, md)
     ybar = ystar + sigma * np.random.default_rng([args.seed, k]).standard_normal(len(ystar))
     model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, ybar, alpha=alpha)
-    theta0, info0 = model.cold_fit(ybar, seed=k)
+    theta0, _, _ = fits_for(model, args.arm, k, ybar, ystar)
     Xs = domain_sample(inst.variable_lb, inst.variable_ub, inst, args.n_sample, seed=0)
     sens = Sensitivity(model, theta0, ybar)
     snorm = np.concatenate([sigma * np.linalg.norm(sens.dh_dy(Xs[i:i + 2000], args.lam_rel), axis=0)
@@ -771,7 +792,7 @@ def stage_radius_refine(args):
     ystar, _ = arm_truth(args.arm, inst, md)
     ybar = ystar + sigma * np.random.default_rng([args.seed, k]).standard_normal(len(ystar))
     model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, ybar, alpha=alpha)
-    theta0, _ = model.cold_fit(ybar, seed=k)
+    theta0, _, _ = fits_for(model, args.arm, k, ybar, ystar)
     sens = Sensitivity(model, theta0, ybar)
     lam = (sens.auto_lam_rel() if args.lam_rel is None else args.lam_rel) * sens.trace_p
     # whitened sensitivity s(x) = sigma * A grad_theta h(x), A = -L_ty' (H + lam I)^-1
@@ -888,9 +909,7 @@ def stage_f2(args):
     cost = cost_vectors("paper", k + 1, inst)[k]
     obj_range = float(np.abs(cost) @ (inst.variable_ub - inst.variable_lb))
     model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, ybar, alpha=alpha)
-    theta0, info0 = model.cold_fit(ybar, seed=k)
-    th_clean, _ = model.train(ystar, theta0)            # the guarantee's reference
-    th_cold, _ = model.cold_fit(ystar, seed=k + 500)    # beside it: a cold-start clean fit
+    theta0, th_clean, th_cold = fits_for(model, arm, k, ybar, ystar)
     tag = f"f2_{arm}_r{k}_a{alpha:g}"
     path = os.path.join(OUT_DIR, tag + ".json")
     res = json.load(open(path)) if os.path.exists(path) else {"variants": {}}
@@ -915,6 +934,11 @@ def stage_f2(args):
         if os.path.exists(ck) and v["iters"]:
             z_ = np.load(ck)
             cuts, zs = list(z_["cuts"]), list(z_["zs"])
+        x = None
+        if len(v["iters"]) >= args.max_iter and not v["iters"][-1].get("infeasible"):
+            # preempted after the last master solve but before the attack: re-solve
+            # that master with the cuts it had (the checkpoint holds one more)
+            x, _ = solve_nominal(inst, model, theta0, cost, cuts=cuts[:v["iters"][-1]["n_cuts"]], tau=tau)
         while len(v["iters"]) < args.max_iter:
             t0 = time.time()
             x, st = solve_nominal(inst, model, theta0, cost, cuts=cuts, tau=tau)
@@ -936,7 +960,7 @@ def stage_f2(args):
             worst = float(model.predict(x[None], best["theta"])[0])
             it = {"master_s": t_master, "sep_s": time.time() - t1, "obj": float(cost @ x),
                   "h": float(model.predict(x[None], theta0)[0]), "worst": worst,
-                  "best_start": best["start"], "n_cuts": len(cuts)}
+                  "best_start": best["start"], "n_cuts": len(cuts), "master_status": st}
             v["iters"].append(it)
             print(f"{tag} {variant} iter {len(v['iters'])}: obj {it['obj']:.4f} h {it['h']:.3f} "
                   f"worst {worst:.3f} (master {t_master:.0f}s, sep {it['sep_s']:.0f}s)", flush=True)
