@@ -994,6 +994,280 @@ def stage_f2(args):
         _save(tag + ".json", res)
 
 
+# --------------------------------------------------------------------------
+# F2 baselines (stage f2_base)
+# --------------------------------------------------------------------------
+WRAP_P = 20                 # Maragno et al.'s P (solve_wrapper's default)
+WRAP_FRAC = 0.5             # their bootstrap proportion, with replacement (Sec. 4.4.1)
+WRAP_ALPHAS = [0.0, 0.05, 0.1, 0.2, 0.3, 0.5]
+WIDTH_PARAMS = {"hidden_layer_sizes": (32, 32), "alpha": 0.01, "max_iter": 2000,
+                "batch_size": 32}     # C-MICL's width model, config.yaml (2026-09-23)
+
+
+def _master(inst, lb, ub):
+    """Empty master over the scaled design u in [-1, 1]^d, with the domain."""
+    m = gp.Model()
+    m.Params.OutputFlag = 0
+    m.Params.TimeLimit = TIME_LIMIT
+    if os.environ.get("GRB_THREADS"):
+        m.Params.Threads = int(os.environ["GRB_THREADS"])
+    d = len(lb)
+    u = m.addVars(d, lb=-1.0, ub=1.0)
+    x = [lb[i] + 0.5 * (ub[i] - lb[i]) * (u[i] + 1.0) for i in range(d)]
+    for dc in inst.domain_constraints:
+        m.addConstr(gp.quicksum(float(dc.coeffs[i]) * x[i] for i in range(d)) <= dc.rhs)
+    return m, u, x
+
+
+def _solve(m, u, x, cost, lb, ub):
+    m.setObjective(gp.quicksum(float(cost[i]) * x[i] for i in range(len(lb))), GRB.MINIMIZE)
+    t0 = time.time()
+    m.optimize()
+    out = {"status": int(m.Status), "time_s": time.time() - t0, "x": None}
+    if m.SolCount > 0:
+        uu = np.clip(np.array([u[i].X for i in range(len(lb))]), -1, 1)
+        out["x"] = lb + 0.5 * (ub - lb) * (uu + 1.0)
+    return out
+
+
+def width_net(X, resid, lb, ub, seed):
+    """C-MICL's width model u: train_model's Pipeline(StandardScaler, MLP) on the
+    absolute residuals, exactly as cmicl.calibrate_conformal_model fits it, then
+    the scaler folded into the first layer so u is an MLPModel on the scaled
+    design (mu = 0, sd = 1) and embeds with the same big-M code as h."""
+    from src.models.train import train_model
+    pipe = train_model(X, resid, "mlp", {**WIDTH_PARAMS, "random_state": seed})
+    sc, net = pipe.named_steps["scaler"], pipe.named_steps["model"]
+    a = 0.5 * (ub - lb) / sc.scale_
+    c = (lb + 0.5 * (ub - lb) - sc.mean_) / sc.scale_
+    Ws = [w.copy() for w in net.coefs_]
+    bs = [b.copy() for b in net.intercepts_]
+    bs[0] = bs[0] + c @ Ws[0]
+    Ws[0] = a[:, None] * Ws[0]
+    um = MLPModel(X, lb, ub, resid, alpha=WIDTH_PARAMS["alpha"])
+    um.mu, um.sd = 0.0, 1.0
+    th = um.pack(Ws, bs)
+    err = float(np.abs(um.predict(X, th) - pipe.predict(X)).max())
+    assert err < 1e-8, f"width net fold: max error {err}"
+    return um, th
+
+
+def stage_f2_base(args):
+    """F2's baselines on the SAME redraw, cost vector and judges as stage f2.
+
+    End-to-end network (theta0, T(y*) and the cold clean fit from fits_for):
+      nominal          h(x; theta0) >= 50
+      margin m         h(x; theta0) >= 50 + m, m over probe_rc_ridge's frontier
+                       grid (flow units); no rule picks m
+      wrapper a        P = 20 networks, each the cold fit on a bootstrap half
+                       sample (with replacement); at least ceil((1 - a) P) of
+                       them >= 50 (indicator constraints)
+      cmicl a          h80 = the same network class fit on a random 80%, u =
+                       C-MICL's width net on h80's in-sample |residuals|,
+                       q = s_(k) of |y - h80| / u on the other 20%;
+                       h80 - q u >= 50 and u >= 0 (Ovalle et al.; cmicl.py)
+      conformal a      h80 >= 50 + q, q from |y - h80| on the 20% (u = 1)
+      nominal80        h80 >= 50
+    Frozen network (probe_rc_ridge's net_frozen, R2; affine in the labels):
+      frozen_nominal, frozen_rc at radius (c) (= Theorem 1's simulated radius,
+      by enumeration with radius_c's noise stream, no inflation), and
+      frozen_focp: the F2 loop (tau = 0.05 sigma, cap 20) at the same radius,
+      one-step separation (exact for affine models, F0(i)).
+    Every decision is judged against the end-to-end T(y*) and cold clean fit,
+    the frozen network's clean-label fit, and the arm's truth. Fits are stored
+    (fits_*.npz, f2base_*_fits.npz) and rows saved as they finish, so a
+    requeued task resumes on the same models."""
+    from probe_rc_ridge import (CAL_FRAC, CONF_ALPHAS, FRONTIER_MARGIN, base_model,
+                                solve_rc, _x_of)
+    from src.methods.cmicl import conformal_quantile
+    inst, md, sigma = setup()
+    alpha = chosen_alpha()
+    torch.set_num_threads(args.threads)
+    k, arm = args.redraw, args.arm
+    lb, ub = inst.variable_lb, inst.variable_ub
+    X = md.X_train
+    ystar, truth = arm_truth(arm, inst, md)
+    ybar = ystar + sigma * np.random.default_rng([args.seed, k]).standard_normal(len(ystar))
+    cost = cost_vectors("paper", k + 1, inst)[k]
+    obj_range = float(np.abs(cost) @ (ub - lb))
+    model = MLPModel(X, lb, ub, ybar, alpha=alpha)
+    theta0, th_clean, th_cold = fits_for(model, arm, k, ybar, ystar)
+    n = model.n
+    tag = f"f2base_{arm}_r{k}_a{alpha:g}"
+    path = os.path.join(OUT_DIR, tag + ".json")
+    res = json.load(open(path)) if os.path.exists(path) else {"rows": []}
+    res.update(arm=arm, redraw=k, alpha=alpha, obj_range=obj_range, sigma=sigma)
+    done = {(r["kind"], r["param"]) for r in res["rows"]}
+
+    # frozen network: its own clean-label fit, for the frozen rows' guarantee
+    cr = build("net_frozen", inst, md, sigma, frozen_labels(md, sigma))
+    rm = RidgeModel(cr, X)
+    fz0, _ = rm.train(ybar)
+    fz_clean, _ = rm.train(ystar)
+
+    def judge(x):
+        return {"x": x.tolist(), "obj": float(cost @ x),
+                "h": float(model.predict(x[None], theta0)[0]),
+                "clean": float(model.predict(x[None], th_clean)[0]),
+                "clean_cold": float(model.predict(x[None], th_cold)[0]),
+                "frozen_clean": float(rm.predict(x[None], fz_clean)[0]),
+                "truth": float(truth(x))}
+
+    def add(kind, param, out, **extra):
+        row = {"kind": kind, "param": param, "status": out["status"],
+               "time_s": out["time_s"], "obj": float("nan")}
+        if out["x"] is not None:
+            row.update(judge(out["x"]))
+        row.update(extra)
+        res["rows"].append(row)
+        done.add((kind, param))
+        _save(tag + ".json", res)
+        print(f"{tag} {kind} {param}: status {row['status']} obj {row['obj']:.4f} "
+              f"clean {row.get('clean', float('nan')):.3f} truth {row.get('truth', float('nan')):.3f} "
+              f"({row['time_s']:.0f}s)", flush=True)
+
+    def nominal_like(th, shift):
+        m, u, x = _master(inst, lb, ub)
+        m.addConstr(model.gurobi_out(m, u, th) >= PRODUCT_FLOOR + shift)
+        return _solve(m, u, x, cost, lb, ub)
+
+    # ---- nominal and the constant margin on theta0 -------------------------
+    if ("nominal", 0.0) not in done:
+        add("nominal", 0.0, nominal_like(theta0, 0.0))
+    f2p = os.path.join(OUT_DIR, f"f2_{arm}_r{k}_a{alpha:g}.json")
+    if os.path.exists(f2p):
+        nom = next(r for r in res["rows"] if r["kind"] == "nominal")
+        f2nom = json.load(open(f2p))["nominal"]
+        res["f2_nominal_obj"] = f2nom["obj"]
+        res["paired_with_f2"] = bool(abs(nom["obj"] - f2nom["obj"]) < 1e-6
+                                     and np.allclose(nom["x"], f2nom["x"], atol=1e-6))
+    for mg in FRONTIER_MARGIN:
+        if ("margin", mg) not in done:
+            add("margin", mg, nominal_like(theta0, mg))
+
+    # ---- stored baseline fits: h80, u, the P bootstrap networks ------------
+    perm = np.random.default_rng([args.seed, k, 2]).permutation(n)
+    n_cal = int(round(CAL_FRAC * n))
+    cal, tr = perm[:n_cal], perm[n_cal:]
+    boot = [np.random.default_rng([args.seed, k, 3, p]).choice(n, int(round(WRAP_FRAC * n)), replace=True)
+            for p in range(WRAP_P)]
+    hm = MLPModel(X[tr], lb, ub, ybar[tr], alpha=alpha)
+    bms = [MLPModel(X[ix], lb, ub, ybar[ix], alpha=alpha) for ix in boot]
+    fpath = os.path.join(OUT_DIR, tag + "_fits.npz")
+    if os.path.exists(fpath):
+        z = np.load(fpath)
+        th_h, th_u, th_b = z["th_h"], z["th_u"], list(z["th_b"])
+        resid_tr = np.abs(ybar[tr] - hm.predict(X[tr], th_h))
+        um = MLPModel(X[tr], lb, ub, resid_tr, alpha=WIDTH_PARAMS["alpha"])
+        um.mu, um.sd = 0.0, 1.0
+    else:
+        t0 = time.time()
+        th_h, _ = hm.cold_fit(ybar[tr], seed=k)
+        resid_tr = np.abs(ybar[tr] - hm.predict(X[tr], th_h))
+        um, th_u = width_net(X[tr], resid_tr, lb, ub, seed=k)
+        th_b = [bm.cold_fit(ybar[ix], seed=1000 * k + p)[0] for p, (bm, ix) in enumerate(zip(bms, boot))]
+        np.savez(fpath, th_h=th_h, th_u=th_u, th_b=np.array(th_b))
+        print(f"{tag}: baseline fits {(time.time() - t0) / 60:.1f} min", flush=True)
+
+    # ---- C-MICL, split conformal, nominal80 --------------------------------
+    u_cal = um.predict(X[cal], th_u)
+    r_cal = np.abs(ybar[cal] - hm.predict(X[cal], th_h))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        scores = np.where(np.isnan(r_cal / u_cal), np.inf, r_cal / u_cal)
+    res["cmicl_info"] = {"n_cal": int(n_cal), "n_neg_u": int((u_cal <= 0).sum()),
+                         "mean_u": float(u_cal.mean()), "cal_mae": float(r_cal.mean())}
+    if ("nominal80", 0.0) not in done:
+        add("nominal80", 0.0, _h80(inst, lb, ub, hm, th_h, 0.0, cost))
+    for a in CONF_ALPHAS:
+        if ("cmicl", a) not in done:
+            q = conformal_quantile(scores, a)
+            if np.isfinite(q):
+                m, u, x = _master(inst, lb, ub)
+                he, ue = hm.gurobi_out(m, u, th_h), um.gurobi_out(m, u, th_u)
+                m.addConstr(he - q * ue >= PRODUCT_FLOOR)
+                m.addConstr(ue >= 0.0)
+                out = _solve(m, u, x, cost, lb, ub)
+            else:
+                out = {"status": -1, "time_s": 0.0, "x": None}
+            ux = float(um.predict(out["x"][None], th_u)[0]) if out["x"] is not None else None
+            add("cmicl", a, out, q=q, u_at_x=ux)
+        if ("conformal", a) not in done:
+            q = conformal_quantile(r_cal, a)
+            out = (_h80(inst, lb, ub, hm, th_h, q, cost) if np.isfinite(q)
+                   else {"status": -1, "time_s": 0.0, "x": None})
+            add("conformal", a, out, q=q)
+
+    # ---- wrapper ------------------------------------------------------------
+    for a in WRAP_ALPHAS:
+        if ("wrapper", a) in done:
+            continue
+        need = int(np.ceil((1 - a) * WRAP_P - 1e-9))
+        m, u, x = _master(inst, lb, ub)
+        zv = m.addVars(WRAP_P, vtype=GRB.BINARY)
+        for p, (bm, th) in enumerate(zip(bms, th_b)):
+            if need == WRAP_P:
+                m.addConstr(bm.gurobi_out(m, u, th) >= PRODUCT_FLOOR)
+            else:
+                m.addConstr((zv[p] == 1) >> (bm.gurobi_out(m, u, th) >= PRODUCT_FLOOR))
+        if need < WRAP_P:
+            m.addConstr(zv.sum() >= need)
+        out = _solve(m, u, x, cost, lb, ub)
+        held = (int(sum(bm.predict(out["x"][None], th)[0] >= PRODUCT_FLOOR - 1e-6
+                        for bm, th in zip(bms, th_b))) if out["x"] is not None else None)
+        add("wrapper", a, out, need=need, held=held)
+
+    # ---- frozen network: nominal, RC and FO-CP at radius (c) ---------------
+    if not {("frozen_nominal", 0.0), ("frozen_rc", 0.0), ("frozen_focp", 0.0)} <= done:
+        Xs = domain_sample(lb, ub, inst, args.n_sample, seed=0)
+        sn, dF = cr.snorm(Xs), cr.features(Xs) - cr.phibar
+        W = []
+        for i in range(args.n_draws):     # radius_c's noise stream; s(x)'e / ||s(x)||
+            e = np.random.default_rng([args.seed, k, 11, i]).standard_normal(n)
+            W.append(float(((e.mean() + dF @ (cr.H @ e)) / sn).max()))
+        kk = int(np.ceil((len(W) + 1) * (1 - args.eps)))
+        Rf = float(np.sort(W)[min(kk, len(W)) - 1])
+        res["frozen_R"] = Rf
+        coef0 = (fz0[0], fz0[1:])
+        if ("frozen_nominal", 0.0) not in done:
+            r = solve_rc(cr, inst, coef0, 0.0, cost)
+            add("frozen_nominal", 0.0, {"status": r["status"], "time_s": r["time"], "x": r["x"]})
+        if ("frozen_rc", 0.0) not in done:
+            r = solve_rc(cr, inst, coef0, Rf * sigma, cost)
+            add("frozen_rc", 0.0, {"status": r["status"], "time_s": r["time"], "x": r["x"]}, R=Rf)
+        if ("frozen_focp", 0.0) not in done:
+            tau, cuts, it, t0, x = 0.05 * sigma, [], 0, time.time(), None
+            conv, st = False, None
+            while it < args.max_iter:
+                it += 1
+                m, u, xv, dphi, _ = base_model(cr, inst)
+                lin = lambda th: th[0] + gp.quicksum(float(th[1 + j]) * dphi[j] for j in range(cr.p))
+                m.addConstr(lin(fz0) >= PRODUCT_FLOOR)
+                for th in cuts:
+                    m.addConstr(lin(th) >= PRODUCT_FLOOR + tau)
+                m.setObjective(gp.quicksum(float(cost[i]) * xv[i] for i in range(cr.d)), GRB.MINIMIZE)
+                m.optimize()
+                st = int(m.Status)
+                if m.SolCount == 0:
+                    x = None
+                    break
+                x = _x_of(cr, u)
+                best = ascend(rm, x, ybar, sigma, Rf, fz0, [("zero", np.zeros(n))], lam_rel=0.0, max_steps=1)
+                if float(rm.predict(x[None], best["theta"])[0]) >= PRODUCT_FLOOR - 1e-9:
+                    conv = True
+                    break
+                cuts.append(best["theta"])
+            add("frozen_focp", 0.0, {"status": st, "time_s": time.time() - t0, "x": x},
+                R=Rf, iters=it, converged=conv)
+    res["done"] = True
+    _save(tag + ".json", res)
+
+
+def _h80(inst, lb, ub, hm, th_h, shift, cost):
+    m, u, x = _master(inst, lb, ub)
+    m.addConstr(hm.gurobi_out(m, u, th_h) >= PRODUCT_FLOOR + shift)
+    return _solve(m, u, x, cost, lb, ub)
+
+
 CV_ALPHAS = [1e-3, 1e-2, 0.1, 0.3, 1.0, 3.0, 10.0, 30.0]
 
 
@@ -1039,7 +1313,7 @@ def _save(name, obj):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1", "f0_loop",
-                             "truth_net", "radius_c", "f2", "radius_refine", "timing"])
+                             "truth_net", "radius_c", "f2", "radius_refine", "timing", "f2_base"])
     ap.add_argument("--alpha", type=float, default=None,
                     help="network L2 penalty (f1 default: the CV choice; else NET_ALPHA)")
     ap.add_argument("--threads", type=int, default=1, help="torch threads (f1)")
@@ -1074,4 +1348,5 @@ if __name__ == "__main__":
     {"f0_affine": stage_f0_affine, "f0_grad": stage_f0_grad,
      "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1, "f0_loop": stage_f0_loop,
      "truth_net": stage_truth_net, "radius_c": stage_radius_c, "f2": stage_f2,
-     "radius_refine": stage_radius_refine, "timing": stage_timing}[args.stage](args)
+     "radius_refine": stage_radius_refine, "timing": stage_timing,
+     "f2_base": stage_f2_base}[args.stage](args)

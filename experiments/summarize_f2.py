@@ -106,14 +106,78 @@ def summarize(runs, arm, redraws):
     return rows
 
 
+def summarize_base(d, arm, redraws):
+    """F2's baselines (probe_focp.py --stage f2_base) beside FO-CP (stage f2).
+    Cost is % of the objective range over the end-to-end nominal of the SAME
+    stage run (theta0); frozen rows also over the frozen nominal."""
+    import pandas as pd
+    runs, f2 = {}, load(d, arm)
+    for p in glob.glob(os.path.join(d, f"f2base_{arm}_r*_a1.json")):
+        k = int(re.search(r"_r(\d+)_a1\.json$", p).group(1))
+        if k in redraws:
+            runs[k] = json.load(open(p))
+    if not runs:
+        return
+    rows = []
+    for k, r in runs.items():
+        nom = next((x for x in r["rows"] if x["kind"] == "nominal"), None)
+        fnom = next((x for x in r["rows"] if x["kind"] == "frozen_nominal"), None)
+        for x in r["rows"]:
+            rows.append({**{c: x.get(c, np.nan) for c in ("kind", "param", "status", "obj", "clean",
+                                                          "clean_cold", "frozen_clean", "truth",
+                                                          "u_at_x", "time_s")},
+                         "redraw": k, "range": r["obj_range"],
+                         "nom": nom["obj"] if nom else np.nan,
+                         "fnom": fnom["obj"] if fnom else np.nan})
+        v = f2.get(k, {}).get("variants", {}).get("multi")
+        if v and v.get("done") and "final" in v:
+            fin = v["final"]
+            rows.append({"kind": "focp_f2", "param": 0.0, "status": 2, "redraw": k,
+                         "obj": fin["obj"], "clean": fin["clean"], "clean_cold": fin["clean_cold"],
+                         "truth": fin["truth"], "frozen_clean": np.nan, "range": r["obj_range"],
+                         "nom": f2[k]["nominal"]["obj"], "fnom": np.nan, "u_at_x": np.nan, "time_s": np.nan})
+    df = pd.DataFrame(rows)
+    num = ["obj", "clean", "clean_cold", "frozen_clean", "truth", "u_at_x", "time_s", "nom", "fnom", "range"]
+    df[num] = df[num].apply(pd.to_numeric, errors="coerce")
+    solved = df.obj.notna()
+    df["cost"] = 100 * (df.obj - df.nom) / df.range
+    df["cost_frozen"] = 100 * (df.obj - df.fnom) / df.range
+    for c in ("clean", "clean_cold", "frozen_clean", "truth"):
+        df[f"f_{c}"] = np.where(solved, df[c] >= FLOOR - 1e-6, np.nan)
+    g = df.groupby(["kind", "param"], sort=False)
+    df["solved"] = solved.astype(float)
+    tab = g.agg(n=("redraw", "nunique"), solved=("solved", "mean"), clean=("f_clean", "mean"),
+                cold=("f_clean_cold", "mean"), frozen_clean=("f_frozen_clean", "mean"),
+                truth=("f_truth", "mean"), cost=("cost", "mean"), cost_se=("cost", "sem"),
+                cost_vs_frozen_nom=("cost_frozen", "mean"), u_at_x_med=("u_at_x", "median"),
+                time_s=("time_s", "mean")).reset_index()
+    paired = sum(bool(r.get("paired_with_f2")) for r in runs.values())
+    print(f"\n=== baselines, arm {arm}: {len(runs)} redraws; theta0 paired with F2's in {paired}")
+    with pd.option_context("display.width", 220, "display.max_rows", 200):
+        print(tab.round(3).to_string(index=False))
+    print("  oracle read (cheapest setting reaching 0.9):")
+    for kind in ("margin", "wrapper", "cmicl", "conformal"):
+        t = tab[tab.kind == kind]
+        for ref in ("clean", "truth"):
+            ok = t[t[ref] >= 0.9]
+            s = ok.loc[ok.cost.idxmin()] if len(ok) else None
+            print(f"    {kind:10s} vs {ref:5s}: " + (f"param {s.param:g}, feasible {s[ref]:.2f}, cost {s.cost:.2f}%"
+                                                     if s is not None else "never reaches 0.9"))
+    return tab
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", default="results/paper_a/prelim")
     ap.add_argument("--redraws", default="0-99")
+    ap.add_argument("--base", action="store_true", help="the baselines (stage f2_base) instead")
     a = ap.parse_args()
     lo, hi = map(int, a.redraws.split("-"))
     for arm in ("net", "ode"):
-        summarize(load(a.dir, arm), arm, set(range(lo, hi + 1)))
+        if a.base:
+            summarize_base(a.dir, arm, set(range(lo, hi + 1)))
+        else:
+            summarize(load(a.dir, arm), arm, set(range(lo, hi + 1)))
 
 
 if __name__ == "__main__":
