@@ -217,7 +217,7 @@ F−1 to F2 decide whether FO-CP is worth building fully.
 | F−1 | Is radius (a) affordable? | `probe_rc_ridge.py --stage modelfree` at R = √χ²(n, 0.9) on `cubic` and `net_frozen`, 100 redraws | Done (job 29561590): no (Radius table) |
 | F0 | Is the machinery right? | (i) Affine models: one step gives `R‖s(x)‖`. (ii) End-to-end network: implicit gradient against retraining. (iii) Loop on `net_frozen`: x* and objective converge to the RC's solution as τ → 0; record cuts | (i) passed; (ii) run in directional form; (iii) passed. Results below |
 | F1 | Does ascent beyond the first step find worse relabelings? | End-to-end (32, 32), a few redraws, at the nominal x* and one robust iterate. Increase in the retrained prediction, in σ units, at equal R, for: the linearized step, multistart ascent, the random bank (B = 200), the true relabeling `Δy = −e`, cold restarts with other seeds. Also d_eff | Done (job 29667805): ascent adds about 20% over the linearized step; the random bank finds a tenth of either; cold restarts move ĥ about half as much as the worst case. Results below |
-| F2 | Does FO-CP deliver on SS1, and at what cost? | Radius (c), with (b) as a check where d_eff is small. Pilot: 10 cost vectors, SS1(ii); then 100 cost vectors, both arms. End-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for all). `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4. Pilot done (job 29709201): results below |
+| F2 | Does FO-CP deliver on SS1, and at what cost? | Radius (c), with (b) as a check where d_eff is small. Pilot: 10 cost vectors, SS1(ii); then 100 cost vectors, both arms. End-to-end network: FO-CP, nominal, margin, wrapper, C-MICL (one model for all). `net_frozen`: FO-CP beside the last-layer RC. Judged against the clean-label model and the arm's truth | H4. Pilot (job 29709201) and FO-CP on 100 redraws per arm (job 30384811; 10 reruns in job 30530397) done: results below. Baselines and the frozen-network comparison to build |
 
 ## Instances
 
@@ -294,6 +294,67 @@ width-at-the-optimum comparison with C-MICL.
   about 45 (row, unit) pre-activations sit within 1e-4 of a kink, so it
   matters for radius (c)'s denominator, not for the ascent, which uses only
   the direction.
+
+### F2 (job 30384811, 2026-11-25)
+
+100 redraws per SS1 arm, Ovalle et al.'s cost vector k with redraw k; the
+pilot's settings (end-to-end network at α = 1, radius (c) per redraw by
+enumeration, τ = 0.05σ, cap 20 master solves). R by enumeration: 3.3 to 5.7σ
+(mean 4.3) on arm (ii), 3.4 to 6.4σ (mean 4.5) on arm (i). 190 runs are
+reported; 10 are being rerun (job 30530397, below). Feasibility with 95%
+Wilson intervals; cost as % of the objective range over the nominal
+decision. Summary: `experiments/summarize_f2.py`.
+
+| Arm, separation | n | Converged | Master solves | Clean | Cold | Truth | Cost, mean (median) | Attack below 50 |
+|---|---|---|---|---|---|---|---|---|
+| (ii) truth net, multistart | 93 | 92 | 5.7 (max 20) | 0.98 [0.92, 0.99] | 0.99 | 0.98 [0.92, 0.99] | +4.4% (3.5%) | 25/93, median 0.03σ |
+| (ii) truth net, one step | 93 | 93 | 3.8 | 0.92 [0.85, 0.96] | 0.92 | 0.85 [0.76, 0.91] | +3.2% (2.2%) | 81/93, median 0.32σ |
+| (i) ODE, multistart | 97 | 96 | 6.4 (max 20) | 0.99 [0.94, 1.00] | 0.98 | 0.97 [0.91, 0.99] | +4.7% (3.8%) | 37/97, median 0.06σ |
+| (i) ODE, one step | 97 | 97 | 4.2 | 0.94 [0.87, 0.97] | 0.91 | 0.79 [0.70, 0.86] | +3.3% (2.9%) | 84/97, median 0.45σ |
+| Nominal, arm (ii) / (i) | | | | 0.47 / 0.31 | 0.44 / 0.33 | 0.37 / 0.24 | | |
+
+- **FO-CP with multistart separation over-delivers**: 0.98 to 0.99 against
+  the clean-label model, where the target is 0.9 and nominal reaches 0.31 to
+  0.47, at a mean +4.4 to 4.7% of the objective range (median slack 1.1σ at
+  the final decision). Radius (c) is conservative even though enumeration
+  understates it by 10 to 17%: it is a quantile of a supremum over the whole
+  domain, as the RC's simulated radius is, and the RC's simulated rows were
+  also at 1.00 against the clean-label model (job 29141177).
+- **Against the truth it holds on both arms** (0.97 to 0.98). On the ODE arm
+  the end-to-end network has no bias failure, unlike the last-layer RC on the
+  frozen network (0.52 against the ODE at +2.2%; cubic-ridge RC 0.95 at
+  +4.2%). Whether that is the end-to-end fit or FO-CP's larger margin is what
+  the frozen-network comparison is for.
+- **One-step separation meets 0.9 against the clean-label model but not the
+  truth** (0.79 to 0.85), at about 1.3 points less cost. The attack finds a
+  violation inside the ball at 87 to 90% of its decisions. It reaches the
+  clean-label target only because the radius is conservative; multistart's
+  extra slack (1.1σ against 0.7 to 0.8σ) is what absorbs the clean-label
+  model's own error (clean minus truth at the final decision: sd 0.3σ on arm
+  (ii), 0.5σ on arm (i)). Multistart stays the method.
+- **The attack does not predict violations.** None of the 62 multistart
+  decisions it flags (gaps of order τ) violates the clean-label model; the 3
+  that do were all cleared by the attack. The violations come from real noise
+  the ball does not cover at `x*`, not from separation failing.
+- **The clean-label reference barely matters here.** At the final multistart
+  decisions, `T(y*)` from θ₀ and a cold-start clean fit differ by a median
+  0.08 to 0.11σ (90th percentile 0.23 to 0.36σ), a tenth of the slack; they
+  disagree on feasibility in 4 of 190 runs.
+- Convergence: 188 of 190 within 20 master solves (arm (ii) redraw 18, arm
+  (i) redraw 86; both feasible against the clean-label model). 31 of 2,077
+  master solves hit the 120 s limit, in 5 runs including those two; the
+  iterations did not record the Gurobi status (added).
+- Cost to run: separation median 2.5 minutes per iteration (max 24); loop
+  plus attack median 22 minutes per run, max 6.2 hours, single-threaded.
+- **Reproducibility.** A requeued task refits θ₀ on its new node, and the
+  cold fit is not reproducible across nodes: in 9 of 13 requeued tasks the
+  nominal objective moved (by up to 1.1, 2% of the range), so those runs mixed
+  two nominal networks. They, and arm (ii) redraw 86 (crashed on resume at the
+  iteration cap; fixed), are set aside (`hybrid_30384811/` on the cluster) and
+  rerun with θ₀, `T(y*)` and the cold clean fit stored per
+  redraw (`fits_*.npz`, commit 99aa30a). Including them changes no rate by
+  more than 0.01. The pilot's radii (redraws 0 to 9) came from separate jobs,
+  so their θ₀ may differ from the F2 run's.
 
 ### F2 pilot (job 29709201, 2026-11-19)
 

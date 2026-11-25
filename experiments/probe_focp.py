@@ -710,7 +710,7 @@ def fits_for(model, arm, k, ybar, ystar):
     cold-start clean fit, computed once per (arm, redraw) and stored. The cold fit
     is not reproducible across cluster nodes (BLAS kernels; chaotic L-BFGS-B
     paths), so a restarted task, or a later stage on the same redraw, must reload
-    them rather than refit: job 30384811 refit theta0 after preemption and 10
+    them rather than refit: job 30384811 refit theta0 after preemption and 9
     runs mixed two nominal networks."""
     path = os.path.join(OUT_DIR, f"fits_{arm}_r{k}_a{model.alpha:g}.npz")
     if os.path.exists(path):

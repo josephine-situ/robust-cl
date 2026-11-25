@@ -864,3 +864,39 @@ redraw by enumeration, τ = 0.05σ (`results/paper_a/prelim/f2_*_a1.json`).
   violation at 9 of 10 of its decisions: an ablation, not the method.
 - n = 10, so the standard error is about 0.1; the radius is understated by
   enumeration and the clean-label reference is noisy (2026-11-19 entry).
+
+## 2026-11-25: F2 on 100 redraws: FO-CP over-delivers on both SS1 arms
+
+Job 30384811; 100 redraws per SS1 arm (Ovalle et al.'s cost vector k with redraw k),
+end-to-end (32, 32) network at α = 1, radius (c) per redraw by enumeration (mean
+4.3σ and 4.5σ), τ = 0.05σ. 190 runs reported; 10 rerun in job 30530397 (below).
+Details: `paper/paper_plan.md`, "F2 (job 30384811)".
+
+| arm, separation | vs clean-label model | vs truth | nominal (clean / truth) | cost over nominal |
+|---|---|---|---|---|
+| (ii) truth = network, multistart | 0.98 | 0.98 | 0.47 / 0.37 | +4.4% |
+| (i) truth = ODE, multistart | 0.99 | 0.97 | 0.31 / 0.24 | +4.7% |
+| (ii), one step | 0.92 | 0.85 | | +3.2% |
+| (i), one step | 0.94 | 0.79 | | +3.3% |
+
+- **Above the 0.9 target, not at it.** Radius (c) is a quantile of a supremum
+  over the domain, conservative like the RC's simulated radius (also 1.00 against
+  the clean-label model in job 29141177), even though enumeration understates it.
+- **No bias failure against the ODE** (0.97), unlike the last-layer RC on the
+  frozen network (0.52 at +2.2%); cubic-ridge RC: 0.95 at +4.2%. The frozen-network
+  comparison will separate the end-to-end fit from FO-CP's larger margin.
+- **One-step separation** meets 0.9 against the clean-label model only because the
+  radius is conservative: it falls to 0.79 to 0.85 against the truth, and the
+  attack finds a violation inside the ball at 87 to 90% of its decisions.
+- **The attack does not predict violations**: none of the 62 multistart decisions
+  it flags violates the clean-label model, and it cleared the 3 that do.
+- **Clean-label reference (open question):** at the final decisions, `T(y*)` and a
+  cold-start clean fit differ by a median 0.1σ against 1.1σ of slack, and disagree
+  on feasibility in 4 of 190 runs. Here the choice does not move the result.
+- 188 of 190 converged within 20 master solves (mean 6); median 22 minutes per run.
+- **Reproducibility:** a requeued task refits θ₀ on another node, and the fit
+  differs across nodes, so 9 runs mixed two nominal networks (plus task 86, which
+  crashed on resume). They are rerun with the fits stored per redraw; including
+  them moves no rate by more than 0.01.
+- **Next:** baselines on the end-to-end network (margin, wrapper, C-MICL) and the
+  frozen-network comparison, on the same redraws and cost vectors.
