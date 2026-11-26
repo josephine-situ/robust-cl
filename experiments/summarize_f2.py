@@ -151,7 +151,9 @@ def summarize_base(d, arm, redraws):
                 truth=("f_truth", "mean"), cost=("cost", "mean"), cost_se=("cost", "sem"),
                 cost_vs_frozen_nom=("cost_frozen", "mean"), u_at_x_med=("u_at_x", "median"),
                 time_s=("time_s", "mean")).reset_index()
-    paired = sum(bool(r.get("paired_with_f2")) for r in runs.values())
+    # recomputed here: a baseline task may finish before f2 writes its nominal
+    paired = sum(1 for k, r in runs.items() if k in f2 and any(
+        x["kind"] == "nominal" and abs(x["obj"] - f2[k]["nominal"]["obj"]) < 1e-6 for x in r["rows"]))
     print(f"\n=== baselines, arm {arm}: {len(runs)} redraws; theta0 paired with F2's in {paired}")
     with pd.option_context("display.width", 220, "display.max_rows", 200):
         print(tab.round(3).to_string(index=False))

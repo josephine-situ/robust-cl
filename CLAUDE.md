@@ -36,8 +36,9 @@ outline Section 6 is a result until a probe says so.
 - **FO-CP**: cutting planes whose separation retrains the model on `ȳ + Δy` and
   ascends by first-order methods. Built as `experiments/probe_focp.py` (training
   map, implicit gradient by torch autograd, projected ascent, loop, radius (c));
-  the end-to-end (32, 32) network uses α = 1 (CV). F0 and F1 done, F2 pilot
-  passed; status and open questions in `paper_plan.md`. Guarantee open.
+  the end-to-end (32, 32) network uses α = 1 (CV). F0, F1 and F2 done
+  (job 30384811); baselines are `--stage f2_base`. Status and open questions
+  in `paper_plan.md`. Guarantee open.
   Cluster jobs importing torch: see the submit scripts (1 thread, conda lib path).
 - **Baselines**: constant margin, split conformal, the wrapper, C-MICL (as published,
   and on the same model). `src/methods/` still holds the legacy implementations.

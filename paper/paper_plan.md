@@ -355,6 +355,21 @@ decision. Summary: `experiments/summarize_f2.py`.
   redraw (`fits_*.npz`, commit 99aa30a). Including them changes no rate by
   more than 0.01. The pilot's radii (redraws 0 to 9) came from separate jobs,
   so their θ₀ may differ from the F2 run's.
+- **Baselines: job 30532214 (running)**, `probe_focp.py --stage f2_base`,
+  one task per (arm, redraw), same noise, cost vector and judges. End-to-end
+  network: nominal; constant margin over the frontier grid (0.25 to 10 flow
+  units); wrapper with P = 20 networks on bootstrap half-samples, at least
+  ⌈(1 − a)P⌉ satisfied, a ∈ {0, 0.05, 0.1, 0.2, 0.3, 0.5}; C-MICL with h the
+  same network class on a random 80%, the config's width net (batch 32),
+  `h − q u ≥ 50` and `u ≥ 0`, α ∈ {0.5, …, 0.02}; split conformal (u = 1) on
+  the same h. Frozen network (R2's): nominal, RC and FO-CP (one-step, exact
+  for affine) at radius (c) with radius_c's noise stream, no inflation.
+  θ₀ is refit for the 190 runs whose fits were not stored, so most are not
+  paired with F2's θ₀ (the stage records which are); the 10 reruns are.
+  A local smoke test (redraw 0) found C-MICL's width at the optimum at 0
+  (`u ≥ 0` binding), so its decision did not move with α: the failure of
+  2026-09-23, now on the end-to-end h. Frozen FO-CP matched the frozen RC
+  (objective gap of order τ, 2 iterations).
 
 ### F2 pilot (job 29709201, 2026-11-19)
 
@@ -412,8 +427,12 @@ Enumeration over 20,000 domain points, N = 200 draws, end-to-end network at
   are stable; long L-BFGS paths on a flat landscape end in different nearby
   minima. This applies to the clean-label reference `T(y*)` too
   (‖y* − ȳ‖ ≈ 32σ), so the fixed θ₀ does not make it deterministic.
-- Open (for JS): radius (c)'s ratio form and the clean-label reference for
-  a network.
+- Open (for JS and DB): radius (c)'s ratio form and the clean-label
+  reference for a network. F2 (job 30384811) bears on both: coverage is
+  0.98 to 0.99 with the understated radius, so the understatement does not
+  threaten the target here, but the ratio's supremum over the domain is
+  where the over-coverage and cost come from; and the two clean-label
+  references differ by a tenth of the final slack (F2, above).
 
 ### Probe F1 (job 29667805, 2026-11-19)
 
