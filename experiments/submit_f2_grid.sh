@@ -17,6 +17,10 @@
 # 30532214. s = 1.0 repeats F2 on those fits (F2 itself shared theta0 with them
 # in only about half the redraws). Radius (c) is the committed radius_c_*.json.
 #   task T: scale index T / 200; arm net if T % 200 < 100, else ode; redraw T % 100
+# Submit caps per user (256 on mit_preemptable, 448 on mit_normal) count every
+# array task, so submit in pieces, e.g. --partition=mit_normal --array=0-399
+# (scales 0.5, 0.75; runs take at most about 6 h, inside mit_normal's 12 h)
+# and --array=400-599 (scale 1.0) when there is room.
 # Output f2_<arm>_r<k>_a1_s<scale>.json. Checkpointed per master iteration.
 # ONE thread (see submit_f2.sh).
 
