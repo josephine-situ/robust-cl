@@ -900,3 +900,41 @@ Details: `paper/paper_plan.md`, "F2 (job 30384811)".
   them moves no rate by more than 0.01.
 - **Next:** baselines on the end-to-end network (margin, wrapper, C-MICL) and the
   frozen-network comparison, on the same redraws and cost vectors.
+
+## 2026-11-27: F2 baselines: FO-CP matches the tuned margin, beats it against the ODE
+
+Jobs 30532214 (baselines, 200 tasks) and 30530397 (the 10 F2 reruns). Data: SS1,
+100 redraws per arm, Ovalle et al.'s 100 cost vectors, σ = 2, 1,000 training rows;
+every method sees the same noisy labels and cost vector and is judged against the
+same clean-label model `T(y*)` and the arm's truth. F2 on all 200 runs moves no
+rate by more than 0.01 from the 2026-11-25 entry. Details: `paper/paper_plan.md`,
+"F2 baselines".
+
+| method | (ii) truth net: clean / truth / cost | (i) ODE: clean / truth / cost |
+|---|---|---|
+| FO-CP, multistart (no tuning) | 0.98 / 0.98 / +4.7% | 0.99 / 0.96 / +4.8% |
+| margin tuned on the truth to FO-CP's level | 0.98 / +5.0% | 0.96 / +8.1% |
+| split conformal, α = 0.1 | 1.00 / 1.00 / +6.3% | 0.99 / 0.89 / +6.6% |
+| C-MICL, α = 0.1 (best α no better) | 0.75 / 0.72 / +3.9% | 0.72 / 0.67 / +3.9% |
+| wrapper, all 20 bootstrap models | 1.00 / 0.97 / +3.5% | 0.98 / 0.90 / +3.5% |
+| frozen network, RC at radius (c) | own 1.00 / 0.75 / +2.3% | own 1.00 / 0.47 / +1.8% |
+
+- **H4 holds so far.** At equal feasibility against the truth, FO-CP costs the
+  same as the oracle-tuned margin on arm (ii) and 3.3 points less on the ODE arm.
+  Against the clean-label model the tuned margin is 0.4 points cheaper. A margin
+  that meets the clean-label model on the ODE arm reaches only 0.76 against the
+  ODE: FO-CP's x-dependent margin keeps decisions out of regions where the model
+  errs (our reading; untested).
+- **C-MICL never reaches 0.9**: lowering α widens q, but the optimizer moves to
+  where the width net is small (median u(x*) 1.0 → 0.26).
+- **Split conformal** covers a fresh noisy label, so it pays for σ on top of model
+  error: conservative for a constraint on the noise-free flow.
+- **Frozen network**: the RC holds exactly against its own clean-label model
+  (Theorem 1) and FO-CP reproduces it, but its biased clean-label model leaves it
+  at 0.47 to 0.75 against the truth.
+- **Caveats.** The wrapper with a > 0 hit the 120 s MIP limit in 8 to 70% of runs,
+  so those rows are not optima (a = 0 is). FO-CP and the baselines share θ₀ in only
+  43 and 60 of 100 redraws (θ₀ had to be refit), so the comparison is across
+  redraws, not paired. FO-CP has one point per arm; comparing at exactly 0.9 needs
+  it over a radius grid.
+- **Next:** wrapper rerun with a longer limit; FO-CP on a radius grid (frontier).
