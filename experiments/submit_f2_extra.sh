@@ -2,11 +2,12 @@
 #SBATCH --job-name=focp-f2extra
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=jositu@mit.edu
-#SBATCH --partition=mit_quicktest
-#SBATCH --time=00:15:00
+#SBATCH --partition=mit_preemptable
+#SBATCH --requeue
+#SBATCH --time=2:00:00
 #SBATCH --mem=4G
 #SBATCH --cpus-per-task=1
-#SBATCH --array=0-199%8
+#SBATCH --array=0-199
 #SBATCH --output=logs/focp_f2extra_%A_%a.out
 #SBATCH --error=logs/focp_f2extra_%A_%a.err
 
@@ -14,8 +15,9 @@
 # layers from --stage frozen_prep (run first, once: submit_frozen_prep.sh, and
 # pass --dependency=afterok:<its job>), last layer by ridge; nominal, RC and
 # FO-CP at radius (c), on the stored theta0. Output f2extra_<arm>_r<k>_a1.json.
-# A few minutes per task (smoke test: under 1 minute of solves), so quicktest,
-# at most 8 at a time; a task that overruns resumes row by row if resubmitted.
+# A few minutes per task (smoke test: under 1 minute of solves). Preemptable,
+# not quicktest: quicktest caps submitted jobs per user, and an array counts each
+# task. Rows are saved as they finish, so a requeued task resumes.
 #   tasks 0-99 arm net, 100-199 arm ode; redraw T % 100
 
 set -euo pipefail
