@@ -426,7 +426,33 @@ feasibility level are interpolated on its grid.
   not from the end-to-end fit alone.
 - FO-CP has one point per arm (its radius), so it cannot yet be compared at
   0.9: the frontier needs FO-CP over a radius grid, which also bears on the
-  over-coverage.
+  over-coverage. Submitted 2026-11-27: s ∈ {0.5, 0.75, 1.0} × radius (c), on
+  the stored θ₀ so paired with the baselines (jobs 30746028, 30746799).
+- **Frozen network rebuilt at α = 1** (jobs 30745948, 30745955; stage
+  `f2_extra`): hidden layers from the end-to-end network's own fit on an
+  independent noisy draw of each arm's truth, so it differs from FO-CP's
+  model only in what is refit. It does not close the gap; it widens it:
+
+  | Frozen network | R | (ii) own clean / truth / cost | (i) own clean / truth / cost |
+  |---|---|---|---|
+  | R2's (α = 0.01, ODE labels) | 3.3σ | 1.00 / 0.75 / +2.3% | 1.00 / 0.47 / +1.8% |
+  | α = 1, arm's own truth | 2.3 to 2.4σ | 1.00 / 0.42 / +1.2% | 1.00 / 0.48 / +1.5% |
+  | (FO-CP, end-to-end) | 4.3 to 4.5σ | 0.98 / 0.98 / +4.7% | 0.99 / 0.96 / +4.8% |
+
+  Theorem 1 holds exactly again (1.00 against its own clean-label model), and
+  the smoother features remove most of the frozen model's optimism at the RC
+  decision on the ODE arm (own clean minus truth: mean +0.75σ → +0.11σ). But
+  the RC's margin shrinks with the features (radius 2.3σ, cost +0.5% over the
+  frozen nominal), and the remaining spread between the clean-label model and
+  the truth (sd 0.45 to 0.70σ) is no longer covered, so feasibility against
+  the truth falls to 0.42 to 0.48. Neither α nor the arm mismatch explains
+  the frozen RC's shortfall. A frozen network's hidden layers carry the error
+  of the draw they were fit on, which the last-layer RC treats as fixed and
+  never protects against; FO-CP's end-to-end sensitivity includes the hidden
+  layers, and that is where its larger margin, and its feasibility against
+  the truth, come from. For the paper: the last-layer RC is exact but
+  protects a small part of a network's error, which argues against the
+  frozen network as the RC's lead model.
 
 ### F2 pilot (job 29709201, 2026-11-19)
 

@@ -938,3 +938,28 @@ rate by more than 0.01 from the 2026-11-25 entry. Details: `paper/paper_plan.md`
   redraws, not paired. FO-CP has one point per arm; comparing at exactly 0.9 needs
   it over a radius grid.
 - **Next:** wrapper rerun with a longer limit; FO-CP on a radius grid (frontier).
+
+## 2026-11-27: Frozen network at α = 1 does not close the gap to FO-CP
+
+Jobs 30745948 (frozen layers) and 30745955 (`f2_extra`, 200 tasks). The frozen
+network's hidden layers are now the end-to-end network's own fit (α = 1) on an
+independent noisy draw of each arm's truth, so it differs from FO-CP's model only
+in what is refit. Same SS1 redraws, cost vectors and stored θ₀ as the baselines.
+
+| frozen network | radius | truth net arm: own clean / truth | ODE arm: own clean / truth |
+|---|---|---|---|
+| R2's (α = 0.01, ODE labels) | 3.3σ | 1.00 / 0.75 | 1.00 / 0.47 |
+| α = 1, arm-matched | 2.3 to 2.4σ | 1.00 / 0.42 | 1.00 / 0.48 |
+| FO-CP, end-to-end (for reference) | 4.3 to 4.5σ | 0.98 / 0.98 | 0.99 / 0.96 |
+
+- Theorem 1 holds exactly (1.00 against its own clean-label model), but the
+  smoother features shrink the RC's margin (+0.5% over the frozen nominal) below
+  the spread between its clean-label model and the truth (sd 0.45 to 0.70σ).
+- So the frozen RC's shortfall is not α or the arm mismatch: the hidden layers
+  carry the error of the draw they were fit on, which the last-layer RC never
+  protects. FO-CP's end-to-end sensitivity includes the hidden layers, which is
+  where its larger margin and its feasibility against the truth come from.
+- Implication for the lead-model question: the frozen network is a weak lead for
+  the RC. Cubic ridge or trees with honest splits remain the candidates.
+- Running: FO-CP at 0.5, 0.75 and 1.0 × radius (c) (jobs 30746028, 30746799), for
+  the frontier at 0.9.
