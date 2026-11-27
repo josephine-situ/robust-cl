@@ -129,13 +129,30 @@ def summarize_base(d, arm, redraws):
                          "redraw": k, "range": r["obj_range"],
                          "nom": nom["obj"] if nom else np.nan,
                          "fnom": fnom["obj"] if fnom else np.nan})
-        v = f2.get(k, {}).get("variants", {}).get("multi")
-        if v and v.get("done") and "final" in v:
-            fin = v["final"]
-            rows.append({"kind": "focp_f2", "param": 0.0, "status": 2, "redraw": k,
-                         "obj": fin["obj"], "clean": fin["clean"], "clean_cold": fin["clean_cold"],
-                         "truth": fin["truth"], "frozen_clean": np.nan, "range": r["obj_range"],
-                         "nom": f2[k]["nominal"]["obj"], "fnom": np.nan, "u_at_x": np.nan, "time_s": np.nan})
+        # FO-CP: F2 itself, and the radius grid on the stored theta0 (kind focp_s<scale>)
+        cands = [("focp_f2", f2.get(k))]
+        for p in sorted(glob.glob(os.path.join(d, f"f2_{arm}_r{k}_a1_s*.json"))):
+            cands.append((f"focp_s{re.search(r'_s([0-9.]+)\.json$', p).group(1)}", json.load(open(p))))
+        for kind, rr in cands:
+            v = (rr or {}).get("variants", {}).get("multi")
+            if v and v.get("done") and "final" in v:
+                fin = v["final"]
+                rows.append({"kind": kind, "param": rr.get("r_scale") or 1.0, "status": 2, "redraw": k,
+                             "obj": fin["obj"], "clean": fin["clean"], "clean_cold": fin["clean_cold"],
+                             "truth": fin["truth"], "frozen_clean": np.nan, "range": r["obj_range"],
+                             "nom": rr["nominal"]["obj"], "fnom": np.nan, "u_at_x": np.nan, "time_s": np.nan})
+        # the frozen network at the end-to-end alpha (stage f2_extra): kinds frozen1_*
+        pe = os.path.join(d, f"f2extra_{arm}_r{k}_a1.json")
+        if os.path.exists(pe):
+            ex = json.load(open(pe))
+            fnom1 = next((x for x in ex["rows"] if x["kind"] == "frozen1_nominal"), None)
+            for x in ex["rows"]:
+                if x["kind"].startswith("frozen1_"):
+                    rows.append({**{c: x.get(c, np.nan) for c in ("kind", "param", "status", "obj", "clean",
+                                                                  "clean_cold", "frozen_clean", "truth",
+                                                                  "u_at_x", "time_s")},
+                                 "redraw": k, "range": r["obj_range"], "nom": nom["obj"] if nom else np.nan,
+                                 "fnom": fnom1["obj"] if fnom1 else np.nan})
     df = pd.DataFrame(rows)
     num = ["obj", "clean", "clean_cold", "frozen_clean", "truth", "u_at_x", "time_s", "nom", "fnom", "range"]
     df[num] = df[num].apply(pd.to_numeric, errors="coerce")

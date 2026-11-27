@@ -903,6 +903,8 @@ def stage_f2(args):
         if not os.path.exists(rpath) or "R" not in json.load(open(rpath)):
             stage_radius_c(args)     # resumable; N = --n-draws, enumeration
     R = args.R if args.R_set else radius_for(arm, k, alpha)
+    if args.r_scale is not None:        # radius grid (frontier): s x radius (c)
+        R *= args.r_scale
     tau = 0.05 * sigma
     ystar, truth = arm_truth(arm, inst, md)
     ybar = ystar + sigma * np.random.default_rng([args.seed, k]).standard_normal(len(ystar))
@@ -911,9 +913,12 @@ def stage_f2(args):
     model = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, ybar, alpha=alpha)
     theta0, th_clean, th_cold = fits_for(model, arm, k, ybar, ystar)
     tag = f"f2_{arm}_r{k}_a{alpha:g}"
+    if args.r_scale is not None:
+        tag += f"_s{args.r_scale:g}"
     path = os.path.join(OUT_DIR, tag + ".json")
     res = json.load(open(path)) if os.path.exists(path) else {"variants": {}}
-    res.update(arm=arm, redraw=k, alpha=alpha, R=R, tau=tau, obj_range=obj_range)
+    res.update(arm=arm, redraw=k, alpha=alpha, R=R, tau=tau, obj_range=obj_range,
+               r_scale=args.r_scale)
 
     def judge(x):
         return {"x": x.tolist(), "obj": float(cost @ x),
@@ -925,7 +930,7 @@ def stage_f2(args):
     x_nom, st = solve_nominal(inst, model, theta0, cost)
     res["nominal"] = judge(x_nom)
     rng = np.random.default_rng([args.seed, k, 13])
-    for variant in ("one", "multi"):
+    for variant in args.variants.split(","):
         v = res["variants"].get(variant, {"iters": [], "done": False})
         if v["done"]:
             continue
@@ -1027,6 +1032,8 @@ def _solve(m, u, x, cost, lb, ub):
     if m.SolCount > 0:
         uu = np.clip(np.array([u[i].X for i in range(len(lb))]), -1, 1)
         out["x"] = lb + 0.5 * (ub - lb) * (uu + 1.0)
+        if m.IsMIP:
+            out["mip_gap"] = float(m.MIPGap)
     return out
 
 
@@ -1076,9 +1083,15 @@ def stage_f2_base(args):
     Every decision is judged against the end-to-end T(y*) and cold clean fit,
     the frozen network's clean-label fit, and the arm's truth. Fits are stored
     (fits_*.npz, f2base_*_fits.npz) and rows saved as they finish, so a
-    requeued task resumes on the same models."""
-    from probe_rc_ridge import (CAL_FRAC, CONF_ALPHAS, FRONTIER_MARGIN, base_model,
-                                solve_rc, _x_of)
+    requeued task resumes on the same models.
+
+    --stage f2_extra (step 1 of 2026-11-27), into f2extra_*.json, on the SAME
+    stored theta0: the nominal (cost baseline) and the frozen network rebuilt as
+    frozen_prep's (alpha = the end-to-end alpha, hidden layers on an independent
+    noisy draw of the ARM's own truth labels), kinds frozen1_nominal / _rc /
+    _focp, with frozen_clean its own clean-label fit. No other baselines."""
+    from probe_rc_ridge import (CAL_FRAC, CONF_ALPHAS, FRONTIER_MARGIN, FeatureRidge,
+                                base_model, solve_rc, _x_of)
     from src.methods.cmicl import conformal_quantile
     inst, md, sigma = setup()
     alpha = chosen_alpha()
@@ -1093,14 +1106,23 @@ def stage_f2_base(args):
     model = MLPModel(X, lb, ub, ybar, alpha=alpha)
     theta0, th_clean, th_cold = fits_for(model, arm, k, ybar, ystar)
     n = model.n
-    tag = f"f2base_{arm}_r{k}_a{alpha:g}"
+    extra = args.stage == "f2_extra"
+    tag = f"f2{'extra' if extra else 'base'}_{arm}_r{k}_a{alpha:g}"
     path = os.path.join(OUT_DIR, tag + ".json")
     res = json.load(open(path)) if os.path.exists(path) else {"rows": []}
     res.update(arm=arm, redraw=k, alpha=alpha, obj_range=obj_range, sigma=sigma)
     done = {(r["kind"], r["param"]) for r in res["rows"]}
 
     # frozen network: its own clean-label fit, for the frozen rows' guarantee
-    cr = build("net_frozen", inst, md, sigma, frozen_labels(md, sigma))
+    if extra:
+        fw = np.load(frozen_path(arm, alpha))
+        feat = NetFeatures(scale(X, lb, ub), None, 0, ([fw["W0"], fw["W1"]], [fw["b0"], fw["b1"]]))
+        cr = FeatureRidge(feat, X, lb, ub)
+        res["frozen_model"] = os.path.basename(frozen_path(arm, alpha))
+        fz = "frozen1_"
+    else:
+        cr = build("net_frozen", inst, md, sigma, frozen_labels(md, sigma))
+        fz = "frozen_"
     rm = RidgeModel(cr, X)
     fz0, _ = rm.train(ybar)
     fz_clean, _ = rm.train(ystar)
@@ -1115,7 +1137,7 @@ def stage_f2_base(args):
 
     def add(kind, param, out, **extra):
         row = {"kind": kind, "param": param, "status": out["status"],
-               "time_s": out["time_s"], "obj": float("nan")}
+               "time_s": out["time_s"], "obj": float("nan"), "mip_gap": out.get("mip_gap")}
         if out["x"] is not None:
             row.update(judge(out["x"]))
         row.update(extra)
@@ -1141,83 +1163,84 @@ def stage_f2_base(args):
         res["f2_nominal_obj"] = f2nom["obj"]
         res["paired_with_f2"] = bool(abs(nom["obj"] - f2nom["obj"]) < 1e-6
                                      and np.allclose(nom["x"], f2nom["x"], atol=1e-6))
-    for mg in FRONTIER_MARGIN:
+    for mg in ([] if extra else FRONTIER_MARGIN):
         if ("margin", mg) not in done:
             add("margin", mg, nominal_like(theta0, mg))
 
-    # ---- stored baseline fits: h80, u, the P bootstrap networks ------------
-    perm = np.random.default_rng([args.seed, k, 2]).permutation(n)
-    n_cal = int(round(CAL_FRAC * n))
-    cal, tr = perm[:n_cal], perm[n_cal:]
-    boot = [np.random.default_rng([args.seed, k, 3, p]).choice(n, int(round(WRAP_FRAC * n)), replace=True)
-            for p in range(WRAP_P)]
-    hm = MLPModel(X[tr], lb, ub, ybar[tr], alpha=alpha)
-    bms = [MLPModel(X[ix], lb, ub, ybar[ix], alpha=alpha) for ix in boot]
-    fpath = os.path.join(OUT_DIR, tag + "_fits.npz")
-    if os.path.exists(fpath):
-        z = np.load(fpath)
-        th_h, th_u, th_b = z["th_h"], z["th_u"], list(z["th_b"])
-        resid_tr = np.abs(ybar[tr] - hm.predict(X[tr], th_h))
-        um = MLPModel(X[tr], lb, ub, resid_tr, alpha=WIDTH_PARAMS["alpha"])
-        um.mu, um.sd = 0.0, 1.0
-    else:
-        t0 = time.time()
-        th_h, _ = hm.cold_fit(ybar[tr], seed=k)
-        resid_tr = np.abs(ybar[tr] - hm.predict(X[tr], th_h))
-        um, th_u = width_net(X[tr], resid_tr, lb, ub, seed=k)
-        th_b = [bm.cold_fit(ybar[ix], seed=1000 * k + p)[0] for p, (bm, ix) in enumerate(zip(bms, boot))]
-        np.savez(fpath, th_h=th_h, th_u=th_u, th_b=np.array(th_b))
-        print(f"{tag}: baseline fits {(time.time() - t0) / 60:.1f} min", flush=True)
+    if not extra:   # f2_extra: no C-MICL, conformal or wrapper
+        # ---- stored baseline fits: h80, u, the P bootstrap networks ------------
+        perm = np.random.default_rng([args.seed, k, 2]).permutation(n)
+        n_cal = int(round(CAL_FRAC * n))
+        cal, tr = perm[:n_cal], perm[n_cal:]
+        boot = [np.random.default_rng([args.seed, k, 3, p]).choice(n, int(round(WRAP_FRAC * n)), replace=True)
+                for p in range(WRAP_P)]
+        hm = MLPModel(X[tr], lb, ub, ybar[tr], alpha=alpha)
+        bms = [MLPModel(X[ix], lb, ub, ybar[ix], alpha=alpha) for ix in boot]
+        fpath = os.path.join(OUT_DIR, tag + "_fits.npz")
+        if os.path.exists(fpath):
+            z = np.load(fpath)
+            th_h, th_u, th_b = z["th_h"], z["th_u"], list(z["th_b"])
+            resid_tr = np.abs(ybar[tr] - hm.predict(X[tr], th_h))
+            um = MLPModel(X[tr], lb, ub, resid_tr, alpha=WIDTH_PARAMS["alpha"])
+            um.mu, um.sd = 0.0, 1.0
+        else:
+            t0 = time.time()
+            th_h, _ = hm.cold_fit(ybar[tr], seed=k)
+            resid_tr = np.abs(ybar[tr] - hm.predict(X[tr], th_h))
+            um, th_u = width_net(X[tr], resid_tr, lb, ub, seed=k)
+            th_b = [bm.cold_fit(ybar[ix], seed=1000 * k + p)[0] for p, (bm, ix) in enumerate(zip(bms, boot))]
+            np.savez(fpath, th_h=th_h, th_u=th_u, th_b=np.array(th_b))
+            print(f"{tag}: baseline fits {(time.time() - t0) / 60:.1f} min", flush=True)
 
-    # ---- C-MICL, split conformal, nominal80 --------------------------------
-    u_cal = um.predict(X[cal], th_u)
-    r_cal = np.abs(ybar[cal] - hm.predict(X[cal], th_h))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        scores = np.where(np.isnan(r_cal / u_cal), np.inf, r_cal / u_cal)
-    res["cmicl_info"] = {"n_cal": int(n_cal), "n_neg_u": int((u_cal <= 0).sum()),
-                         "mean_u": float(u_cal.mean()), "cal_mae": float(r_cal.mean())}
-    if ("nominal80", 0.0) not in done:
-        add("nominal80", 0.0, _h80(inst, lb, ub, hm, th_h, 0.0, cost))
-    for a in CONF_ALPHAS:
-        if ("cmicl", a) not in done:
-            q = conformal_quantile(scores, a)
-            if np.isfinite(q):
-                m, u, x = _master(inst, lb, ub)
-                he, ue = hm.gurobi_out(m, u, th_h), um.gurobi_out(m, u, th_u)
-                m.addConstr(he - q * ue >= PRODUCT_FLOOR)
-                m.addConstr(ue >= 0.0)
-                out = _solve(m, u, x, cost, lb, ub)
-            else:
-                out = {"status": -1, "time_s": 0.0, "x": None}
-            ux = float(um.predict(out["x"][None], th_u)[0]) if out["x"] is not None else None
-            add("cmicl", a, out, q=q, u_at_x=ux)
-        if ("conformal", a) not in done:
-            q = conformal_quantile(r_cal, a)
-            out = (_h80(inst, lb, ub, hm, th_h, q, cost) if np.isfinite(q)
-                   else {"status": -1, "time_s": 0.0, "x": None})
-            add("conformal", a, out, q=q)
+        # ---- C-MICL, split conformal, nominal80 --------------------------------
+        u_cal = um.predict(X[cal], th_u)
+        r_cal = np.abs(ybar[cal] - hm.predict(X[cal], th_h))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            scores = np.where(np.isnan(r_cal / u_cal), np.inf, r_cal / u_cal)
+        res["cmicl_info"] = {"n_cal": int(n_cal), "n_neg_u": int((u_cal <= 0).sum()),
+                             "mean_u": float(u_cal.mean()), "cal_mae": float(r_cal.mean())}
+        if ("nominal80", 0.0) not in done:
+            add("nominal80", 0.0, _h80(inst, lb, ub, hm, th_h, 0.0, cost))
+        for a in CONF_ALPHAS:
+            if ("cmicl", a) not in done:
+                q = conformal_quantile(scores, a)
+                if np.isfinite(q):
+                    m, u, x = _master(inst, lb, ub)
+                    he, ue = hm.gurobi_out(m, u, th_h), um.gurobi_out(m, u, th_u)
+                    m.addConstr(he - q * ue >= PRODUCT_FLOOR)
+                    m.addConstr(ue >= 0.0)
+                    out = _solve(m, u, x, cost, lb, ub)
+                else:
+                    out = {"status": -1, "time_s": 0.0, "x": None}
+                ux = float(um.predict(out["x"][None], th_u)[0]) if out["x"] is not None else None
+                add("cmicl", a, out, q=q, u_at_x=ux)
+            if ("conformal", a) not in done:
+                q = conformal_quantile(r_cal, a)
+                out = (_h80(inst, lb, ub, hm, th_h, q, cost) if np.isfinite(q)
+                       else {"status": -1, "time_s": 0.0, "x": None})
+                add("conformal", a, out, q=q)
 
-    # ---- wrapper ------------------------------------------------------------
-    for a in WRAP_ALPHAS:
-        if ("wrapper", a) in done:
-            continue
-        need = int(np.ceil((1 - a) * WRAP_P - 1e-9))
-        m, u, x = _master(inst, lb, ub)
-        zv = m.addVars(WRAP_P, vtype=GRB.BINARY)
-        for p, (bm, th) in enumerate(zip(bms, th_b)):
-            if need == WRAP_P:
-                m.addConstr(bm.gurobi_out(m, u, th) >= PRODUCT_FLOOR)
-            else:
-                m.addConstr((zv[p] == 1) >> (bm.gurobi_out(m, u, th) >= PRODUCT_FLOOR))
-        if need < WRAP_P:
-            m.addConstr(zv.sum() >= need)
-        out = _solve(m, u, x, cost, lb, ub)
-        held = (int(sum(bm.predict(out["x"][None], th)[0] >= PRODUCT_FLOOR - 1e-6
-                        for bm, th in zip(bms, th_b))) if out["x"] is not None else None)
-        add("wrapper", a, out, need=need, held=held)
+        # ---- wrapper ------------------------------------------------------------
+        for a in WRAP_ALPHAS:
+            if ("wrapper", a) in done:
+                continue
+            need = int(np.ceil((1 - a) * WRAP_P - 1e-9))
+            m, u, x = _master(inst, lb, ub)
+            zv = m.addVars(WRAP_P, vtype=GRB.BINARY)
+            for p, (bm, th) in enumerate(zip(bms, th_b)):
+                if need == WRAP_P:
+                    m.addConstr(bm.gurobi_out(m, u, th) >= PRODUCT_FLOOR)
+                else:
+                    m.addConstr((zv[p] == 1) >> (bm.gurobi_out(m, u, th) >= PRODUCT_FLOOR))
+            if need < WRAP_P:
+                m.addConstr(zv.sum() >= need)
+            out = _solve(m, u, x, cost, lb, ub)
+            held = (int(sum(bm.predict(out["x"][None], th)[0] >= PRODUCT_FLOOR - 1e-6
+                            for bm, th in zip(bms, th_b))) if out["x"] is not None else None)
+            add("wrapper", a, out, need=need, held=held)
 
     # ---- frozen network: nominal, RC and FO-CP at radius (c) ---------------
-    if not {("frozen_nominal", 0.0), ("frozen_rc", 0.0), ("frozen_focp", 0.0)} <= done:
+    if not {(fz + "nominal", 0.0), (fz + "rc", 0.0), (fz + "focp", 0.0)} <= done:
         Xs = domain_sample(lb, ub, inst, args.n_sample, seed=0)
         sn, dF = cr.snorm(Xs), cr.features(Xs) - cr.phibar
         W = []
@@ -1226,15 +1249,15 @@ def stage_f2_base(args):
             W.append(float(((e.mean() + dF @ (cr.H @ e)) / sn).max()))
         kk = int(np.ceil((len(W) + 1) * (1 - args.eps)))
         Rf = float(np.sort(W)[min(kk, len(W)) - 1])
-        res["frozen_R"] = Rf
+        res[fz + "R"] = Rf
         coef0 = (fz0[0], fz0[1:])
-        if ("frozen_nominal", 0.0) not in done:
+        if (fz + "nominal", 0.0) not in done:
             r = solve_rc(cr, inst, coef0, 0.0, cost)
-            add("frozen_nominal", 0.0, {"status": r["status"], "time_s": r["time"], "x": r["x"]})
-        if ("frozen_rc", 0.0) not in done:
+            add(fz + "nominal", 0.0, {"status": r["status"], "time_s": r["time"], "x": r["x"]})
+        if (fz + "rc", 0.0) not in done:
             r = solve_rc(cr, inst, coef0, Rf * sigma, cost)
-            add("frozen_rc", 0.0, {"status": r["status"], "time_s": r["time"], "x": r["x"]}, R=Rf)
-        if ("frozen_focp", 0.0) not in done:
+            add(fz + "rc", 0.0, {"status": r["status"], "time_s": r["time"], "x": r["x"]}, R=Rf)
+        if (fz + "focp", 0.0) not in done:
             tau, cuts, it, t0, x = 0.05 * sigma, [], 0, time.time(), None
             conv, st = False, None
             while it < args.max_iter:
@@ -1256,10 +1279,35 @@ def stage_f2_base(args):
                     conv = True
                     break
                 cuts.append(best["theta"])
-            add("frozen_focp", 0.0, {"status": st, "time_s": time.time() - t0, "x": x},
+            add(fz + "focp", 0.0, {"status": st, "time_s": time.time() - t0, "x": x},
                 R=Rf, iters=it, converged=conv)
     res["done"] = True
     _save(tag + ".json", res)
+
+
+def frozen_path(arm, alpha):
+    return os.path.join(OUT_DIR, f"net_frozen_{arm}_a{alpha:g}_weights.npz")
+
+
+def stage_frozen_prep(args):
+    """The frozen network for f2_extra, one per SS1 arm: the end-to-end network
+    (same class, same alpha, same cold fit) trained on an INDEPENDENT noisy draw
+    of the arm's own truth labels (probe_rc_ridge.frozen_labels' seed), keeping
+    its two hidden layers. R2's frozen network instead used alpha = 0.01 and ODE
+    labels on both arms. Run once, before the f2_extra array."""
+    inst, md, sigma = setup()
+    alpha = chosen_alpha()
+    torch.set_num_threads(args.threads)
+    for arm in ("net", "ode"):
+        ystar, _ = arm_truth(arm, inst, md)
+        y_struct = ystar + sigma * np.random.default_rng(987654321).standard_normal(len(ystar))
+        m = MLPModel(md.X_train, inst.variable_lb, inst.variable_ub, y_struct, alpha=alpha)
+        th, info = m.cold_fit(y_struct, seed=987)
+        parts = m.unpack(th)
+        np.savez(frozen_path(arm, alpha), W0=parts[0], b0=parts[1], W1=parts[2], b1=parts[3],
+                 alpha=alpha, arm=arm, fit_ok=info["ok"], nit=info["nit"])
+        print(f"frozen {arm}: alpha {alpha:g}, nit {info['nit']}, ok {info['ok']}, "
+              f"{info['time']:.0f}s -> {frozen_path(arm, alpha)}", flush=True)
 
 
 def _h80(inst, lb, ub, hm, th_h, shift, cost):
@@ -1313,7 +1361,8 @@ def _save(name, obj):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--stage", required=True, choices=["f0_affine", "f0_grad", "f0_dir", "cv_alpha", "f1", "f0_loop",
-                             "truth_net", "radius_c", "f2", "radius_refine", "timing", "f2_base"])
+                             "truth_net", "radius_c", "f2", "radius_refine", "timing", "f2_base",
+                             "f2_extra", "frozen_prep"])
     ap.add_argument("--alpha", type=float, default=None,
                     help="network L2 penalty (f1 default: the CV choice; else NET_ALPHA)")
     ap.add_argument("--threads", type=int, default=1, help="torch threads (f1)")
@@ -1331,6 +1380,9 @@ if __name__ == "__main__":
     ap.add_argument("--attack-steps", type=int, default=50, help="f2: steps per attack start")
     ap.add_argument("--lam-rel", type=float, default=None,
                     help="damping x tr(H)/p; default: auto (2x the smallest PD value)")
+    ap.add_argument("--r-scale", type=float, default=None,
+                    help="f2: radius = this x radius (c); tags the output _s<scale>")
+    ap.add_argument("--variants", default="one,multi", help="f2: separations to run")
     ap.add_argument("--redraw", type=int, default=0)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--R", type=float, default=None, help="radius, sigma units (f2 default: radius_c)")
@@ -1349,4 +1401,5 @@ if __name__ == "__main__":
      "f0_dir": stage_f0_dir, "cv_alpha": stage_cv_alpha, "f1": stage_f1, "f0_loop": stage_f0_loop,
      "truth_net": stage_truth_net, "radius_c": stage_radius_c, "f2": stage_f2,
      "radius_refine": stage_radius_refine, "timing": stage_timing,
-     "f2_base": stage_f2_base}[args.stage](args)
+     "f2_base": stage_f2_base, "f2_extra": stage_f2_base,
+     "frozen_prep": stage_frozen_prep}[args.stage](args)
