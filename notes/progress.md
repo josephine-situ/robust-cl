@@ -963,3 +963,29 @@ in what is refit. Same SS1 redraws, cost vectors and stored θ₀ as the baselin
   the RC. Cubic ridge or trees with honest splits remain the candidates.
 - Running: FO-CP at 0.5, 0.75 and 1.0 × radius (c) (jobs 30746028, 30746799), for
   the frontier at 0.9.
+
+## 2026-11-28: F2 frontier: FO-CP is the cheapest at equal feasibility against the truth
+
+Jobs 30746028, 30746799 and 30845778 (one rerun). FO-CP at 0.5, 0.75 and 1.0 times
+radius (c), 100 redraws per SS1 arm, on the stored θ₀, so paired run by run with
+the baselines. Each method's parameter is read with the oracle and interpolated to
+the level. Details: `paper/paper_plan.md`, "F2 frontier".
+
+| cost to reach 0.9 | FO-CP | margin | split conformal | C-MICL |
+|---|---|---|---|---|
+| truth-net arm, vs truth | **3.6%** | 4.1% | 4.2% | never |
+| truth-net arm, vs clean-label model | 2.9% | 2.7% | **2.5%** | never |
+| ODE arm, vs truth | **4.2%** | 6.2% | 6.8% | never |
+| ODE arm, vs clean-label model | **2.9%** | 3.4% | 4.0% | never |
+
+- **H4 holds against the truth**: FO-CP is cheapest on both arms, by up to 2 points
+  on the ODE arm. Against the clean-label model it is within one standard error of
+  the cheapest on the truth-net arm.
+- **Radius (c) is about 1.5 times too large**: FO-CP hits 0.9 against the
+  clean-label model at 0.65 to 0.66 × radius (c) on both arms (about 2.8σ, not
+  4.4σ). The same factor on both arms points at the ratio form's supremum over the
+  domain: input for the open question on radius (c).
+- At smaller radii the clean-label and truth rates part (0.80 against 0.53 to 0.71
+  at 0.5×): much of radius (c)'s extra margin absorbs the clean-label model's own
+  error.
+- 498 of 500 runs converged (2 of 600 hit the cap); median 8 to 24 minutes per run.

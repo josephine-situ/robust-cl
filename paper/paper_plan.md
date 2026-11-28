@@ -426,8 +426,7 @@ feasibility level are interpolated on its grid.
   not from the end-to-end fit alone.
 - FO-CP has one point per arm (its radius), so it cannot yet be compared at
   0.9: the frontier needs FO-CP over a radius grid, which also bears on the
-  over-coverage. Submitted 2026-11-27: s ∈ {0.5, 0.75, 1.0} × radius (c), on
-  the stored θ₀ so paired with the baselines (jobs 30746028, 30746799).
+  over-coverage. Done: the frontier below.
 - **Frozen network rebuilt at α = 1** (jobs 30745948, 30745955; stage
   `f2_extra`): hidden layers from the end-to-end network's own fit on an
   independent noisy draw of each arm's truth, so it differs from FO-CP's
@@ -453,6 +452,54 @@ feasibility level are interpolated on its grid.
   the truth, come from. For the paper: the last-layer RC is exact but
   protects a small part of a network's error, which argues against the
   frozen network as the RC's lead model.
+
+### F2 frontier (jobs 30746028, 30746799, 30845778; 2026-11-28)
+
+FO-CP with multistart separation at s × radius (c), s ∈ {0.5, 0.75, 1.0},
+100 redraws per arm, on the stored θ₀, so paired run by run with the
+baselines of job 30532214 (task 367 failed on a Gurobi token-server error and
+was rerun as job 30845778). `experiments/frontier_f2.py`.
+
+| s | (ii) clean / truth / cost | (i) clean / truth / cost | Converged | Run, median (max) |
+|---|---|---|---|---|
+| 0.5 | 0.80 / 0.71 / +2.1% | 0.79 / 0.53 / +2.2% | 200/200 | 8 to 9 min (22) |
+| 0.75 | 0.96 / 0.89 / +3.4% | 0.98 / 0.82 / +3.5% | 199/200 | 12 min (51) |
+| 1.0 | 0.98 / 0.97 / +4.7% | 0.99 / 0.96 / +4.8% | 199/200 | 23 to 24 min (99) |
+
+Cost at equal feasibility, each method's parameter read with the oracle and
+interpolated linearly (FO-CP over s, margin over m, split conformal and
+C-MICL over α); cost standard errors 0.2 to 0.4 points:
+
+| Level | FO-CP | Margin | Split conformal | C-MICL |
+|---|---|---|---|---|
+| (ii), truth, 0.9 | **3.6%** (s 0.78) | 4.1% | 4.2% | never |
+| (ii), truth, 0.95 | **4.4%** | 4.5% | 4.7% | never |
+| (ii), clean, 0.9 | 2.9% (s 0.66) | 2.7% | **2.5%** | never |
+| (i), truth, 0.9 | **4.2%** (s 0.89) | 6.2% | 6.8% | never |
+| (i), truth, 0.95 | **4.7%** | 7.7% | 7.8% | never |
+| (i), clean, 0.9 | **2.9%** (s 0.65) | 3.4% | 4.0% | never |
+
+- **H4: at equal feasibility against the truth FO-CP is the cheapest method
+  on both arms**, by 0.1 to 0.6 points on arm (ii) and 1.9 to 3.0 points on
+  the ODE arm. Against the clean-label model it is cheapest on the ODE arm
+  and 0.2 to 0.5 points dearer than the margin and split conformal on arm
+  (ii), within about one standard error.
+- **Radius (c) is about 1.5 times too large.** FO-CP reaches 0.9 against the
+  clean-label model at s = 0.66 and 0.65 on the two arms, about 2.8 to 2.9σ,
+  where radius (c) is 4.3 to 4.5σ and delivers 0.98 to 0.99. The scale is the
+  same on both arms, which suggests a systematic source (the supremum over
+  the domain in the ratio form) rather than noise; it bears on the open
+  question about radius (c)'s ratio form.
+- **The guarantee's reference and the user's diverge as s falls**: at s =
+  0.5 the clean-label rate is 0.79 to 0.80 but the truth rate 0.53 to 0.71.
+  Reaching 0.9 against the truth takes s = 0.78 to 0.89, so on these arms the
+  extra margin of radius (c) is mostly absorbing the clean-label model's own
+  error, as with the RC's simulated radius.
+- Run time grows with the radius (8 → 24 minutes median); the master is
+  never the bottleneck.
+- s = 1.0 on the stored θ₀ reproduces F2's rates (0.98 / 0.97 against 0.98 /
+  0.98 on arm (ii), identical on arm (i)): refitting θ₀ does not move the
+  aggregates.
 
 ### F2 pilot (job 29709201, 2026-11-19)
 
