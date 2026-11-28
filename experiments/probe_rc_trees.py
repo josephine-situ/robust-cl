@@ -139,11 +139,7 @@ class TreeMap:
             for tr in trees:
                 leaf_of = tr.apply(XR.astype(np.float32))
                 if Xsplit_rows is None:
-                    from sklearn.ensemble._forest import (_generate_sample_indices,
-                                                          _get_n_samples_bootstrap)
-                    nb = _get_n_samples_bootstrap(self.nR, model.max_samples)
-                    w = np.bincount(_generate_sample_indices(tr.random_state, self.nR, nb),
-                                    minlength=self.nR).astype(float)
+                    w = _bootstrap_counts(tr.random_state, self.nR, model.max_samples)
                 else:
                     w = np.ones(self.nR)                  # honest leaves: rows of B, unweighted
                 amap = {}
@@ -176,6 +172,8 @@ class TreeMap:
 
     @staticmethod
     def _in_leaf(X, thr):
+        """linear-tree routes in float32 (its _validate_data casts X), so do the same."""
+        X = np.asarray(X, dtype=np.float32)
         mask = np.ones(len(X), bool)
         for f, side, t in thr:
             mask &= (X[:, f] <= t) if side == "L" else (X[:, f] > t)
@@ -274,6 +272,18 @@ class TreeMap:
                 m.addConstr(u_ == t + N * (1 - z[l]))
                 m.addConstr(gp.quicksum(v[r] * v[r] for r in range(d + 1)) <= u_ * u_)
         return fv, t
+
+
+def _bootstrap_counts(random_state, n, max_samples):
+    """How often each row is in a forest tree's bootstrap sample (sklearn's own
+    private helpers; their signatures gained sample_weight in sklearn 1.9)."""
+    import inspect
+    from sklearn.ensemble._forest import _generate_sample_indices, _get_n_samples_bootstrap
+    extra = ([None] if "sample_weight" in inspect.signature(_get_n_samples_bootstrap).parameters else [])
+    nb = _get_n_samples_bootstrap(n, max_samples, *extra)
+    extra = ([None] if "sample_weight" in inspect.signature(_generate_sample_indices).parameters else [])
+    idx = _generate_sample_indices(random_state, n, nb, *extra)
+    return np.bincount(idx, minlength=n).astype(float)
 
 
 def build_map(family, variant, X, ybar, seed, k):
