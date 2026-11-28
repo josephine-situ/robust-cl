@@ -988,4 +988,4 @@ the level. Details: `paper/paper_plan.md`, "F2 frontier".
 - At smaller radii the clean-label and truth rates part (0.80 against 0.53 to 0.71
   at 0.5×): much of radius (c)'s extra margin absorbs the clean-label model's own
   error.
-- 498 of 500 runs converged (2 of 600 hit the cap); median 8 to 24 minutes per run.
+- 598 of 600 runs converged within 20 master solves; median 8 to 24 minutes per run.
