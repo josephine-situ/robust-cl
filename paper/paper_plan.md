@@ -866,9 +866,9 @@ Dropped: classification, the ridge bias bound, counting K for forests.
 | I3 | Redraw harness: cost vector and noise drawn, refit, solve, judge against the clean-label model and the ODE | probe version for a fixed cost | E1 |
 | I4 | Simulated radius, single and joint, each maximum solved to a bound, warm-started from enumeration | probe version; slow | E1, E2 |
 | I5 | Baselines on the shared network with frozen hidden layers | to check against the existing methods | E1 |
-| I6 | Forest with leaf vectors; RC by directed cuts; honest variant | to build | E2, A1 |
+| I6 | Forest with leaf vectors; RC by directed cuts; honest variant | reactor probe built 2026-11-28 (`probe_rc_trees.py`: RF, GBM, LinearDT as linear maps of the labels for fixed splits, exact cone, standard and honest splits; job 30850123); directed cuts and chemotherapy to build | E2, A1 |
 | I7 | RC in the chemotherapy runner; per-outcome σ; fixed models | to build | E2 |
-| I8 | WFP regression instance with OptiCL App. C.1's truth function | to build | E3 |
+| I8 | WFP regression instance with OptiCL App. C.1's truth function | built 2026-11-28 (`probe_wfp.py`; truth recovered exactly, `data/wfp/SOURCE.md`); design to settle (below) | E3 |
 | I9 | `r̂(x)` for any decision; the max-t fallback; `ε̂` from the stored W draws | to build | E2, Table 2 |
 | I10 | Probe P1 | done (`probe_p1_gastric.py`, job 29576766) | H3 |
 | I11 | FO-CP training map; gradients and the Hessian (1,281 weights) by PyTorch autograd on the exact training objective, for correctness (decided 2026-11-19) | to build | F0–F2 |

@@ -997,3 +997,28 @@ split conformal is a constant margin on the 80%-row model whose size varies run 
 run, so the equal-feasibility comparison shows the constant margin alone (F2: the
 two within 0.1 to 0.6 points). Split conformal stays in the as-prescribed table
 (α = 0.1), where it is the only constant margin with a rule for its size.
+
+## 2026-11-28: WFP instance built; the RC on Ovalle et al.'s tree families submitted
+
+**WFP (E3, I8).** OptiCL's palatability ground truth is recoverable exactly from
+their public 5,000 baskets: h(x) = 1.1931 - 0.002684 D(x), D a weighted distance of
+five food-group sums from their ideal amounts, matching every label to the CSV's
+rounding (3.2e-6). The form is in their Appendix C.1; the group membership, the oil
+constants (27 g, weight 16.6, not the paper's 27.5 / 16) and the normalisation are
+not. Data in `data/wfp/` (gitignored with the rest of `data/`; copied to the
+cluster), provenance in `data/wfp/SOURCE.md`.
+- Data: 25 commodities, 1,000 of the public baskets for training, labels
+  h(x) + N(0, 0.05²) redrawn per run, 100 cost vectors (Amman costs times U(0.5, 1.5)
+  per commodity; OptiCL's own draws are undocumented), threshold 0.5. These design
+  choices are ours and open.
+- The true problem is an SOCP; at Amman costs its optimum is 3,260.83.
+- **First look: the instance as OptiCL set it up does not isolate label noise.**
+  Without their convex-hull trust region the tree surrogates' decisions sit far from
+  the data (true palatability about 0.05 where the clean-label model reads 0.53:
+  misfit). Within the hull the learned constraint is mostly slack and costs about
+  12% over the true optimum. Job 30851111 measures both on 100 redraws per family.
+
+**Trees on the reactor (I6).** Ovalle et al.'s RF, GBM and LinearDT predict linearly
+in the labels once their splits are fixed, so the RC applies exactly to each (checked
+against the libraries: RF and GBM to 1e-14). Job 30850123: both SS1 arms, standard
+and honest splits, the RC on a radius grid, margins, C-MICL with their h, 100 redraws.
