@@ -120,7 +120,8 @@ class TreeMap:
                 if mask.sum() > 0:
                     # least squares on centred, scaled columns (raw T ~ 1000 is
                     # ill-conditioned), mapped back to [1, x]
-                    mu, sd = Z[:, 1:].mean(axis=0), Z[:, 1:].std(axis=0) + 1e-12
+                    mu, sd = Z[:, 1:].mean(axis=0), Z[:, 1:].std(axis=0)
+                    sd = np.where(sd < 1e-9, 1.0, sd)            # constant columns (WFP's salt, sugar)
                     Zs = np.c_[np.ones(len(Z)), (Z[:, 1:] - mu) / sd]
                     Gs = np.linalg.pinv(Zs)                      # coefficients on Zs
                     G[1:, mask] = Gs[1:] / sd[:, None]
