@@ -28,6 +28,12 @@ Since the meeting with DB (2026-11-16):
   instances"). The two closest papers, Kinsey et al. 2022 and Zhang, Amin and
   Perakis 2026, were read in full on 2026-11-19: both learn the objective over
   a known feasible set, with no robust constraint.
+- Split conformal appears only in the as-prescribed comparison (2026-11-28).
+  With its level read by the oracle it is a constant margin on the 80%-row
+  model whose size varies run to run, so in the equal-feasibility comparison
+  the constant margin stands for both (F2 frontier: within 0.1 to 0.6
+  points). The wrapper's rows with a > 0 wait for the final experiments,
+  with a longer MIP limit.
 
 From 2026-11-14 and earlier, still in force:
 
@@ -67,6 +73,7 @@ How the margins differ:
 | Method | Varies with `x` | Source of the margin | Models embedded | Rows used to fit |
 |---|---|---|---|---|
 | Constant margin | no | chosen by the user | 1 | all |
+| Split conformal | no | quantile of held-out absolute residuals | 1 | 80% |
 | Wrapper | implicitly | disagreement of P bootstrapped models | P | all (resampled) |
 | C-MICL | yes | a second model fitted to the first one's residuals, scaled by a conformal quantile | 2 | 80% |
 | RC | yes | computed from the fitted model and training inputs | 1 | all |
@@ -235,7 +242,7 @@ The number of displays is fixed once F−1 to F2 have run.
 
 | # | Experiment | Problem | Design | Output | Section |
 |---|---|---|---|---|---|
-| E1 | Feasibility, cost and the radius | reactor (SS1) | RC on the lead model and FO-CP on the end-to-end network; 100 cost vectors, noise redrawn for each. RC at the pointwise, simulated and closed-form radii for ε ∈ {0.05, 0.1, 0.2} and on a radius grid. Constant margin, wrapper and C-MICL on the same model as the method compared, at their prescribed settings and over their ranges. Nominal | Table 1, Figures 2–3 | 6.1, 6.2 |
+| E1 | Feasibility, cost and the radius | reactor (SS1) | RC on the lead model and FO-CP on the end-to-end network; 100 cost vectors, noise redrawn for each. RC at the pointwise, simulated and closed-form radii for ε ∈ {0.05, 0.1, 0.2} and on a radius grid. Constant margin, wrapper and C-MICL on the same model as the method compared, at their prescribed settings and over their ranges; split conformal at its prescribed α = 0.1 only. Nominal | Table 1, Figures 2–3 | 6.1, 6.2 |
 | E3 | Second instance | WFP, regression | as E1, one ε, both methods | Table 3 | 6.4 |
 | P2 | Several constraints, known truth | SS2 | RC; certified fallback against protecting a fraction p of the constraints | appendix or 6.3 | 6.3 |
 | E2 | Real data | chemotherapy | Maragno et al.'s protocol. RC with the joint radius over the test cohorts' treatment slices, certified fallback where infeasible; margin, wrapper, C-MICL and nominal on the same fixed models, each decision given its certified level | Table 2 | 6.3 |

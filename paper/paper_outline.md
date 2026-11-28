@@ -411,6 +411,13 @@ Kept to about four pages. Proofs in the appendix.
 - **Nominal.**
 - **Constant margin.** The natural comparison: same model, a margin that does
   not depend on `x`.
+- **Split conformal** (constant width): the constant margin with a rule for
+  its size, `m = q`, the quantile of held-out absolute residuals, on a model
+  fit to 80% of the rows. As-prescribed comparison only (decided
+  2026-11-28): with its level chosen by the oracle it is a constant margin
+  on a slightly different model, with a size that varies run to run, so at
+  equal feasibility the margin row stands for both (F2: within 0.1 to 0.6
+  points of each other).
 - **Wrapper** (OptiCL): P bootstrapped models.
 - **C-MICL** (Ovalle et al.): their published settings.
 - **One model per comparison.** Every baseline embeds the same model as the
@@ -420,14 +427,18 @@ Kept to about four pages. Proofs in the appendix.
   to end as published, so that the baseline is not handicapped.
 - **Conservatism parameter.** Each method has one parameter that trades cost for
   safety: the radius `R` (ours), the margin `m`, the wrapper's violation limit
-  α, C-MICL's miscoverage α. Two comparisons, both defined here:
+  α, C-MICL's miscoverage α, split conformal's α. Two comparisons, both
+  defined here:
   - *As prescribed:* each method at the setting its authors give for a 90%
-    target (C-MICL α = 0.1; the RC at its scenario radius for ε = 0.1). The
-    margin and the wrapper have no such setting, which is part of the result;
-    Table 1 shows them at the setting the oracle picks, labelled as such.
+    target (C-MICL and split conformal α = 0.1; the RC at its scenario
+    radius and FO-CP at radius (c) for ε = 0.1). The margin and the wrapper
+    have no such setting, which is part of the result; Table 1 shows them at
+    the setting the oracle picks, labelled as such.
   - *At equal feasibility:* each method's parameter is varied over its range,
     and cost is compared at the same ground-truth feasibility. This uses the
     oracle and is a comparison device, not a tuning procedure we propose.
+    Methods: the RC or FO-CP, the constant margin, the wrapper and C-MICL;
+    split conformal is left out (above).
 
 ## 6. Computational experiments
 

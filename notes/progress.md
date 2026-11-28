@@ -989,3 +989,11 @@ the level. Details: `paper/paper_plan.md`, "F2 frontier".
   at 0.5×): much of radius (c)'s extra margin absorbs the clean-label model's own
   error.
 - 598 of 600 runs converged within 20 master solves; median 8 to 24 minutes per run.
+
+## 2026-11-28: Split conformal only as prescribed
+
+Decision (outline Section 5, plan Decisions): with its level chosen by the oracle,
+split conformal is a constant margin on the 80%-row model whose size varies run to
+run, so the equal-feasibility comparison shows the constant margin alone (F2: the
+two within 0.1 to 0.6 points). Split conformal stays in the as-prescribed table
+(α = 0.1), where it is the only constant margin with a rule for its size.
